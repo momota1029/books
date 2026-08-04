@@ -87,9 +87,12 @@ ingestion と翻訳・執筆を分離し、受け入れが確定した snapshot 
 ## draft と out
 
 - `draft/` の PDF は途中成果であり final と呼ばない。`out/` への移動・複製は、完了条件を確認した明示的な promotion とする。
-- 公開状態を `draft/STATUS.*` 等へ記録し、少なくとも build 日時、成功・失敗・陳腐化、source revision または commit、採用した inbox snapshot、検証状態、残件、対応する PDF 名を含める。
+- 公開済み draft を何らかの変更後に再公開する場合は、affected work unit の再 review を完了し、変更後 snapshot に対する quality gate と `draft/STATUS.*` の review 状態を更新する。
+- 各制作 cycle で、完了済み work unit と進行中 work unit を含む可読かつ追跡可能な PDF を `draft/` へ公開する。未完成部分は章節等の境界で隔離し、本文と `draft/STATUS.*` の双方で `reviewed` と WIP、その範囲を明示する。WIP を無表示で完成済み本文へ混在させない。
+- 公開状態を `draft/STATUS.*` 等へ記録し、少なくとも build 日時、成功・失敗・陳腐化、source revision または commit、採用した inbox source snapshot、work unit ごとの `reviewed` / WIP 状態、通過済み・未通過の quality gate、残件、対応する PDF 名を含める。
 - 新しい build を開始した時、inbox revision や canonical source が変わった時、または build が失敗した時は、古い成功 PDF を最新版と誤認しないよう `STATUS` を先に `building`、`failed` または `stale` に更新する。
 - `out/` の既存成果を直接上書きする前に、対象名、版、検証結果、承認を確認する。可能なら成果物と共に build 日時、source revision/commit、採用 inbox snapshot、検証状態を記録する。
+- `out/` に WIP、未完表示、未通過 gate のある work unit を含めない。promotion 対象 snapshot に含まれる全 work unit が完成し、必要な review と gate を通過していることを確認する。
 - build 失敗時は `out/` を変更しない。`draft/` と `out/` の公開物を clean 対象にしない。
 
 ## ツールチェーンと latexmk 契約
@@ -109,19 +112,20 @@ ingestion と翻訳・執筆を分離し、受け入れが確定した snapshot 
 2. 資料ごとに一意な Source ID を付け、書誌・版・権利・参照方式を rights ledger と source map に登録する。版違いは別 revision/record とする。
 3. 統合章節ごとに Source ID、原章節、版、page 範囲、翻訳・要約・再構成・引用・補足の種別を source map に登録する。
 4. 重要語の候補訳、採用訳、例外、初出説明、原語併記を glossary に定める。
-5. 意味、論理関係、条件、否定、数量、定義、数式を原文に照らして翻訳する。不確かな箇所は推測で確定せず、検索可能な未確定表示と根拠を残す。
-6. 配列変更、要約、接続文、重複整理を翻訳と分離し、変更種別、採用元、省略元、理由を translation decisions に記録する。
-7. 原文対応、固有名詞、引用、数値、数式、図表、page、用語を照合する。重要箇所は authoring と別の視点で再確認する。
-8. 数学を含む書籍では `../MATH_PROSE_REVIEW.md` の全 phase を authoring から独立した review phase として実施し、private records に結果を保存する。open blocking が 0 件になるまで次へ進まない。
-9. 受け入れ snapshot を再確認して build し、log と全 page 表示を検証して `draft/` へ公開する。
-10. 権利、license、配布範囲、不要物混入、直前の inbox 状態を確認し、承認後にだけ `out/` へ昇格する。
+5. 翻訳範囲を追跡可能な work unit に分ける。work unit は section/subsection、定理とその証明の cluster、または source batch 等、原文照合・推敲・review の状態を独立して記録できる単位とする。各 unit の完成時とその後のあらゆる revision/change の直後に、affected unit を原文と照合して推敲し、状態と対象 source snapshot を記録する。label/ref、notation、punctuation、formatting、translation wording の変更も例外にしない。
+6. 意味、論理関係、条件、否定、数量、定義、数式を原文に照らして翻訳する。不確かな箇所は推測で確定せず、検索可能な未確定表示と根拠を残す。
+7. 配列変更、要約、接続文、重複整理を翻訳と分離し、変更種別、採用元、省略元、理由を translation decisions に記録する。
+8. 原文対応、固有名詞、引用、数値、数式、図表、page、用語を照合する。重要箇所は authoring と別の視点で再確認する。
+9. 数学を含む書籍では、各 affected work unit の完成時とその後のあらゆる revision/change ごとに `../MATH_PROSE_REVIEW.md` に従う authoring から独立した review phase を実施し、private records に結果を保存する。純粋に編集上の小変更では checklist を affected correctness、definition、label/ref、rendering の項目に限定してよいが、review 自体を省略してはならない。draft 全体または `out/` 候補について同文書が要求する全体 review も別に行い、open blocking が 0 件になるまで当該 gate を通過扱いにしない。
+10. cycle ごとに受け入れ snapshot を再確認して build し、log と全 page 表示を検証して、work unit の review 状態と WIP 範囲を明示した readable/traceable な PDF を `draft/` へ公開する。
+11. 権利、license、配布範囲、不要物混入、直前の inbox 状態、全 work unit の gate 通過と WIP が 0 件であることを確認し、承認後にだけ `out/` へ昇格する。
 
 ## 翻訳・再構成・出典規約
 
 - 翻訳、要約、再構成、直接引用、訳注、編者補足を識別可能にする。原文にない説明、例、接続、評価、推論は合意した表示で明示し、原著者の主張に見せない。
 - 直接引用は原文と照合して正確性を保ち、脱落・省略、原文にない強調、訳文の併記を明示する。引用と翻訳の表示・照合結果を source map または translation decisions に残す。
 - 欠落・判読不能箇所を推測で埋めない。原資料間の矛盾は安易に解消せず、版、定義、文脈を確認して両論と編集判断を記録する。
-- 原文に誤りがあると判断しても訳文で黙って修正しない。原文どおりの内容、疑義、確認根拠、採用した扱いを translation decisions に記録し、必要に応じて訳注で訂正候補または解釈を明示する。
+- 原文に論証の gap、欠落、または誤りがあると判断しても、訳文で黙って補完・訂正したり、もっともらしい内容を創作したりしない。source issue として原文どおりの内容、疑義、影響、確認根拠、採用した扱いを translation decisions に記録し、本文では原文の問題と訳者注を識別可能に示す。訂正候補や補足を載せる場合も訳者によるものと明示する。`reviewed` と表示する draft の範囲に、無表示の gap や未記録の補完を残さない。
 - 意味を変える意訳、説明追加、節移動は追跡可能にする。AI 生成の補足、候補訳、要約は、原文・出典との照合なしに確定本文へ入れない。
 - 引用・翻訳・図表には可能な限り Source ID、章節、版、page または安定位置を付ける。統合先から原資料へ、原資料の使用範囲から統合先へ双方向に追跡できるようにする。
 - 定義、列挙、比較、条件、例外、否定、数量、専門用語、引用、数値、数式を重点照合する。訳語変更時は既存箇所を検索し、文脈依存の例外には理由を残す。
@@ -131,7 +135,10 @@ ingestion と翻訳・執筆を分離し、受け入れが確定した snapshot 
 ## 数式・図表・PDF 品質
 
 - 原文の記号、添字、上付き、演算子、式番号、定義域、量化範囲を照合する。複数書籍の記号を統一する場合は原記号、統一記号、範囲、理由を記録し、原文引用は勝手に改変しない。
-- 数学を含む場合、`../MATH_PROSE_REVIEW.md` の全 phase と promotion 条件を適用する。review は原則として authoring 担当とは別の read-only phase とし、blocking finding の解消または scope 除外へのユーザー合意を記録して open blocking を 0 件にするまで `out/` へ promotion しない。
+- 数学上の formal claim は、内容に合う theorem、lemma、proposition、corollary 等の番号付き semantic environment に置き、自動生成番号と一意で安定した label を付ける。正式な主張を通常の prose だけで済ませない。
+- proof は明示的な番号付き proof environment に置き、一意で安定した label を付け、証明対象の theorem 等を label による cross-reference で明示する。statement、proof、definition、equation 間の参照も手入力番号ではなく label による cross-reference とする。
+- proof に非自明な gap を残さない。十分性は任意の語数や page 数ではなく、主張に必要な依存関係と推論が明示され、読者が各段階を追跡できる長さと内容を備えるかで判定する。原文由来の gap は創作して埋めず、source issue と訳者注として扱う。
+- 数学を含む場合、各 affected work unit の完成時とその後のあらゆる revision/change ごとに `../MATH_PROSE_REVIEW.md` の該当 phase と unit gate を適用する。label/ref、notation、punctuation、formatting、translation wording の変更も例外にせず、純粋に編集上の小変更では checklist を affected correctness、definition、label/ref、rendering の項目に限定してよいが、review 自体を省略してはならない。review は原則として authoring 担当とは別の read-only phase とし、記録を private records に保存する。さらに promotion 対象全体に同文書の全 phase と promotion 条件を適用し、blocking finding の解消または scope 除外へのユーザー合意を記録して open blocking を 0 件にするまで `out/` へ promotion しない。
 - 図表ごとに出典、版、元番号、page、権利、引用・翻訳・改変・新規作成の別を図表台帳へ記録する。改変範囲を明示し、番号、caption、凡例、単位、本文参照、白黒・縮小時の可読性、accessibility、画像解像度を確認する。
 - build 成功だけで完成としない。error、warning、未解決参照、重複 label、欠落引用、目次、索引、bookmark、式番号、図表位置を確認する。
 - 日本語・欧文・数式 font、埋め込み、代替、文字化け、禁則、行末、脚注、余白、見開き、空白 page、page 番号、はみ出しを確認する。最終候補は全 page を目視または rendering 検査する。
@@ -154,5 +161,5 @@ ingestion と翻訳・執筆を分離し、受け入れが確定した snapshot 
 - 原文照合、用語統一、重複・矛盾・原文の誤りの処理、引用・権利確認が完了し、未確定事項は残件として明示されている。
 - 合意した手順で再生成でき、warning、参照、数式、font、全 page の layout 検証を通過している。
 - 数学を含む場合は `../MATH_PROSE_REVIEW.md` の独立 review phase が完了し、open blocking が 0 件である。
-- 採用 inbox snapshot、source revision、検証結果、承認が記録され、最終成果だけが `out/` に明示的に昇格されている。
+- 採用 inbox snapshot、source revision、work unit ごとの review 状態、quality gate、検証結果、承認が記録され、WIP が 0 件の最終成果だけが `out/` に明示的に昇格されている。
 - 配布対象に原資料、中間物、秘密情報、権利不明素材が混在せず、公開・配布条件が確認済みである。

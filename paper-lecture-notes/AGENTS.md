@@ -76,9 +76,11 @@ ingestion と読解・執筆を分離し、受け入れが確定したスナッ�
 ## draft と out
 
 - `draft/` の PDF は途中成果であり final と呼ばない。`out/` への移動・複製は、完了条件を確認した明示的な promotion とする。
-- 公開状態を `draft/STATUS.*` 等へ記録し、少なくともビルド日時、成功・失敗・陳腐化、source revision または commit、採用した inbox snapshot、検証状態、残件、対応する PDF 名を含める。
+- 公開済み draft を何らかの変更後に再公開する場合は、affected work unit の再 review を完了し、変更後 snapshot に対する gate と `draft/STATUS.*` の review 状態を更新する。
+- 各制作・レビュー cycle の終了時に、その時点の完成 unit と WIP を含む通読可能な draft PDF を作る。WIP は本文中で開始・終了と未完了範囲を明示し、欠落した証明や未検証の主張を完成済みに見せない。
+- 公開状態を `draft/STATUS.*` 等へ記録し、少なくともビルド日時、成功・失敗・陳腐化、source revision または commit、採用した inbox snapshot、work unit ごとの `reviewed` / `WIP` / `blocked`、検証状態、残件、対応する PDF 名を含める。`reviewed` は該当 unit の必須 review gate を満たした場合だけ付与する。
 - 新しいビルドを開始した時、inbox revision や canonical source が変わった時、またはビルドが失敗した時は、残っている古い成功 PDF を最新版と誤認しないよう `STATUS` を先に `building`、`failed` または `stale` に更新する。
-- `out/` の既存成果を直接上書きする前に、対象名、版、検証結果、承認を確認する。可能なら成果物と共にビルド日時、source revision/commit、採用 inbox snapshot、検証状態を記録する。
+- `out/` の既存成果を直接上書きする前に、対象名、版、検証結果、承認を確認する。可能なら成果物と共にビルド日時、source revision/commit、採用 inbox snapshot、検証状態を記録する。`out/` に含める work unit の WIP は 0 件でなければならず、WIP 表示を外すだけで promotion gate を通過したことにはしない。
 - ビルド失敗時は `out/` を変更しない。`draft/` と `out/` の公開物を clean 対象にしない。
 
 ## ツールチェーンと latexmk 契約
@@ -106,6 +108,15 @@ ingestion と読解・執筆を分離し、受け入れが確定したスナッ�
 10. 受け入れ snapshot を再確認してビルドし、ログと全ページ表示を検証して `draft/` へ公開する。
 11. 権利、ライセンス、配布範囲、不要物混入、直前の inbox 状態を確認し、承認後にだけ `out/` へ昇格する。
 
+## work unit と review cycle
+
+- 制作物を追跡可能な work unit に分ける。work unit は、少なくとも claim、definition、method、proof、derivation、experiment の各 subsection、または同程度に独立して authoring・review・status 判定できる範囲とする。各 unit に安定した一意の ID、対象 source revision、依存 unit、対応する trace 項目を与える。
+- unit の完成時とその後のあらゆる revision/change ごとに、その cycle 内で affected-unit review を行う。label/ref、notation、punctuation、formatting、translation wording の変更も例外にせず、影響範囲を確認し、finding、対応、再検証、review status を private records に記録する。未レビューの affected unit は `WIP` とする。
+- 純粋に編集上の小変更では checklist を affected correctness、definition、label/ref、rendering の項目に限定してよいが、affected-unit review 自体を省略してはならない。
+- 数学を含む affected unit は、authoring 担当とは別の担当による独立 read-only review として `../MATH_PROSE_REVIEW.md` の unit gate を適用する。blocking gap、unlabeled formal claim、broken reference、definition-before-use violation、未追跡依存のいずれかがあれば `reviewed` にしない。
+- cycle ごとに、採用した input snapshot、cycle 対象 unit、各 unit の `reviewed` / `WIP` / `blocked`、open finding、次の作業を draft 本文または `draft/STATUS.*` から確認できるようにする。draft 本文は WIP を隔離・表示しつつ通読可能に保ち、reviewed 部分と混同させない。
+- unit review は成果物全体の review を代替しない。`out/` への promotion 前に、採用 input snapshot と含まれる全 unit を固定し、`../MATH_PROSE_REVIEW.md` の全 phase と本ガイドの全体 gate を再実行する。
+
 ## 論文の分解・記述規約
 
 - 問題設定では対象と対象外、主張では条件・比較対象・根拠・適用範囲、仮定では明示と執筆者の解釈を分ける。
@@ -131,6 +142,10 @@ ingestion と読解・執筆を分離し、受け入れが確定したスナッ�
 ## 数式・図表・PDF 品質
 
 - 数学を含む成果物は `../MATH_PROSE_REVIEW.md` の独立 read-only review と再レビューを完了する。definition-before-use violation、未追跡の仮定・依存、open blocking finding がいずれも 0 件になるまで `out/` へ promotion しない。scope 除外で対応する場合も、影響とユーザーの明示合意を private record に残して gate を再実行する。
+- formal claim は、意味に応じた番号付き semantic environment（`theorem`、`lemma`、`proposition`、`corollary`、`definition` 等）に置き、自動生成番号と一意で安定した `label` を付ける。形式的主張を無番号の強調文や通常 prose だけで提示しない。
+- 各 formal proof は、明示的な番号と一意で安定した `label` を持つ proof environment に置き、冒頭で証明対象の statement を `label` により参照する。statement、proof、definition、equation 間の参照は番号の直書きではなく `label` による cross-reference とし、prose だけの形式的証明を作らない。
+- proof と derivation は、前提、依存結果、各変形の根拠、場合分け、境界条件から結論までを明示して完結させる。「明らか」「同様」「容易に分かる」等で非自明な段階を省略しない。derivation の主要な段階は番号付き・ラベル付きの式または適切な semantic environment に置き、本文から参照できるようにする。
+- 原論文の claim・proof と、ノート執筆者による reconstruction・補足導出・correction を、見出し、環境名、注記等で読者が明確に識別できるようにする。再構成や訂正を原論文の主張として表示せず、その根拠と truth status を trace および review record に対応付ける。
 - 記号は初出で定義し、型、次元、定義域、添字範囲、確率変数か実現値かを必要に応じて示す。原論文と記号を変える場合は対応表と理由を残す。
 - 式変形の仮定、定理、近似、極限操作を明記し、近似と等号を混同しない。式番号、本文参照、演算子、書体を統一する。
 - 図表ごとに出典、元番号、ページ、引用・再描画・改変・新規作成の別、権利を figure trace に記録する。値、軸、単位、凡例、集計条件、番号、キャプション、本文参照、白黒・縮小時の可読性、アクセシビリティ、画像解像度を確認する。
@@ -154,7 +169,7 @@ ingestion と読解・執筆を分離し、受け入れが確定したスナッ�
 - 主張、仮定、定義、手法、証明・導出、実験、限界、関連研究が必要な深さで分解・再構成されている。
 - 原論文、解釈、外部知識、未解決の疑問が区別され、主要内容をページ・式・図表番号まで追跡できる。
 - 引用精度と理解検証が確認済みで、未解決事項と再現上の制約が明示されている。
-- 数学を含む場合は `../MATH_PROSE_REVIEW.md` の独立 read-only review が完了し、definition-before-use violation、未追跡依存、open blocking finding が 0 件である。
+- 全 work unit について作成・最終修正後の affected-unit review が記録され、成果物に含まれる unit がすべて `reviewed` で WIP が 0 件である。数学を含む場合は `../MATH_PROSE_REVIEW.md` の独立 read-only review が完了し、definition-before-use violation、unlabeled formal claim、broken reference、未追跡依存、open blocking finding が 0 件である。
 - 合意した手順で再生成でき、警告、参照、目次、数式、フォント、全ページのレイアウト検証を通過している。
 - 採用 inbox snapshot、source revision、検証結果、承認が記録され、最終成果だけが `out/` に明示的に昇格されている。
 - 配布物に秘密情報や権利不明素材がなく、公開・配布条件が確認されている。

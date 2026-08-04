@@ -118,8 +118,13 @@ RISKS: 残る懸念、判断待ち、または none
 - レビューの修正は、原則として元の実装スレッドへ `codex-reply` で戻す。
 - 並行実行は、対象ファイルや状態が衝突しない独立タスクに限る。競合し得る場合は直列化する。
 - 完了条件を満たした証拠がない報告は完了として扱わない。
-- 数学を含む翻訳、論文、ノートは、`out/` への promotion 前に `MATH_PROSE_REVIEW.md` の全 phase を完了する。
-- 数学文章レビューは原則として authoring 担当と分けた read-only review phase とし、レビュー記録は project の private area に保存する。
+- 数学内容を含む翻訳、論文、ノートは、追跡可能な work unit に分け、各 unit の完成時、およびその後のあらゆる revision/change ごとに、affected unit と影響範囲を `MATH_PROSE_REVIEW.md` に従い再レビューする。label/ref、notation、punctuation、formatting、translation wording の変更も例外にしない。純粋に編集上の小変更では checklist を affected correctness、definition、label/ref、rendering の項目に限定してよいが、レビュー自体を省略してはならない。
+- affected unit の数学文章レビューは、原則として authoring 担当と分けた independent read-only review phase とし、レビュー記録は project の private area に保存する。
+- draft PDF を公開または読者へ共有する前に、その input snapshot と含まれる全 unit の review status を確定し、`reviewed` とする各 unit が `MATH_PROSE_REVIEW.md` の unit gate を満たすことを確認する。何らかの変更後に draft を再公開する場合は、affected unit の再レビューを完了し、変更後 snapshot に対する gate と review status を更新する。draft は可読な進捗成果物とし、input snapshot、review status、WIP とその未完了範囲を本文で明示する。
+- blocking gap、unlabeled formal claim、broken reference のいずれかがある unit を `reviewed` と表示して draft PDF を公開または共有しない。
+- formal claim は意味に合う番号付き semantic environment に置き、自動生成番号と一意で安定した `label` を付ける。proof は番号付き proof environment に置いて一意で安定した `label` を付け、statement、proof、definition、equation 間の参照は `label` による cross-reference とする。
+- proof に非自明な gap を残さない。十分な長さは `MATH_PROSE_REVIEW.md` の proof dependency trace の基準で判定し、任意の語数または page 数を要件にしない。
+- unit ごとの review に加え、`out/` への promotion 前に成果物全体を一つの snapshot として `MATH_PROSE_REVIEW.md` の全 phase で再 review する。
 - blocking finding が解消されるか、scope 除外などの対応についてユーザーの明示合意が記録され、open blocking が 0 件になるまで `out/` へ promotion しない。
 
 ## 安全性と Git
