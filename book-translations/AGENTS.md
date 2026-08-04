@@ -97,8 +97,8 @@ ingestion と翻訳・執筆を分離し、受け入れが確定した snapshot 
 
 ## ツールチェーンと latexmk 契約
 
-- LaTeX、Typst、Pandoc 等をこの指示だけで固定しない。既存方式を優先し、新規案件では日本語組版、数式、索引、相互参照、長文分割、再現性を比較してユーザー確認後に最小構成を作る。
-- 合意前に大量の template や依存を追加しない。既存 engine を uplatex から LuaLaTeX 等へ無断で変えない。
+- 日本語書籍翻訳の TeX PDF draft toolchain は、原則として upLaTeX + dvipdfmx を標準とし、latexmk を利用してよい。別の toolchain は、案件要件が必要とする場合、またはユーザーが明示的に決定した場合に限り採用する。
+- 既存案件では合意済みの toolchain を優先し、engine や toolchain を無断で変更しない。合意前に大量の template や依存を追加しない。
 - LaTeX/latexmk を採用する案件では、local latexmk 4.83 の `-outdir`、`-auxdir`、`-emulate-aux-dir` 相当の分離機能を利用できる。`out_dir` 相当を `.workspace/build/out`、`aux_dir` 相当を `.workspace/build/aux` とする。
 - latexmk が生成する PDF、DVI、SyncTeX、log、aux、fls、fdb 等は、まず全て `.workspace/build/` 配下へ置く。`draft/` や `out/` を latexmk の直接 outdir にしない。
 - latexmk の終了 code 成功、生成 PDF の存在と今回の更新、log、未解決参照、引用、font、page を確認する。その後 PDF だけを `draft/` 内の一時名へ copy し、同一 filesystem 上の rename 等で原子的に公開する。`STATUS` は公開 PDF と同じ検証結果を指すよう更新する。
