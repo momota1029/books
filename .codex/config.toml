@@ -1,0 +1,7 @@
+[mcp_servers.codex]
+command = "codex"
+args = ["mcp-server"]
+startup_timeout_sec = 10
+tool_timeout_sec = 3600
+enabled = true
+required = true

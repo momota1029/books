@@ -30,6 +30,10 @@ ROLE: MCP_EXECUTOR
 
 ## 委譲方法
 
+Codex MCP は `.codex/config.toml` に登録された `codex` サーバーを使う。
+ターミナル、疑似端末、または手動の `codex mcp-server` 起動を代替手段にしない。
+ツール一覧に反映されていない場合は、Codex の再起動または新規セッションを案内する。
+
 新規タスクには `codex` を使い、その返却値の `threadId` を保持する。
 同じタスクの質問、修正、追加検証には `codex-reply` と同じ `threadId` を使う。
 重複する新規セッションを不用意に作らない。
