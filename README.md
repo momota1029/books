@@ -4,17 +4,18 @@
 
 ## 1. clone、bootstrap、mode 確認
 
-clone 直後と system 更新後は、制作を始める前に次を実行します。
+[GitHub の clone 手順](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository)に従って公開版を clone し、制作を始める前に bootstrap、doctor、mode 確認を実行します。
 
 ```sh
-.system/bootstrap
-.system/doctor
+git clone https://github.com/momota1029/books.git
+cd books
+.system/bootstrap && .system/doctor
 .system/repository-mode status
 ```
 
-`bootstrap` は repository local の Git 設定と hook を準備し、`doctor` は system を検査します。どちらかが失敗した場合は、原因を解消して再実行するまで制作を始めません。
+`bootstrap` は repository local の Git 設定と hook を準備し、`doctor` は system を検査します。どちらかが失敗した場合は、原因を解消して再実行するまで制作を始めません。system 更新後にも両方を再実行します。
 
-repository mode は clone ごとの local Git config `books.repositoryMode` に記録されます。未設定の clone は `public` として扱われ、`bootstrap` も既定値として `public` を設定します。`status` の通常の出力は `mode=public` または `mode=private` です。private mode では設定済みの `privateRemote` も表示されます。
+repository mode は clone ごとの local Git config `books.repositoryMode` に記録されます。未設定の clone は `public` として扱われ、`bootstrap` も既定値として `public` を設定します。この時点の通常の出力は `mode=public` です。
 
 ## 2. public mode
 
@@ -22,50 +23,102 @@ public mode で Git 管理できるのは、共有する structure、rules、gen
 
 案件名、原資料、原稿、翻訳、ノート、PDF、manifest、ログ、画像、案件固有の設定や tool、および `inbox/`、`draft/`、`out/`、`.workspace/` や直接の book project は、public mode では stage、commit、push できません。
 
-現在の public remote に対して次の private mode 切替が失敗するのは正常です。public repository を private 作業用 remote として承認することはありません。
+現在の公開 remote に対して private mode への切替を試みると失敗します。public repository を private 作業用 remote として承認することはありません。
 
-## 3. private mode の前提
+## 3. 公開版を自分の private repository で運用する
 
-private mode を使う前に、次をすべて満たす必要があります。
+以下の `YOUR-GITHUB-USER` は自分の GitHub user または organization 名、`YOUR-PRIVATE-REPOSITORY` は新しく作る private repository 名に置き換えます。
 
-- remote が GitHub repository を指している
-- GitHub CLI `gh` がインストールされ、対象 host に認証済みである
-- remote に設定された push URL が正確に 1 個である
-- GitHub API で repository の visibility を `PRIVATE` と確認できる
+### 3.1 空の独立 repository を作る
 
-認証状態は、たとえば次で確認できます。
+GitHub 上で `YOUR-GITHUB-USER/YOUR-PRIVATE-REPOSITORY` を `Private` として作ります。[新しい repository の作成手順](https://docs.github.com/en/repositories/creating-and-managing-repositories/creating-a-new-repository)にある README、`.gitignore`、license の初期化はすべて選ばず、空の repository にしてください。GitHub CLI を使う場合は、次も任意の作成例です。
 
 ```sh
+gh repo create YOUR-GITHUB-USER/YOUR-PRIVATE-REPOSITORY --private
+```
+
+GitHub の Fork ではなく独立 repository を作るのは、公開元の fork network とその visibility 制約から private 作業履歴を切り離すためです。repository の visibility と fork への影響については、[GitHub の visibility の説明](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/managing-repository-settings/setting-repository-visibility)も確認してください。
+
+作成先を README などで初期化すると、clone 済みの公開版とは履歴が分岐し、初回 push が拒否されることがあります。force push や `--allow-unrelated-histories` で回避せず、作成先にすでに内容がある場合はここで停止し、その内容を保持する方法を個別に判断してください。
+
+### 3.2 公開元と非公開先の remote を分離する
+
+clone 時の `origin` を、公開元からの取得専用の `upstream` に改名し、自分の非公開先を新しい `origin` として登録します。[remote の管理方法](https://docs.github.com/en/get-started/git-basics/managing-remote-repositories)も参照してください。
+
+```sh
+git remote rename origin upstream
+git remote add origin https://github.com/YOUR-GITHUB-USER/YOUR-PRIVATE-REPOSITORY.git
+git remote -v
 gh auth status
-git remote get-url --push --all <remote>
+git remote get-url --push --all origin
 ```
 
-private repository であっても、credential、secret、token、鍵、および契約・ライセンス・権利上 Git に保存できない data は commit できません。private remote の存在は、資料の取得、保存、翻訳、配布の権限を与えません。
+`gh auth status` が対象 GitHub host への認証成功を示すことを確認します。最後のコマンドの出力は、作成した private repository の URL 1 行だけでなければなりません。別の URL や複数行が表示された場合は先へ進みません。
 
-## 4. private mode への切替
+この構成では remote の役割を次のように固定します。
+
+- `upstream`: 公開元 `momota1029/books`。更新の取得にだけ使う
+- `origin`: 自分の private repository。private history の push 先に使う
+
+### 3.3 private mode に切り替えて初回 push する
+
+GitHub 上の `Private` visibility と local repository mode は別の状態です。remote を作るだけでは private data の gate は有効にならないため、次の切替を必ず実行します。
 
 ```sh
-.system/repository-mode private <remote>
+.system/repository-mode private origin
 .system/repository-mode status
+git push -u origin main
 ```
 
-切替コマンドは、public mode から切り替える時点の HEAD と index が public allowlist に適合することを確認し、指定 remote の push URL、GitHub 上の repository identity、`PRIVATE` visibility を検証します。成功すると、切替時の HEAD を `books.privateBase`、remote 名を `books.privateRemote`、mode を `books.repositoryMode` として clone の local Git config に記録します。
+`status` では次の設定を確認します。
 
-remote の解決、GitHub CLI、認証、network、応答の解析、repository identity、visibility のいずれかを確認できなければ fail closed で停止し、private mode を有効にしません。
+```text
+mode=private
+privateRemote=origin
+```
 
-## 5. private data の add、commit、push
+切替コマンドは、切替時点の HEAD と index が public allowlist に適合することに加え、GitHub CLI の認証、`origin` の単一の push URL、repository identity、GitHub API 上の `PRIVATE` visibility を検証します。確認できない項目があれば fail closed で停止し、private mode を有効にしません。成功時には切替時の HEAD を `books.privateBase` として clone の local Git config に記録します。
+
+## 4. private data の通常運用
+
+たとえば `book-translations/PROJECT-ID` を stage、commit、push する手順は次のとおりです。
 
 ```sh
-.system/repository-mode add -- <private-path> [more-private-paths...]
-git commit -m "..."
-git push <remote> <branch>
+.system/repository-mode add -- book-translations/PROJECT-ID
+git diff --cached --name-status
+git diff --cached --
+git commit -m "Describe the private work"
+git push origin main
 ```
 
-private data の stage には必ず `repository-mode add --` を使います。直接の `git add`、`git add -f`、hook を飛ばす `--no-verify` は使いません。
+private data の stage には必ず `repository-mode add --` を使います。直接の `git add`、`git add -f`、hook を飛ばす `--no-verify` は使いません。この wrapper は credential、secret、token、鍵や、契約・ライセンス・権利上 Git に保存できない資料を自動判定しないため、commit 前に staged diff の対象と内容を必ず確認します。binary file は通常の diff に内容が表示されないため、別途内容を確認します。private remote の存在は、資料の取得、保存、翻訳、配布の権限を与えません。
 
-mode 切替、`add`、pre-commit、pre-push の各 gate は、その都度 online で remote の repository identity と `PRIVATE` visibility を再検証します。pre-push は、実際に指定された remote 名と push URL が local config に記録した private remote と完全に一致することも確認します。network、認証、identity、visibility の確認に失敗した場合、stage、commit、push は停止します。
+mode 切替、`add`、pre-commit、pre-push の各 gate は、その都度 online で remote の repository identity と `PRIVATE` visibility を再検証します。pre-push は、実際の送信先が local config に記録した `origin` と完全に一致することも確認します。network、認証、identity、visibility の確認に失敗した場合、stage、commit、push は停止します。
 
-検証済み private mode では、処理中の文書を `inbox/`、`draft/`、`out/`、`.workspace/`、または直接の book project 内に置いて commit できます。ただし、前節の credential・secret・権利上保存できない data の禁止は変わりません。
+検証済み private mode では、処理中の文書を `inbox/`、`draft/`、`out/`、`.workspace/`、または直接の book project 内に置いて commit できます。ただし、credential・secret・権利上保存できない data の禁止は変わりません。
+
+## 5. 公開 upstream の更新を取り込む
+
+取り込み前に private 側の作業を commit し、`git status --short` の出力が空になることを確認します。その後、[remote から変更を取得する GitHub の手順](https://docs.github.com/en/get-started/using-git/getting-changes-from-a-remote-repository)に沿って次を実行します。
+
+```sh
+git status --short
+git fetch upstream
+git merge --no-edit upstream/main
+.system/bootstrap && .system/doctor
+git push origin main
+```
+
+merge conflict が発生した場合は、内容を解決した各 path を次のように stage してから merge commit を完了します。解決時にも直接の `git add` は使いません。
+
+```sh
+.system/repository-mode add -- RESOLVED-PATH
+git diff --cached --name-status
+git diff --cached --
+git commit
+```
+
+更新後の `bootstrap` または `doctor` が失敗した場合は push せず、原因を解消して再実行します。
 
 ## 6. public mode へ戻す
 
@@ -82,9 +135,12 @@ private 作業から得た generic な system 改善は、clean な public clone
 
 ## 7. safeguard と限界
 
+- GitHub 側で private repository を `Public` に変更すると local gate を通らず履歴が公開されるため、visibility を変更しません。
+- private mode の pre-push は設定済みの private remote 以外への push を拒否します。local hook は事故防止の gate であり、`bootstrap`、hook、`repository-mode` の迂回は禁止です。詳細は[運用・公開境界](AGENTS.md)を参照してください。
+- private mode から public mode へ戻るときは履歴も検査されます。後から private file を削除しただけでは切替を通過しない場合があります。
+- collaborator の権限を後から外しても、その人が取得済みの clone までは回収できません。[personal repository の権限](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/repository-access-and-collaboration/permission-levels-for-a-personal-account-repository)を確認し、共有先は必要最小限にします。
 - verifier が受け付ける push URL は `https://<host>/<owner>/<repo>`、`git@<host>:<owner>/<repo>`、`ssh://git@<host>/<owner>/<repo>` の対応形式だけです。末尾の `.git` は使用できます。
 - push URL が複数ある remote、GitHub 以外、未知の URL 形式、query・fragment 付き URL は fail closed で拒否します。
-- local hook は事故防止の gate であり、意図的な迂回まで絶対に防ぐものではありません。[運用・公開境界](AGENTS.md) は bootstrap、repository-mode、hook の迂回を禁止しています。
 - `out/` の配布承認と GitHub repository の visibility は別の判定です。private repository に置けることは、読者や第三者へ配布できることを意味しません。
 - 複数案件に有効な規約、prompt、template、script、build・QA tool、test、修正は generic 化し、privacy review 後に公開共有領域へ upstream します。
 
