@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+export LC_ALL=C
+
+usage() {
+  printf 'Usage: %s <remote-name> [actual-push-url]\n' "${0##*/}" >&2
+  exit 2
+}
+
+if (( $# < 1 || $# > 2 )); then
+  usage
+fi
+
+remote=$1
+actual_push_url=${2-}
+
+if [[ -z "$remote" ]] || ! git check-ref-format "refs/remotes/$remote" >/dev/null 2>&1; then
+  printf 'Remote verification failed: invalid remote name.\n' >&2
+  exit 1
+fi
+
+fail() {
+  printf 'Remote %s: private verification failed.\n' "$remote" >&2
+  exit 1
+}
+
+repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || fail
+cd "$repo_root"
+
+configured_urls=()
+shopt -s lastpipe
+if ! git remote get-url --push --all "$remote" 2>/dev/null |
+  mapfile -t configured_urls; then
+  fail
+fi
+
+if (( ${#configured_urls[@]} != 1 )); then
+  fail
+fi
+
+configured=${configured_urls[0]}
+
+if (( $# == 2 )) && [[ "$actual_push_url" != "$configured" ]]; then
+  fail
+fi
+
+url=$configured
+if [[ "$url" == *'%'* || "$url" == *'?'* || "$url" == *'#'* ]]; then
+  fail
+fi
+
+host=
+owner=
+repo=
+
+if [[ "$url" =~ ^https://([^/]+)/([^/]+)/([^/]+)$ ]]; then
+  host=${BASH_REMATCH[1]}
+  owner=${BASH_REMATCH[2]}
+  repo=${BASH_REMATCH[3]}
+elif [[ "$url" =~ ^git@([^:]+):([^/]+)/([^/]+)$ ]]; then
+  host=${BASH_REMATCH[1]}
+  owner=${BASH_REMATCH[2]}
+  repo=${BASH_REMATCH[3]}
+elif [[ "$url" =~ ^ssh://git@([^/]+)/([^/]+)/([^/]+)$ ]]; then
+  host=${BASH_REMATCH[1]}
+  owner=${BASH_REMATCH[2]}
+  repo=${BASH_REMATCH[3]}
+else
+  fail
+fi
+
+if [[ "$repo" == *.git ]]; then
+  repo=${repo%.git}
+fi
+
+if (( ${#host} > 253 )) ||
+   [[ "$host" == .* || "$host" == *. || "$host" == *..* ]]; then
+  fail
+fi
+
+IFS='.' read -r -a host_labels <<< "$host"
+if (( ${#host_labels[@]} == 0 )); then
+  fail
+fi
+for label in "${host_labels[@]}"; do
+  if [[ ! "$label" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]]; then
+    fail
+  fi
+done
+
+if [[ ! "$owner" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$ ||
+      "$owner" == *--* ]]; then
+  fail
+fi
+if (( ${#repo} == 0 || ${#repo} > 100 )) ||
+   [[ ! "$repo" =~ ^[A-Za-z0-9._-]+$ || "$repo" == '.' || "$repo" == '..' ]]; then
+  fail
+fi
+
+command -v gh >/dev/null 2>&1 || fail
+
+spec="$host/$owner/$repo"
+result=$(gh repo view "$spec" --json visibility,nameWithOwner \
+  --jq '[.visibility, .nameWithOwner] | @tsv' 2>/dev/null) || fail
+
+if [[ -z "$result" || "$result" == *$'\n'* || "$result" == *$'\r'* ||
+      "$result" != *$'\t'* ]]; then
+  fail
+fi
+
+visibility=${result%%$'\t'*}
+name_with_owner=${result#*$'\t'}
+if [[ "$name_with_owner" == *$'\t'* || "$visibility" != 'PRIVATE' ]]; then
+  fail
+fi
+
+expected="$owner/$repo"
+if [[ "${name_with_owner,,}" != "${expected,,}" ]]; then
+  fail
+fi
+
+printf 'Remote %s: private verification succeeded.\n' "$remote"

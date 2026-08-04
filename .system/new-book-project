@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+usage() {
+  printf 'usage: .system/new-book-project <project-id>\n' >&2
+}
+
+fail() {
+  printf 'new-book-project: %s\n' "$1" >&2
+  exit 1
+}
+
+script_path="${BASH_SOURCE[0]}"
+[[ ! -L "$script_path" ]] || fail "script path check failed"
+script_dir="$(cd -P -- "$(dirname -- "$script_path")" && pwd)" || \
+  fail "repository root is unavailable"
+repo_root="$(git -C "$script_dir/.." rev-parse --show-toplevel 2>/dev/null)" || \
+  fail "repository root is unavailable"
+repo_root="$(cd -P -- "$repo_root" && pwd)" || \
+  fail "repository root is unavailable"
+[[ "$script_dir" == "$repo_root/.system" ]] || fail "script path check failed"
+cd -- "$repo_root"
+
+"$repo_root/.system/doctor"
+
+if (( $# != 1 )); then
+  usage
+  exit 2
+fi
+
+project_id="$1"
+
+case "$project_id" in
+  AGENTS.md|agents.md|projects|shared|system|inbox|draft|out|workspace|tools|records|build|cache|tmp|logs|locks|readme.md|bootstrap|doctor|repository-mode|verify-private-remote|new-book-project)
+    fail "project id is reserved"
+    ;;
+esac
+
+[[ "$project_id" =~ ^[a-z0-9][a-z0-9._-]*$ ]] || \
+  fail "project id is invalid"
+[[ "$project_id" != .* ]] || fail "project id is invalid"
+[[ "$project_id" != *..* ]] || fail "project id is invalid"
+[[ "$project_id" != */* && "$project_id" != *\\* ]] || \
+  fail "project id is invalid"
+
+projects_root="$repo_root/book-translations"
+[[ -d "$projects_root" && ! -L "$projects_root" ]] || \
+  fail "project root check failed"
+
+target="$projects_root/$project_id"
+[[ "$(dirname -- "$target")" == "$projects_root" ]] || \
+  fail "target path check failed"
+[[ ! -e "$target" && ! -L "$target" ]] || fail "target already exists"
+
+created_target=0
+keep_target=0
+
+cleanup() {
+  status=$?
+  trap - EXIT
+
+  if (( created_target == 1 && keep_target == 0 )) && \
+    [[ -d "$target" && ! -L "$target" ]]; then
+    rm -f -- "$target/.workspace/system-version" 2>/dev/null || true
+    rmdir -- \
+      "$target/.workspace/source" \
+      "$target/.workspace/records" \
+      "$target/.workspace/tools" \
+      "$target/.workspace/build" \
+      "$target/.workspace/cache" \
+      "$target/.workspace/tmp" \
+      "$target/.workspace/logs" \
+      "$target/.workspace/locks" \
+      "$target/inbox" \
+      "$target/draft" \
+      "$target/out" 2>/dev/null || true
+    rmdir -- "$target/.workspace" 2>/dev/null || true
+    rmdir -- "$target" 2>/dev/null || true
+  fi
+
+  exit "$status"
+}
+trap cleanup EXIT
+
+umask 077
+mkdir -- "$target" 2>/dev/null || fail "project creation failed"
+created_target=1
+mkdir -- \
+  "$target/inbox" \
+  "$target/draft" \
+  "$target/out" \
+  "$target/.workspace" \
+  "$target/.workspace/source" \
+  "$target/.workspace/records" \
+  "$target/.workspace/tools" \
+  "$target/.workspace/build" \
+  "$target/.workspace/cache" \
+  "$target/.workspace/tmp" \
+  "$target/.workspace/logs" \
+  "$target/.workspace/locks" 2>/dev/null || fail "project creation failed"
+
+head_commit="$(git rev-parse --verify 'HEAD^{commit}' 2>/dev/null)" || \
+  fail "HEAD commit is unavailable"
+[[ "$head_commit" =~ ^[0-9a-f]{40,64}$ ]] || \
+  fail "HEAD commit is unavailable"
+if ! { printf '%s\n' "$head_commit" >"$target/.workspace/system-version"; } 2>/dev/null; then
+  fail "system version could not be recorded"
+fi
+
+relative_target="book-translations/$project_id"
+ignore_match="$(git check-ignore --no-index -v -- "$relative_target/" 2>/dev/null)" || \
+  fail "private ignore check failed"
+ignore_rule="${ignore_match%%$'\t'*}"
+ignore_source="${ignore_rule%%:*}"
+[[ "$ignore_source" == .gitignore ]] || fail "private ignore check failed"
+
+keep_target=1
+printf 'new-book-project: ok\n'

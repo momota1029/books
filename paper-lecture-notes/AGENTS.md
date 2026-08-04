@@ -4,7 +4,7 @@
 
 この `AGENTS.md` は `paper-lecture-notes/` とその配下だけに適用する。書籍翻訳や体系的数学教科書へ固有規則を持ち込まない。上位の指示と衝突する場合は上位を優先し、判断できなければ作業を止めて確認する。
 
-日本語の原稿・訳注・講義ノートは必ず `../JAPANESE_WRITING.md` に従う。ただし、論文理解では原論文の主張と自分の解釈を明確に区別することを共通規範より優先する。
+本 project は親の `../AGENTS.md`、`../JAPANESE_WRITING.md`、`../MATH_PROSE_REVIEW.md` と、repository root で version 管理された `../.system/` tools を shared versioned 正本として直接使う。private copy を正本にせず、案件固有の adapter が必要なら差分と理由だけを private area に記録する。日本語の原稿・訳注・講義ノートは `../JAPANESE_WRITING.md` に従う。ただし、論文理解では原論文の主張と自分の解釈を明確に区別することを共通規範より優先する。
 
 ## 目的
 
@@ -28,15 +28,22 @@ paper-lecture-notes/
 - `inbox/`: ユーザーが原論文、追加指示、画像、データ、コード等を置く受け入れ口。原則 read-only とし、エージェントは中身を編集、改名、移動、削除、上書きしない。権利不明、秘密、巨大なファイルを自動で Git に追加しない。
 - `draft/`: ユーザーが確認する途中成果。PDF と、必要なら `STATUS` や変更要約を置けるが、人手編集する正本にはしない。
 - `out/`: 検証済みかつ承認済みの最終成果だけを置く。ビルドコマンドの直接出力先にしない。
-- `.workspace/`: 通常ユーザーが触らない内部領域。ただし秘密保管場所ではない。`source/` は人が修正する canonical source、`records/` は永続台帳、`tools/` は設定・スクリプト・テンプレート・lockfile の永続領域とする。`build/`、`cache/`、`tmp/`、`logs/` は再生成可能領域だが、これらを含む全作業内容を「永続ローカル」として Git 管理しない。
+- `.workspace/`: 通常ユーザーが触らない内部領域。ただし秘密保管場所ではない。`source/` は人が修正する canonical source、`records/` は永続台帳、`tools/` は案件固有の設定・adapter・lockfile の永続領域とする。`build/`、`cache/`、`tmp/`、`logs/` は再生成可能領域である。Git で扱える範囲は後述の repository mode と権利条件に従う。
 
-`.workspace/` 全体をキャッシュや削除可能領域とみなしてはならない。`.workspace/source/`、`.workspace/records/`、`.workspace/tools/` を clean で削除しない。原論文、データ、コードは Git 管理せず、秘密を含まない参照情報と所在も `.workspace/records/` の永続ローカルデータとして扱う。
+`.workspace/` 全体をキャッシュや削除可能領域とみなしてはならない。`.workspace/source/`、`.workspace/records/`、`.workspace/tools/` を clean で削除しない。原論文、データ、コード、参照情報と所在は案件固有の private data として扱い、private mode でも保存・commit の権利と契約条件を個別に確認する。
+
+複数案件で再利用できる prompt、template、script、build/QA tool、test、fix は案件名、原文、書誌、研究内容、ファイル名、権利情報等を除去して generic 化し、privacy review と共通の検証を通して repository root の public shared system へ upstream する。generic な改善を `.workspace/` だけに残さない。案件固有の data、config、adapter は private area に置く。
 
 ## プライバシーと Git 境界
 
-`inbox/`、`draft/`、`out/`、`.workspace/`（`source/`、`records/`、`tools/` を含む）、project 名、manifest のファイル名・hash、PDF、原稿、講義ノート、台帳、案件固有の tools・config はすべてローカル専用であり、stage、commit、push しない。GitHub へ公開できるのは `AGENTS.md`、共通規範、および generic structure/code として privacy review 済みのものだけである。`out/` の成果物は配布承認済みでも GitHub 公開可能とはみなさない。
+repository mode は親の規則と `../.system/repository-mode` に従う。
 
-`.gitignore` や hook を回避せず、`git add -f` や `--no-verify` を使わない。status、diff、作業報告にも、私的な原文、タイトル、著者、研究内容、ファイル一覧、hash を必要なく転記しない。この構造と ignore 規則は defense in depth にすぎず、secret store、暗号化、アクセス制御の境界ではない。
+- public mode では、`inbox/`、`draft/`、`out/`、`.workspace/` の4 private 領域とその全内容、project 名、manifest のファイル名・hash、PDF、原稿、講義ノート、台帳、案件固有の data・config・tool を stage、commit、push しない。この project 内で Git 対象にできるのは privacy review 済みの `AGENTS.md` だけである。
+- verified private mode では、configured remote の同一性と GitHub visibility が `PRIVATE` と検証できる場合に限り、4 private 領域を含む processing document を commit できる。stage は必ず `../.system/repository-mode add -- <paths>` を使い、直接の `git add` や `git add -f` を使わない。
+- private mode でも credential、secret、token、鍵、契約・ライセンス上保存できない data、権利上 commit できない原資料は commit しない。private remote の存在は取得、保存、利用、配布の権限を与えない。
+- `out/` の配布承認と GitHub repository の visibility・commit 可否は別に判定する。配布承認済みでも GitHub に置けるとは限らず、private GitHub に置けても配布できるとは限らない。
+
+`.gitignore`、`../.system/repository-mode`、hook を回避せず、`git add -f` や `--no-verify` を使わない。status、diff、作業報告にも、私的な原文、タイトル、著者、研究内容、ファイル一覧、hash を必要なく転記しない。この構造と ignore 規則は defense in depth にすぎず、secret store、暗号化、アクセス制御の境界ではない。
 
 ## 永続データの配置
 
@@ -49,7 +56,7 @@ paper-lecture-notes/
 - `.workspace/records/recalculations.*`: 次元、符号、境界、特殊例、数値、小規模再現等の独立検証。
 - `.workspace/records/paper-ingestion-manifest.*`: `inbox/` の検出履歴と、採用した入力スナップショット。
 - `.workspace/records/` のその他の用途別台帳: 学習スコープ、QA、公開判定等。台帳名と形式は案件開始時に決める。
-- `.workspace/tools/`: 採用後のビルド設定、検証・再現スクリプト、テンプレート、依存 lockfile。
+- `.workspace/tools/`: 採用後の案件固有のビルド設定、adapter、依存 lockfile。再利用可能な prompt、template、script、build/QA tool、test、fix の正本はここに置かず public shared system へ upstream する。
 
 ## inbox 受け入れプロトコル
 
@@ -95,8 +102,9 @@ ingestion と読解・執筆を分離し、受け入れが確定したスナッ�
 6. 学習目標と前提知識を示し、動機、直観、定義、主張、導出、例、限界、節末要約、演習の順に教育的に再構成する。
 7. 原論文、解釈、外部知識、未解決の疑問を識別し、不確かな点を推測で埋めない。
 8. 引用精度、主張の強さ、仮定、式・図表対応、理解検証、演習の解答可能性をレビューする。
-9. 受け入れ snapshot を再確認してビルドし、ログと全ページ表示を検証して `draft/` へ公開する。
-10. 権利、ライセンス、配布範囲、不要物混入、直前の inbox 状態を確認し、承認後にだけ `out/` へ昇格する。
+9. 数学を含む範囲では `../MATH_PROSE_REVIEW.md` の全 phase を authoring 担当とは分けた read-only review phase として実施し、finding と再検証結果を private records に保存する。
+10. 受け入れ snapshot を再確認してビルドし、ログと全ページ表示を検証して `draft/` へ公開する。
+11. 権利、ライセンス、配布範囲、不要物混入、直前の inbox 状態を確認し、承認後にだけ `out/` へ昇格する。
 
 ## 論文の分解・記述規約
 
@@ -105,6 +113,7 @@ ingestion と読解・執筆を分離し、受け入れが確定したスナッ�
 - 証明・導出は前提、使用結果、変形根拠、結論までを復元し、省略箇所を推測で確定しない。実験はデータ、分割、前処理、ベースライン、指標、ハイパーパラメータ、乱数、統計、アブレーション、再現条件を整理する。
 - 著者が述べる限界と執筆者が考える追加の限界、原論文による関連研究の位置付けと外部調査による補足を分ける。
 - 本文では少なくとも「原論文」「解釈」「外部知識」「未解決の疑問」「AI 生成の補足」を識別する。AI 生成の説明、例、導出は、出典または独立検証なしに確定本文へ入れない。
+- 原論文著者の claim、引用した既知結果、reviewer の correction、reviewer の interpretation を明確に区別する。誤りが疑われても原 claim を黙って訂正せず、原文、問題、根拠、truth status、採用判断を private review record に残し、correction を著者の主張として扱わない。
 - 直接引用は原文と照合して正確性を保ち、脱落・省略、原文にない強調、翻訳の併記を明示する。引用、要約、翻訳の表示と照合結果を bibliography または claim trace に記録する。
 - 相関を因果へ、限定結果を一般結果へ、実験観察を証明済み命題へ拡張しない。否定的結果、不確実性、信頼区間、評価条件を省略して結論を強めない。
 - 文体、句読点、用語、略語、原語併記、数値・単位、引用形式を用途別台帳で統一する。教育的な要約・簡略化でも条件、限界、反例を落として誤解を招かないよう claim trace と照合する。
@@ -121,6 +130,7 @@ ingestion と読解・執筆を分離し、受け入れが確定したスナッ�
 
 ## 数式・図表・PDF 品質
 
+- 数学を含む成果物は `../MATH_PROSE_REVIEW.md` の独立 read-only review と再レビューを完了する。definition-before-use violation、未追跡の仮定・依存、open blocking finding がいずれも 0 件になるまで `out/` へ promotion しない。scope 除外で対応する場合も、影響とユーザーの明示合意を private record に残して gate を再実行する。
 - 記号は初出で定義し、型、次元、定義域、添字範囲、確率変数か実現値かを必要に応じて示す。原論文と記号を変える場合は対応表と理由を残す。
 - 式変形の仮定、定理、近似、極限操作を明記し、近似と等号を混同しない。式番号、本文参照、演算子、書体を統一する。
 - 図表ごとに出典、元番号、ページ、引用・再描画・改変・新規作成の別、権利を figure trace に記録する。値、軸、単位、凡例、集計条件、番号、キャプション、本文参照、白黒・縮小時の可読性、アクセシビリティ、画像解像度を確認する。
@@ -144,6 +154,7 @@ ingestion と読解・執筆を分離し、受け入れが確定したスナッ�
 - 主張、仮定、定義、手法、証明・導出、実験、限界、関連研究が必要な深さで分解・再構成されている。
 - 原論文、解釈、外部知識、未解決の疑問が区別され、主要内容をページ・式・図表番号まで追跡できる。
 - 引用精度と理解検証が確認済みで、未解決事項と再現上の制約が明示されている。
+- 数学を含む場合は `../MATH_PROSE_REVIEW.md` の独立 read-only review が完了し、definition-before-use violation、未追跡依存、open blocking finding が 0 件である。
 - 合意した手順で再生成でき、警告、参照、目次、数式、フォント、全ページのレイアウト検証を通過している。
 - 採用 inbox snapshot、source revision、検証結果、承認が記録され、最終成果だけが `out/` に明示的に昇格されている。
 - 配布物に秘密情報や権利不明素材がなく、公開・配布条件が確認されている。

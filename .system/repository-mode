@@ -1,0 +1,183 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'USAGE'
+usage:
+  repository-mode status
+  repository-mode public
+  repository-mode private <remote>
+  repository-mode add -- <path>...
+
+Private mode permits staging project data only when the configured push remote
+is verified private. It does not permit credentials, secrets, tokens, keys, or
+rights-restricted material that may not be stored in the repository.
+USAGE
+}
+
+die() {
+  printf 'repository-mode: %s\n' "$1" >&2
+  exit 1
+}
+
+current_mode() {
+  local configured_mode
+  local rc
+
+  configured_mode=$(git config --local --get books.repositoryMode 2>/dev/null) && rc=0 || rc=$?
+  if (( rc == 1 )); then
+    configured_mode=public
+  elif (( rc != 0 )); then
+    die 'repository mode lookup failed'
+  fi
+
+  case "$configured_mode" in
+    public|private)
+      printf '%s\n' "$configured_mode"
+      ;;
+    *)
+      die 'repository mode is invalid'
+      ;;
+  esac
+}
+
+private_remote() {
+  local configured_remote
+  local rc
+
+  configured_remote=$(git config --local --get books.privateRemote 2>/dev/null) && rc=0 || rc=$?
+  if (( rc != 0 )) || [[ -z $configured_remote || $configured_remote == -* ]] ||
+    ! git check-ref-format "refs/remotes/${configured_remote}" >/dev/null 2>&1; then
+    die 'private remote configuration is missing or invalid'
+  fi
+
+  printf '%s\n' "$configured_remote"
+}
+
+private_base() {
+  local configured_base
+  local resolved_base
+  local rc
+
+  configured_base=$(git config --local --get books.privateBase 2>/dev/null) && rc=0 || rc=$?
+  (( rc == 0 )) && [[ -n $configured_base && $configured_base != -* ]] ||
+    die 'private base configuration is missing or invalid'
+  resolved_base=$(git rev-parse --verify --end-of-options "${configured_base}^{commit}" 2>/dev/null) ||
+    die 'private base configuration is missing or invalid'
+  [[ $configured_base == "$resolved_base" ]] ||
+    die 'private base configuration is missing or invalid'
+
+  printf '%s\n' "$resolved_base"
+}
+
+if (( $# == 0 )); then
+  usage
+  exit 2
+fi
+
+if ! repo_root=$(git rev-parse --show-toplevel 2>/dev/null); then
+  die 'not in a Git work tree'
+fi
+cd "$repo_root"
+
+verify_private_remote="${repo_root}/.system/verify-private-remote"
+check_public_tree="${repo_root}/.githooks/check-public-tree"
+command_name=$1
+
+case "$command_name" in
+  status)
+    (( $# == 1 )) || { usage; exit 2; }
+    mode=$(current_mode)
+    printf 'mode=%s\n' "$mode"
+    if [[ $mode == private ]]; then
+      remote_name=$(private_remote)
+      printf 'privateRemote=%s\n' "$remote_name"
+    fi
+    ;;
+
+  private)
+    (( $# == 2 )) || { usage; exit 2; }
+    remote_name=$2
+    [[ -x $verify_private_remote ]] || die 'private remote verifier is unavailable'
+    mode=$(current_mode)
+    if [[ $mode == public ]]; then
+      [[ -x $check_public_tree ]] || die 'public tree checker is unavailable'
+      head_oid=$(git rev-parse --verify 'HEAD^{commit}' 2>/dev/null) ||
+        die 'HEAD is not eligible for private mode'
+      "$check_public_tree" --tree "$head_oid" >/dev/null 2>&1 ||
+        die 'HEAD is not eligible for private mode'
+      "$check_public_tree" --index >/dev/null 2>&1 ||
+        die 'index is not eligible for private mode'
+    else
+      private_base >/dev/null
+    fi
+    "$verify_private_remote" "$remote_name"
+    if [[ $mode == public ]]; then
+      git config --local books.privateBase "$head_oid" 2>/dev/null ||
+        die 'failed to store private base configuration'
+    fi
+    git config --local books.privateRemote "$remote_name" 2>/dev/null ||
+      die 'failed to store private remote configuration'
+    git config --local books.repositoryMode private 2>/dev/null ||
+      die 'failed to enable private mode'
+    printf "repository-mode: private mode enabled for remote '%s'\n" "$remote_name"
+    ;;
+
+  add)
+    (( $# >= 3 )) || { usage; exit 2; }
+    [[ $2 == '--' ]] || { usage; exit 2; }
+    shift 2
+    for path in "$@"; do
+      [[ -n $path ]] || die 'empty staging path is not allowed'
+    done
+
+    mode=$(current_mode)
+    [[ $mode == private ]] || die 'forced staging is allowed only in private mode'
+    private_base >/dev/null
+    remote_name=$(private_remote)
+    [[ -x $verify_private_remote ]] || die 'private remote verifier is unavailable'
+    "$verify_private_remote" "$remote_name"
+    printf '%s\n' \
+      'repository-mode: credentials, secrets, tokens, keys, and rights-restricted material must not be staged.' >&2
+    git add -A -f -- "$@" >/dev/null 2>&1 || die 'staging failed'
+    printf 'repository-mode: requested paths staged in private mode\n'
+    ;;
+
+  public)
+    (( $# == 1 )) || { usage; exit 2; }
+    [[ -x $check_public_tree ]] || die 'public tree checker is unavailable'
+    head_oid=$(git rev-parse --verify 'HEAD^{commit}' 2>/dev/null) ||
+      die 'HEAD is not eligible for public mode'
+    mode=$(current_mode)
+    if [[ $mode == private ]]; then
+      private_base_oid=$(private_base)
+      git merge-base --is-ancestor "$private_base_oid" "$head_oid" >/dev/null 2>&1 ||
+        die 'private history is not eligible for public mode'
+      revision_list=$(git rev-list "${private_base_oid}..${head_oid}" 2>/dev/null) ||
+        die 'private history is not eligible for public mode'
+      while IFS= read -r revision_oid; do
+        [[ -n $revision_oid ]] || continue
+        "$check_public_tree" --tree "$revision_oid" >/dev/null 2>&1 ||
+          die 'private history is not eligible for public mode'
+      done <<<"$revision_list"
+    fi
+    "$check_public_tree" --tree "$head_oid" >/dev/null 2>&1 ||
+      die 'HEAD is not eligible for public mode'
+    "$check_public_tree" --index >/dev/null 2>&1 ||
+      die 'index is not eligible for public mode'
+
+    git config --local --unset-all books.privateRemote >/dev/null 2>&1 && rc=0 || rc=$?
+    (( rc == 0 || rc == 5 )) || die 'failed to clear private remote configuration'
+    git config --local --unset-all books.privateBase >/dev/null 2>&1 && rc=0 || rc=$?
+    (( rc == 0 || rc == 5 )) || die 'failed to clear private base configuration'
+    git config --local books.repositoryMode public 2>/dev/null ||
+      die 'failed to enable public mode'
+    printf 'repository-mode: public mode enabled\n'
+    ;;
+
+  *)
+    usage
+    exit 2
+    ;;
+esac

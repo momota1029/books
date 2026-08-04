@@ -2,4 +2,37 @@
 set -euo pipefail
 
 repo_root=$(git rev-parse --show-toplevel)
-exec "$repo_root/.githooks/check-public-tree" --index
+mode=$(git config --local --get books.repositoryMode || printf 'public')
+
+case "$mode" in
+  public)
+    exec "$repo_root/.githooks/check-public-tree" --index
+    ;;
+  private)
+    if ! private_remote=$(git config --local --get books.privateRemote) ||
+       [[ -z "$private_remote" ]]; then
+      printf 'pre-commit: books.privateRemote is required in private mode.\n' >&2
+      exit 1
+    fi
+
+    if ! private_base=$(git config --local --get books.privateBase 2>/dev/null) ||
+       [[ -z "$private_base" ]]; then
+      printf 'pre-commit: books.privateBase is missing or invalid in private mode.\n' >&2
+      exit 1
+    fi
+    if ! resolved_private_base=$(
+      git rev-parse --verify --end-of-options "${private_base}^{commit}" 2>/dev/null
+    ) || [[ "$resolved_private_base" != "$private_base" ]]; then
+      printf 'pre-commit: books.privateBase is missing or invalid in private mode.\n' >&2
+      exit 1
+    fi
+
+    "$repo_root/.system/verify-private-remote" "$private_remote"
+    printf '%s\n' \
+      'pre-commit: private mode does not permit credentials, secrets, or rights-restricted data.' >&2
+    ;;
+  *)
+    printf 'pre-commit: invalid repository mode; refusing commit.\n' >&2
+    exit 1
+    ;;
+esac

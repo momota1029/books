@@ -7,6 +7,53 @@ if ! repo_root=$(git rev-parse --show-toplevel 2>/dev/null); then
 fi
 cd "$repo_root"
 
+mode=$(git config --local --get books.repositoryMode 2>/dev/null) && mode_status=0 || mode_status=$?
+if (( mode_status == 1 )); then
+  mode=public
+elif (( mode_status != 0 )); then
+  printf 'ERROR: unable to determine repository mode\n' >&2
+  exit 1
+fi
+
+case "$mode" in
+  public)
+    ;;
+  private)
+    if (( $# != 2 )); then
+      printf 'ERROR: private remote verification failed\n' >&2
+      exit 1
+    fi
+    remote_name=$1
+    remote_url=$2
+    if ! configured_remote=$(git config --local --get books.privateRemote 2>/dev/null) ||
+       [[ -z $configured_remote || $remote_name != "$configured_remote" ]]; then
+      printf 'ERROR: private remote verification failed\n' >&2
+      exit 1
+    fi
+    if ! private_base=$(git config --local --get books.privateBase 2>/dev/null) ||
+       [[ -z $private_base ]]; then
+      printf 'ERROR: private base verification failed\n' >&2
+      exit 1
+    fi
+    if ! resolved_private_base=$(
+      git rev-parse --verify --end-of-options "${private_base}^{commit}" 2>/dev/null
+    ) || [[ $resolved_private_base != "$private_base" ]]; then
+      printf 'ERROR: private base verification failed\n' >&2
+      exit 1
+    fi
+    if ! "$repo_root/.system/verify-private-remote" \
+      "$remote_name" "$remote_url" >/dev/null 2>&1; then
+      printf 'ERROR: private remote verification failed\n' >&2
+      exit 1
+    fi
+    exit 0
+    ;;
+  *)
+    printf 'ERROR: invalid repository mode; refusing push\n' >&2
+    exit 1
+    ;;
+esac
+
 checker=$repo_root/.githooks/check-public-tree
 audited_public_baseline=95e03c629bd9ecaebce76ad65d5064e9644356b6
 

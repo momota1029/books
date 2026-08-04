@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# Bootstrap may update local repository configuration. Use .system/doctor for
+# read-only audits.
+
+fail() {
+  printf 'bootstrap: %s\n' "$1" >&2
+  exit 1
+}
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(git -C "$script_dir/.." rev-parse --show-toplevel 2>/dev/null)" || \
+  fail "repository root is unavailable"
+cd -- "$repo_root"
+
+if hooks_path="$(git config --local --get core.hooksPath 2>/dev/null)"; then
+  if [[ "$hooks_path" != .githooks ]]; then
+    git config --local core.hooksPath .githooks
+  fi
+else
+  status=$?
+  if [[ $status -ne 1 ]]; then
+    fail "core.hooksPath could not be read"
+  fi
+  git config --local core.hooksPath .githooks
+fi
+
+if mode="$(git config --local --get books.repositoryMode 2>/dev/null)"; then
+  :
+else
+  status=$?
+  if [[ $status -ne 1 ]]; then
+    fail "repository mode could not be read"
+  fi
+  mode=public
+  git config --local books.repositoryMode "$mode"
+fi
+
+case "$mode" in
+  public)
+    ;;
+  private)
+    if ! private_remote="$(git config --local --get books.privateRemote 2>/dev/null)" || \
+      [[ -z "$private_remote" ]]; then
+      fail "private remote is not configured"
+    fi
+    ;;
+  *)
+    fail "repository mode is invalid"
+    ;;
+esac
+
+doctor="$repo_root/.system/doctor"
+if [[ ! -f "$doctor" || ! -x "$doctor" ]]; then
+  fail "required doctor is unavailable"
+fi
+
+"$doctor"
+printf 'bootstrap: ok\n'

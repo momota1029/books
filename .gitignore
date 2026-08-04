@@ -4,10 +4,9 @@
 **/out/**
 **/.workspace/**
 
-# Real translation projects stay local; retain a public directory placeholder if needed.
-/book-translations/projects/**
-!/book-translations/projects/
-!/book-translations/projects/.gitkeep
+# Book translation projects stay private; add them in private mode only via the repository-mode wrapper.
+/book-translations/*
+!/book-translations/AGENTS.md
 
 # Documents and ebook source material.
 *.pdf

@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+fail() {
+  printf 'doctor: %s\n' "$1" >&2
+  exit 1
+}
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(git -C "$script_dir/.." rev-parse --show-toplevel 2>/dev/null)" || \
+  fail "repository root check failed"
+cd -- "$repo_root"
+
+required_public_files=(
+  AGENTS.md
+  README.md
+  JAPANESE_WRITING.md
+  MATH_PROSE_REVIEW.md
+  .public-files
+  .gitignore
+)
+
+required_scripts=(
+  .githooks/check-public-tree
+  .githooks/pre-commit
+  .githooks/pre-push
+  .system/bootstrap
+  .system/doctor
+  .system/verify-private-remote
+  .system/repository-mode
+  .system/test-repository-mode
+  .system/new-book-project
+)
+
+required_public_paths=(
+  "${required_public_files[@]}"
+  "${required_scripts[@]}"
+  book-translations/AGENTS.md
+  paper-lecture-notes/AGENTS.md
+  self-contained-math-notes/AGENTS.md
+)
+
+for required_path in "${required_public_paths[@]}"; do
+  [[ -f "$required_path" ]] || fail "required public file check failed"
+done
+
+for script_path in "${required_scripts[@]}"; do
+  [[ -x "$script_path" ]] || fail "script executable check failed"
+  bash -n -- "$script_path" >/dev/null 2>&1 || fail "script syntax check failed"
+done
+
+# The offline suite must operate only on its temporary repository and leave
+# the real repository state unchanged.
+.system/test-repository-mode >/dev/null 2>&1 || \
+  fail "offline repository mode test failed"
+
+hooks_path="$(git config --local --get core.hooksPath 2>/dev/null)" && \
+  hooks_status=0 || hooks_status=$?
+if (( hooks_status != 0 )) || [[ "$hooks_path" != .githooks ]]; then
+  fail "hook configuration check failed"
+fi
+
+mode="$(git config --local --get books.repositoryMode 2>/dev/null)" && \
+  mode_status=0 || mode_status=$?
+(( mode_status == 0 )) || fail "repository mode check failed"
+
+case "$mode" in
+  public)
+    head_oid=$(git rev-parse --verify 'HEAD^{commit}' 2>/dev/null) || \
+      fail "public tree check failed"
+    .githooks/check-public-tree --tree "$head_oid" >/dev/null 2>&1 || \
+      fail "public tree check failed"
+    ;;
+  private)
+    private_remote="$(git config --local --get books.privateRemote 2>/dev/null)" && \
+      remote_status=0 || remote_status=$?
+    if (( remote_status != 0 )) || [[ -z "$private_remote" ]]; then
+      fail "private repository check failed"
+    fi
+    .system/verify-private-remote "$private_remote" >/dev/null 2>&1 || \
+      fail "private repository check failed"
+    ;;
+  *)
+    fail "repository mode check failed"
+    ;;
+esac
+
+for required_path in "${required_public_paths[@]}"; do
+  grep -Fqx -- "$required_path" .public-files || \
+    fail "public allowlist check failed"
+done
+
+private_probes=(
+  book-translations/__doctor_private_probe__/inbox/probe.pdf
+  paper-lecture-notes/inbox/probe.pdf
+  self-contained-math-notes/.workspace/source/probe.tex
+)
+
+for probe_path in "${private_probes[@]}"; do
+  git check-ignore --no-index -q -- "$probe_path" >/dev/null 2>&1 && \
+    ignore_status=0 || ignore_status=$?
+  (( ignore_status == 0 )) || fail "private ignore check failed"
+done
+
+for required_path in "${required_public_paths[@]}"; do
+  git check-ignore --no-index -q -- "$required_path" >/dev/null 2>&1 && \
+    ignore_status=0 || ignore_status=$?
+  case "$ignore_status" in
+    1)
+      ;;
+    0)
+      fail "public structure ignore check failed"
+      ;;
+    *)
+      fail "public structure ignore check failed"
+      ;;
+  esac
+done
+
+printf 'doctor: ok\n'

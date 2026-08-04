@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+export LC_ALL=C
+export GIT_CONFIG_GLOBAL=/dev/null
+export GIT_CONFIG_SYSTEM=/dev/null
+export GIT_TERMINAL_PROMPT=0
+
+source_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+test_root=$(mktemp -d)
+
+cleanup() {
+  if [[ -n ${test_root:-} && -d $test_root ]]; then
+    rm -rf -- "$test_root"
+  fi
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+fail() {
+  printf 'not ok %s - %s\n' "$1" "$2" >&2
+  exit 1
+}
+
+pass() {
+  printf 'ok %s - %s\n' "$1" "$2"
+}
+
+expect_success() {
+  "$@" >/dev/null 2>&1
+}
+
+expect_failure() {
+  if "$@" >/dev/null 2>&1; then
+    return 1
+  fi
+}
+
+repo_dir=$test_root/repository
+fake_bin=$test_root/bin
+mkdir -p "$repo_dir/.system" "$repo_dir/.githooks" "$fake_bin"
+
+cp -- "$source_root/.system/verify-private-remote" \
+  "$source_root/.system/repository-mode" "$repo_dir/.system/"
+cp -- "$source_root/.githooks/check-public-tree" \
+  "$source_root/.githooks/pre-commit" \
+  "$source_root/.githooks/pre-push" "$repo_dir/.githooks/"
+chmod +x "$repo_dir/.system/verify-private-remote" \
+  "$repo_dir/.system/repository-mode" \
+  "$repo_dir/.githooks/check-public-tree" \
+  "$repo_dir/.githooks/pre-commit" \
+  "$repo_dir/.githooks/pre-push"
+
+cat >"$fake_bin/gh" <<'FAKE_GH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if (( $# != 7 )) || [[ $1 != repo || $2 != view || $4 != --json ||
+  $5 != visibility,nameWithOwner || $6 != --jq ||
+  $7 != '[.visibility, .nameWithOwner] | @tsv' ]]; then
+  exit 2
+fi
+
+case ${FAKE_VISIBILITY:-} in
+  PRIVATE|PUBLIC) ;;
+  *) exit 2 ;;
+esac
+
+name_with_owner=${3#*/}
+if [[ $name_with_owner != */* || $name_with_owner == */*/* ]]; then
+  exit 2
+fi
+
+printf '%s\t%s\n' "$FAKE_VISIBILITY" "$name_with_owner"
+FAKE_GH
+chmod +x "$fake_bin/gh"
+export PATH="$fake_bin:/usr/bin:/bin"
+
+cat >"$repo_dir/.public-files" <<'ALLOWLIST'
+.public-files
+.gitignore
+.githooks/check-public-tree
+.githooks/pre-commit
+.githooks/pre-push
+.system/repository-mode
+.system/verify-private-remote
+public.txt
+ALLOWLIST
+printf '/private/\n' >"$repo_dir/.gitignore"
+printf 'public fixture\n' >"$repo_dir/public.txt"
+
+git init -q "$repo_dir"
+cd "$repo_dir"
+git config --local user.name 'Repository Mode Test'
+git config --local user.email 'repository-mode@example.invalid'
+git add -- .public-files .gitignore .githooks .system public.txt
+git commit -q -m 'initial public tree'
+
+remote_name=storage
+remote_url=https://github.com/example-owner/example-repository.git
+git remote add "$remote_name" "$remote_url"
+
+status_output=$(.system/repository-mode status 2>/dev/null) ||
+  fail 1 'default status'
+if [[ $status_output == 'mode=public' ]] &&
+  ! git config --local --get books.repositoryMode >/dev/null 2>&1; then
+  pass 1 'default status'
+else
+  fail 1 'default status'
+fi
+
+if expect_failure env FAKE_VISIBILITY=PUBLIC \
+  .system/repository-mode private "$remote_name" &&
+  [[ $(.system/repository-mode status 2>/dev/null) == 'mode=public' ]]; then
+  pass 2 'public visibility rejection'
+else
+  fail 2 'public visibility rejection'
+fi
+
+base_oid=$(git rev-parse --verify 'HEAD^{commit}')
+if expect_success env FAKE_VISIBILITY=PRIVATE \
+  .system/repository-mode private "$remote_name" &&
+  [[ $(git config --local --get books.repositoryMode) == private ]] &&
+  [[ $(git config --local --get books.privateRemote) == "$remote_name" ]] &&
+  [[ $(git config --local --get books.privateBase) == "$base_oid" ]]; then
+  pass 3 'private mode metadata'
+else
+  fail 3 'private mode metadata'
+fi
+
+mkdir -p private
+printf 'temporary fixture\n' >private/data.txt
+if git check-ignore -q -- private/data.txt &&
+  expect_success env FAKE_VISIBILITY=PRIVATE \
+    .system/repository-mode add -- private/data.txt &&
+  [[ $(git diff --cached --name-only --diff-filter=A) == private/data.txt ]]; then
+  pass 4 'ignored content staging'
+else
+  fail 4 'ignored content staging'
+fi
+
+if expect_success env FAKE_VISIBILITY=PRIVATE .githooks/pre-commit &&
+  expect_failure env FAKE_VISIBILITY=PUBLIC .githooks/pre-commit; then
+  pass 5 'commit guard visibility'
+else
+  fail 5 'commit guard visibility'
+fi
+
+git commit -q -m 'temporary content'
+git rm -q -- private/data.txt
+git commit -q -m 'remove temporary content'
+if expect_failure .system/repository-mode public &&
+  [[ $(git config --local --get books.repositoryMode) == private ]]; then
+  pass 6 'history contamination rejection'
+else
+  fail 6 'history contamination rejection'
+fi
+
+git switch -q -c public-base "$base_oid"
+if expect_success .system/repository-mode public &&
+  [[ $(git config --local --get books.repositoryMode) == public ]] &&
+  ! git config --local --get books.privateRemote >/dev/null 2>&1 &&
+  ! git config --local --get books.privateBase >/dev/null 2>&1; then
+  pass 7 'clean baseline restoration'
+else
+  fail 7 'clean baseline restoration'
+fi
+
+git config --add "remote.${remote_name}.pushurl" "$remote_url"
+git config --add "remote.${remote_name}.pushurl" \
+  https://github.com/example-owner/example-mirror.git
+if expect_failure env FAKE_VISIBILITY=PRIVATE \
+  .system/verify-private-remote "$remote_name" &&
+  expect_failure env FAKE_VISIBILITY=PRIVATE \
+    .system/repository-mode private "$remote_name"; then
+  pass 8 'ambiguous push URL rejection'
+else
+  fail 8 'ambiguous push URL rejection'
+fi
+git config --unset-all "remote.${remote_name}.pushurl"
+
+expect_success env FAKE_VISIBILITY=PRIVATE \
+  .system/repository-mode private "$remote_name" ||
+  fail 9 'push guard verification'
+if expect_success env FAKE_VISIBILITY=PRIVATE \
+  .githooks/pre-push "$remote_name" "$remote_url" </dev/null &&
+  expect_failure env FAKE_VISIBILITY=PUBLIC \
+    .githooks/pre-push "$remote_name" "$remote_url" </dev/null &&
+  expect_failure env FAKE_VISIBILITY=PRIVATE \
+    .githooks/pre-push alternate "$remote_url" </dev/null; then
+  pass 9 'push guard verification'
+else
+  fail 9 'push guard verification'
+fi
+
+# Public-mode pre-push is intentionally out of scope here: the copied hook has
+# a source-repository-specific audited baseline OID that this synthetic history
+# cannot contain. That path has been reviewed separately in the source repo.
+
+git config --local books.repositoryMode invalid
+if expect_failure .system/repository-mode status &&
+  expect_failure .githooks/pre-commit &&
+  expect_failure .githooks/pre-push "$remote_name" "$remote_url" </dev/null; then
+  pass 10 'invalid mode rejection'
+else
+  fail 10 'invalid mode rejection'
+fi

@@ -16,6 +16,32 @@
 
 会話だけで完結する質問や、管理上の判断には Codex MCP を使わなくてよい。リポジトリに関する事実確認や変更が必要になった時点で委譲する。
 
+## 共有品質と clone 契約
+
+このリポジトリは、翻訳・執筆 system として clone され、継続的に保守される。
+複数案件で有効な規約、prompt、template、script、build/QA tool、test、修正は private project に閉じ込めず、案件情報を除去して generic 化し、privacy review 後に公開共有領域へ upstream する。
+private に残すのは案件固有の data と config だけとし、generic な改善を project の `.workspace/` だけに置かない。
+
+clone 後は、制作を始める前に必ず次を実行する。
+
+```sh
+.system/bootstrap && .system/doctor
+```
+
+どちらかが失敗した場合は制作を開始せず、原因を解消して再実行する。
+各 project は親の `AGENTS.md`、`JAPANESE_WRITING.md`、`MATH_PROSE_REVIEW.md` と、リポジトリで version 管理された `.system/` tools を直接使う。
+private copy を正本にせず、案件固有の adapter が必要なら差分と理由だけを project の private area に記録する。
+案件間の同品質は、同じ versioned 規約、同じ quality gates、同じ promotion 条件を適用して担保する。
+tool は検査の再現性と漏れの低減に使うが、数学的・翻訳上・権利上の内容の正しさを絶対に保証するものとは扱わない。
+
+## project の配置と継承
+
+制作領域は、その領域に置かれた共有 `AGENTS.md` と本ファイルを継承し、案件ごとの private copy を正本にしない。
+新しい書籍翻訳 project は `.system/new-book-project <project-id>` で `book-translations/<project-id>` に作成する。`book-translations/AGENTS.md` が各 project に適用され、project-local `AGENTS.md` は生成しない。
+論文講義ノートや self-contained 数学講義ノートを含むその他の制作領域は、それぞれの現行構造と領域直下の `AGENTS.md` に従う。`inbox/`、`draft/`、`out/`、`.workspace/` の役割、受け入れ、build、promotion、権利管理の詳細は、最も近い適用対象の `AGENTS.md` に従う。
+領域別の規約は本ファイルを上書きせず、親の公開境界、共有品質、日本語文章規範、数学文章レビュー、versioned tools の要件を継承する。
+project 名と案件内容は repository mode にかかわらず、外部共有の可否を個別に判定する。
+
 ## 再帰委譲の防止
 
 管理者は、新しい Codex MCP セッションへ渡すプロンプトの先頭に必ず次を置く。
@@ -92,6 +118,9 @@ RISKS: 残る懸念、判断待ち、または none
 - レビューの修正は、原則として元の実装スレッドへ `codex-reply` で戻す。
 - 並行実行は、対象ファイルや状態が衝突しない独立タスクに限る。競合し得る場合は直列化する。
 - 完了条件を満たした証拠がない報告は完了として扱わない。
+- 数学を含む翻訳、論文、ノートは、`out/` への promotion 前に `MATH_PROSE_REVIEW.md` の全 phase を完了する。
+- 数学文章レビューは原則として authoring 担当と分けた read-only review phase とし、レビュー記録は project の private area に保存する。
+- blocking finding が解消されるか、scope 除外などの対応についてユーザーの明示合意が記録され、open blocking が 0 件になるまで `out/` へ promotion しない。
 
 ## 安全性と Git
 
@@ -104,17 +133,35 @@ RISKS: 残る懸念、判断待ち、または none
 - PR 作成はユーザーが明示的に求めた場合にだけ行う。
 - 秘密情報や巨大な生成物をコミットしない。公開前には委譲先に対象と差分を確認させる。
 
-## 公開リポジトリ境界
+## repository mode と Git 境界
 
-- GitHub へ上げてよいのは、構造、`AGENTS.md`、共通規約、汎用コード、汎用設定だけとする。
-- 作業内容はすべてローカル専用とする。これには、原資料、購入書籍、論文・研究内容、原稿、翻訳、ノート、台帳、manifest（ファイル名と hash を含む）、OCR・抽出結果、画像、ログ、PDF、プロジェクト名、案件固有の設定・スクリプト・メタデータが含まれる。
-- 任意の階層にある `inbox`、`draft`、`out`、`.workspace` と、`book-translations/projects/<project-id>` は Git で管理しない。
-- `.workspace` には永続データも含まれ得るが、すべてローカル専用とする。
-- `out` 内で配布可能な成果物であっても、GitHub で公開可能とはみなさない。
-- `.gitignore` を過信しない。stage 前と push 前に、追跡対象を許可された公開ファイルの allowlist と照合する。
-- `git add -f` と、hook を `--no-verify` で回避する操作を禁止する。
-- commit または push の担当者は、差分本文に私的内容がないことに加え、ファイル名だけでも情報が漏えいしないことを確認する。
-- private 内容を一度でも commit または push した疑いがあれば、直ちに作業を停止してユーザーへ報告する。通常の push による削除だけでは履歴から消えないため、明示的な許可なしに履歴改変を行わない。
+repository mode は local Git config の `books.repositoryMode` に `public` または `private` を設定して管理する。
+未設定の場合は `public` として扱い、`public` と `private` 以外の不正値はエラーとして fail closed にする。
+mode の切り替え、stage、pre-commit、pre-push の各時点で `.system/repository-mode` と hook による検証を通し、bootstrap や hook を迂回しない。
+
+### public mode
+
+- commit・push できるのは `.public-files` allowlist に一致し、privacy review 済みの構造、`AGENTS.md`、共通規約、generic な code・config・tool・test だけとする。
+- 原資料、購入書籍、論文・研究内容、原稿、翻訳、ノート、台帳、manifest（ファイル名と hash を含む）、OCR・抽出結果、画像、ログ、PDF、project 名、案件固有の設定・script・metadata は commit・push しない。
+- 任意の階層にある `inbox/`、`draft/`、`out/`、`.workspace/` と案件 directory は public mode では commit しない。`.workspace/` に永続データがあっても同じである。
+- `.gitignore` を過信せず、stage 前、commit 前、push 前に追跡対象と履歴を `.public-files` に照合する。
+
+### private mode
+
+- `.system/repository-mode private <remote>` は、指定 remote を解決し、GitHub repository の visibility が `PRIVATE` であることを確認できた場合だけ mode を切り替える。
+- query、authentication、network、parse の失敗、non-GitHub remote、未知の URL 形式、visibility が `PRIVATE` 以外の場合は fail closed にする。
+- private 作業内容の stage は `.system/repository-mode add -- <paths>` だけを使う。直接の `git add`、`git add -f`、hook の `--no-verify` による回避を禁止する。
+- mode 切り替え、`add`、pre-commit、pre-push のたびに private remote の同一性と visibility を再検証する。
+- 実際に push する remote は configured private remote と完全に一致し、その時点でも GitHub visibility が `PRIVATE` でなければならない。
+- private mode では `inbox/`、`draft/`、`out/`、`.workspace/`、案件 directory を commit できる。ただし credential、secret、token、鍵、および契約・ライセンス・権利上 commit 自体が許されない data は含めない。
+- private remote の存在は内容の取得・保存・配布権限を与えない。`out/` の配布可否と GitHub visibility は別に審査する。
+
+### mode の移行と共有
+
+- public mode へ戻す前に HEAD の全追跡ファイルと必要な履歴を `.public-files` allowlist に照合し、準拠しなければ切り替えを拒否する。
+- private work を含む history は public remote へ送らない。private 内容を一度でも public remote へ push した疑いがあれば直ちに停止して報告し、明示的な許可なしに履歴改変しない。
+- private project から得た generic な system 改善は private remote だけに留めず、案件情報を除去して privacy review を通したうえで public 側へ upstream する。
+- commit または push の担当者は、差分本文だけでなくファイル名と履歴にも private 情報がないことを確認する。
 
 ## MCP が利用できない場合
 
