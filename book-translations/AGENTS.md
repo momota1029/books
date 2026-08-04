@@ -97,7 +97,6 @@ ingestion と翻訳・執筆を分離し、受け入れが確定した snapshot 
 
 ## ツールチェーンと latexmk 契約
 
-- 日本語書籍翻訳の TeX PDF draft toolchain は、原則として upLaTeX + dvipdfmx を標準とし、latexmk を利用してよい。別の toolchain は、案件要件が必要とする場合、またはユーザーが明示的に決定した場合に限り採用する。
 - 既存案件では合意済みの toolchain を優先し、engine や toolchain を無断で変更しない。合意前に大量の template や依存を追加しない。
 - LaTeX/latexmk を採用する案件では、local latexmk 4.83 の `-outdir`、`-auxdir`、`-emulate-aux-dir` 相当の分離機能を利用できる。`out_dir` 相当を `.workspace/build/out`、`aux_dir` 相当を `.workspace/build/aux` とする。
 - latexmk が生成する PDF、DVI、SyncTeX、log、aux、fls、fdb 等は、まず全て `.workspace/build/` 配下へ置く。`draft/` や `out/` を latexmk の直接 outdir にしない。
