@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  printf 'Usage: %s --index\n       %s --tree <oid>\n' "$0" "$0" >&2
+}
+
+if ! repo_root=$(git rev-parse --show-toplevel 2>/dev/null); then
+  printf 'ERROR: not inside a Git working tree\n' >&2
+  exit 2
+fi
+cd "$repo_root"
+
+mode=${1:-}
+tree_oid=
+case "$mode" in
+  --index)
+    if (( $# != 1 )); then
+      usage
+      exit 2
+    fi
+    allow_spec=:.public-files
+    ;;
+  --tree)
+    if (( $# != 2 )); then
+      usage
+      exit 2
+    fi
+    tree_oid=$2
+    if [[ ! $tree_oid =~ ^[0-9a-fA-F]{4,64}$ ]] ||
+       ! git cat-file -e "${tree_oid}^{tree}" 2>/dev/null; then
+      printf 'ERROR: --tree requires a valid commit or tree oid\n' >&2
+      exit 2
+    fi
+    allow_spec="${tree_oid}:.public-files"
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac
+
+tmp_dir=$(mktemp -d)
+cleanup() {
+  rm -rf -- "$tmp_dir"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+allow_file=$tmp_dir/allowlist
+paths_file=$tmp_dir/paths
+
+if ! git cat-file -e "$allow_spec" 2>/dev/null ||
+   ! git show "$allow_spec" >"$allow_file" 2>/dev/null; then
+  printf 'ERROR: .public-files is missing or unreadable in the selected state\n' >&2
+  exit 1
+fi
+
+declare -A allowed=()
+while IFS= read -r allowed_path || [[ -n $allowed_path ]]; do
+  [[ -z $allowed_path || $allowed_path == \#* ]] && continue
+  allowed["$allowed_path"]=1
+done <"$allow_file"
+
+if [[ $mode == --index ]]; then
+  if ! git ls-files --cached -z >"$paths_file"; then
+    printf 'ERROR: unable to enumerate paths in the index\n' >&2
+    exit 1
+  fi
+else
+  if ! git ls-tree -r --name-only -z "$tree_oid" >"$paths_file"; then
+    printf 'ERROR: unable to enumerate paths in the selected tree\n' >&2
+    exit 1
+  fi
+fi
+
+unapproved=0
+while IFS= read -r -d '' tracked_path; do
+  if [[ ! ${allowed["$tracked_path"]+present} ]]; then
+    printf 'ERROR: unapproved tracked path: %q\n' "$tracked_path" >&2
+    unapproved=1
+  fi
+done <"$paths_file"
+
+if (( unapproved )); then
+  exit 1
+fi

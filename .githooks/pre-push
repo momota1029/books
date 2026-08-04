@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if ! repo_root=$(git rev-parse --show-toplevel 2>/dev/null); then
+  printf 'ERROR: not inside a Git working tree\n' >&2
+  exit 2
+fi
+cd "$repo_root"
+
+checker=$repo_root/.githooks/check-public-tree
+audited_public_baseline=95e03c629bd9ecaebce76ad65d5064e9644356b6
+
+tmp_dir=$(mktemp -d)
+cleanup() {
+  rm -rf -- "$tmp_dir"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+is_zero_oid() {
+  [[ $1 =~ ^0+$ ]]
+}
+
+while IFS=' ' read -r local_ref local_oid remote_ref remote_oid extra; do
+  if [[ -z ${local_ref:-} || -z ${local_oid:-} ||
+        -z ${remote_ref:-} || -z ${remote_oid:-} || -n ${extra:-} ]]; then
+    printf 'ERROR: malformed pre-push input\n' >&2
+    exit 2
+  fi
+  if [[ ! $local_oid =~ ^[0-9a-fA-F]+$ || ! $remote_oid =~ ^[0-9a-fA-F]+$ ]]; then
+    printf 'ERROR: malformed object id in pre-push input\n' >&2
+    exit 2
+  fi
+
+  if is_zero_oid "$local_oid"; then
+    continue
+  fi
+
+  commits_file=$tmp_dir/commits
+  if is_zero_oid "$remote_oid"; then
+    # History before this baseline was audited when the policy was introduced;
+    # reject unrelated histories because they have no audited public baseline.
+    if ! git cat-file -e "${audited_public_baseline}^{commit}" 2>/dev/null; then
+      printf 'ERROR: audited public baseline is unavailable\n' >&2
+      exit 1
+    fi
+    if ! git merge-base --is-ancestor "$audited_public_baseline" "$local_oid"; then
+      printf 'ERROR: new remote ref does not descend from the audited public baseline\n' >&2
+      exit 1
+    fi
+    if ! git rev-list "${audited_public_baseline}..${local_oid}" >"$commits_file"; then
+      printf 'ERROR: unable to enumerate commits for a new remote ref\n' >&2
+      exit 1
+    fi
+  elif ! git rev-list "${remote_oid}..${local_oid}" >"$commits_file"; then
+    printf 'ERROR: unable to enumerate commits for an updated remote ref\n' >&2
+    exit 1
+  fi
+
+  while IFS= read -r commit_oid; do
+    [[ -z $commit_oid ]] && continue
+    "$checker" --tree "$commit_oid"
+  done <"$commits_file"
+done

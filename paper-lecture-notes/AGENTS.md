@@ -4,6 +4,8 @@
 
 この `AGENTS.md` は `paper-lecture-notes/` とその配下だけに適用する。書籍翻訳や体系的数学教科書へ固有規則を持ち込まない。上位の指示と衝突する場合は上位を優先し、判断できなければ作業を止めて確認する。
 
+日本語の原稿・訳注・講義ノートは必ず `../JAPANESE_WRITING.md` に従う。ただし、論文理解では原論文の主張と自分の解釈を明確に区別することを共通規範より優先する。
+
 ## 目的
 
 論文を自分で説明・検証できる水準まで咀嚼し、主張、仮定、定義、手法、証明・導出、実験、限界、関連研究を教育的な順序に再構成した講義ノート PDF を作る。原論文、執筆者の解釈、外部知識、未解決の疑問を区別し、各説明を原論文または追加出典まで追跡可能にする。
@@ -26,9 +28,15 @@ paper-lecture-notes/
 - `inbox/`: ユーザーが原論文、追加指示、画像、データ、コード等を置く受け入れ口。原則 read-only とし、エージェントは中身を編集、改名、移動、削除、上書きしない。権利不明、秘密、巨大なファイルを自動で Git に追加しない。
 - `draft/`: ユーザーが確認する途中成果。PDF と、必要なら `STATUS` や変更要約を置けるが、人手編集する正本にはしない。
 - `out/`: 検証済みかつ承認済みの最終成果だけを置く。ビルドコマンドの直接出力先にしない。
-- `.workspace/`: 通常ユーザーが触らない内部領域。ただし秘密保管場所ではない。`source/` は人が修正する canonical source、`records/` は永続台帳、`tools/` は設定・スクリプト・テンプレート・lockfile を置く永続領域で、原則 Git 管理する。`build/`、`cache/`、`tmp/`、`logs/` だけを再生成可能な Git 対象外領域とする。
+- `.workspace/`: 通常ユーザーが触らない内部領域。ただし秘密保管場所ではない。`source/` は人が修正する canonical source、`records/` は永続台帳、`tools/` は設定・スクリプト・テンプレート・lockfile の永続領域とする。`build/`、`cache/`、`tmp/`、`logs/` は再生成可能領域だが、これらを含む全作業内容を「永続ローカル」として Git 管理しない。
 
-`.workspace/` 全体をキャッシュや削除可能領域とみなしてはならない。`.workspace/source/`、`.workspace/records/`、`.workspace/tools/` を clean で削除しない。原論文、データ、コードをリポジトリ管理できない場合は、秘密を含まない参照情報と所在だけを `.workspace/records/` に残す。
+`.workspace/` 全体をキャッシュや削除可能領域とみなしてはならない。`.workspace/source/`、`.workspace/records/`、`.workspace/tools/` を clean で削除しない。原論文、データ、コードは Git 管理せず、秘密を含まない参照情報と所在も `.workspace/records/` の永続ローカルデータとして扱う。
+
+## プライバシーと Git 境界
+
+`inbox/`、`draft/`、`out/`、`.workspace/`（`source/`、`records/`、`tools/` を含む）、project 名、manifest のファイル名・hash、PDF、原稿、講義ノート、台帳、案件固有の tools・config はすべてローカル専用であり、stage、commit、push しない。GitHub へ公開できるのは `AGENTS.md`、共通規範、および generic structure/code として privacy review 済みのものだけである。`out/` の成果物は配布承認済みでも GitHub 公開可能とはみなさない。
+
+`.gitignore` や hook を回避せず、`git add -f` や `--no-verify` を使わない。status、diff、作業報告にも、私的な原文、タイトル、著者、研究内容、ファイル一覧、hash を必要なく転記しない。この構造と ignore 規則は defense in depth にすぎず、secret store、暗号化、アクセス制御の境界ではない。
 
 ## 永続データの配置
 

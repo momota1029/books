@@ -1,0 +1,31 @@
+# Privacy defense in depth only; ignore rules are not encryption or an access-control boundary.
+**/inbox/**
+**/draft/**
+**/out/**
+**/.workspace/**
+
+# Real translation projects stay local; retain a public directory placeholder if needed.
+/book-translations/projects/**
+!/book-translations/projects/
+!/book-translations/projects/.gitkeep
+
+# Documents and ebook source material.
+*.pdf
+*.epub
+*.mobi
+*.azw
+*.azw3
+*.djvu
+
+# LaTeX auxiliary and build logs.
+*.aux
+*.log
+*.fls
+*.fdb_latexmk
+*.synctex
+*.synctex.gz
+*.bbl
+*.blg
+*.toc
+*.out
+*.run.xml

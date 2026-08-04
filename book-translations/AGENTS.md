@@ -4,6 +4,8 @@
 
 この `AGENTS.md` は `book-translations/` とその配下だけに適用する。書籍翻訳以外へ固有規則を持ち込まない。上位の指示と衝突する場合は上位を優先し、判断できなければ作業を止めて確認する。
 
+日本語の原稿・訳注・編集文は必ず `../JAPANESE_WRITING.md` に従う。ただし、書籍翻訳では原文への忠実性、modality、著者の声の保持を共通規範より優先する。
+
 ## 目的
 
 利用権限を確認できる複数の英語書籍を日本語へ翻訳し、出典との対応を保って教育的・論理的に再編成し、単一の PDF として読める成果物を作る。正確な翻訳、要約、再構成、訳注、編者補足を区別し、各記述を原資料まで追跡可能にする。
@@ -12,80 +14,100 @@
 
 ## ワークスペースの契約
 
-ユーザーから見える作業領域は次の4つに固定する。管理用の本 `AGENTS.md` だけはトップに置く。案件固有の必要が生じても、トップ階層を増やさず、まず `.workspace/` 内の既存区分へ配置する。
+1 project は、利用権限を確認できる複数の英語書籍をまとめて1つの PDF を制作する単位である。複数 project を同時進行できるが、各 project は完全に分離する。新しい project はローカルで `projects/<project-id>/inbox/`、`projects/<project-id>/draft/`、`projects/<project-id>/out/`、`projects/<project-id>/.workspace/` の4領域を作成し、project directory とその内容を Git へ stage しない。
 
 ```text
 book-translations/
   AGENTS.md
-  inbox/
-  draft/
-  out/
-  .workspace/
+  projects/
+    .gitkeep
+    <project-id>/
+      inbox/
+      draft/
+      out/
+      .workspace/
+        source/
+        records/
+        tools/
+        build/
+        cache/
+        tmp/
+        logs/
 ```
 
-- `inbox/`: ユーザーが原資料、追加指示、画像、データ等を置く受け入れ口。原則 read-only とし、エージェントは中身を編集、改名、移動、削除、上書きしない。権利不明、秘密、巨大なファイルを自動で Git に追加しない。
-- `draft/`: ユーザーが確認する途中成果。PDF と、必要なら `STATUS` や変更要約を置けるが、人手編集する正本にはしない。
-- `out/`: 検証済みかつ承認済みの最終成果だけを置く。ビルドコマンドの直接出力先にしない。
-- `.workspace/`: 通常ユーザーが触らない内部領域。ただし秘密保管場所ではない。`source/` は人が修正する canonical source、`records/` は永続台帳、`tools/` は設定・スクリプト・テンプレート・lockfile を置く永続領域で、原則 Git 管理する。`build/`、`cache/`、`tmp/`、`logs/` だけを再生成可能な Git 対象外領域とする。
+`project-id` と project directory はローカル専用であり Git 管理を禁止する。`projects/.gitkeep` だけを公開可能な構造 marker とする。
 
-`.workspace/` 全体をキャッシュや削除可能領域とみなしてはならない。`.workspace/source/`、`.workspace/records/`、`.workspace/tools/` を clean で削除しない。原資料をリポジトリ管理できない場合は、秘密を含まない参照情報と所在だけを `.workspace/records/` に残す。
+- `projects/<project-id>/inbox/`: ユーザーが原資料、追加指示、画像、データ等を置く受け入れ口。原則 read-only とし、エージェントは中身を編集、改名、移動、削除、上書きしない。権利不明、秘密、巨大なファイルを自動で Git に追加しない。
+- `projects/<project-id>/draft/`: ユーザーが確認する途中成果。PDF と、必要なら `STATUS` や変更要約を置けるが、人手編集する正本にはしない。
+- `projects/<project-id>/out/`: 検証済みかつ承認済みの最終成果だけを置く。ビルドコマンドの直接出力先にしない。
+- `projects/<project-id>/.workspace/`: project ごとの内部領域。ただし秘密保管場所ではない。`source/` は人が修正する canonical source、`records/` は永続台帳、`tools/` は設定・スクリプト・テンプレート・lockfile の永続領域とする。`build/`、`cache/`、`tmp/`、`logs/` は再生成可能領域だが、これらを含む全作業内容を「永続ローカル」として Git 管理しない。
+
+`projects/<project-id>/.workspace/` 全体をキャッシュや削除可能領域とみなしてはならない。`projects/<project-id>/.workspace/source/`、`projects/<project-id>/.workspace/records/`、`projects/<project-id>/.workspace/tools/` を clean で削除しない。canonical source、manifest、用語、権利、build は用途別に独立させ、混在させない。
+
+project 間で inbox、manifest、build、draft、out、lock、state を共有しない。並行作業の単位は project とし、同一 project 内で同じ canonical source または manifest を更新する処理は直列化するか project-local lock を使う。ある project の inbox 追加によって他 project の状態や成果を無効化してはならない。project 横断で資料や訳文を再利用する場合は権利と版を再評価し、黙った symlink や共有可変 cache を使わない。
+
+## プライバシーと Git 境界
+
+`projects/<project-id>/inbox/`、`projects/<project-id>/draft/`、`projects/<project-id>/out/`、`projects/<project-id>/.workspace/`（`source/`、`records/`、`tools/` を含む）、project 名、manifest のファイル名・hash、PDF、原稿、台帳、案件固有の tools・config はすべてローカル専用であり、stage、commit、push しない。GitHub へ公開できるのは `AGENTS.md`、共通規範、および generic structure/code として privacy review 済みのものだけである。`projects/<project-id>/out/` の成果物は配布承認済みでも GitHub 公開可能とはみなさない。
+
+`.gitignore` や hook を回避せず、`git add -f` や `--no-verify` を使わない。status、diff、作業報告にも、私的な原文、タイトル、著者、研究内容、ファイル一覧、hash を必要なく転記しない。この構造と ignore 規則は defense in depth にすぎず、secret store、暗号化、アクセス制御の境界ではない。
 
 ## 永続データの配置
 
-- `.workspace/source/`: 翻訳・統合本文、章構成、訳注、索引、成果用に作成した図表等の canonical source。
-- `.workspace/records/source-map.*`: Source ID、書名、版、章節、ページと統合先の章節、扱い種別を双方向に追える対応表。
-- `.workspace/records/rights-ledger.*`: 書誌、版、出版社、年、ISBN、URL、参照日、入手元、ライセンス・許諾、利用根拠、引用・翻訳・翻案・図版・公開・配布条件、個人情報・秘密・契約制限の判定。
-- `.workspace/records/glossary.*`: 原語、候補訳、採用訳、例外、初出、記号、表記規則。
-- `.workspace/records/translation-decisions.*`: 要約、再構成、訳注、矛盾、欠落、未確定事項、照合結果と判断根拠。
-- `.workspace/records/source-ingestion-manifest.*`: `inbox/` の検出履歴と、採用した入力スナップショット。
-- `.workspace/records/` のその他の用途別台帳: スタイル、図表、QA、公開判定等。台帳名と形式は案件開始時に決める。
-- `.workspace/tools/`: 採用後のビルド設定、検証スクリプト、テンプレート、依存 lockfile。
+- `projects/<project-id>/.workspace/source/`: 翻訳・統合本文、章構成、訳注、索引、成果用に作成した図表等の canonical source。
+- `projects/<project-id>/.workspace/records/source-map.*`: Source ID、書名、版、章節、ページと統合先の章節、扱い種別を双方向に追える対応表。
+- `projects/<project-id>/.workspace/records/rights-ledger.*`: 書誌、版、出版社、年、ISBN、URL、参照日、入手元、ライセンス・許諾、利用根拠、引用・翻訳・翻案・図版・公開・配布条件、個人情報・秘密・契約制限の判定。
+- `projects/<project-id>/.workspace/records/glossary.*`: 原語、候補訳、採用訳、例外、初出、記号、表記規則。
+- `projects/<project-id>/.workspace/records/translation-decisions.*`: 要約、再構成、訳注、矛盾、欠落、未確定事項、照合結果と判断根拠。
+- `projects/<project-id>/.workspace/records/source-ingestion-manifest.*`: `projects/<project-id>/inbox/` の検出履歴と、採用した入力スナップショット。
+- `projects/<project-id>/.workspace/records/` のその他の用途別台帳: スタイル、図表、QA、公開判定等。台帳名と形式は案件開始時に決める。
+- `projects/<project-id>/.workspace/tools/`: 採用後のビルド設定、検証スクリプト、テンプレート、依存 lockfile。
 
 ## inbox 受け入れプロトコル
 
 ingestion と翻訳・執筆を分離し、受け入れが確定したスナップショットだけを制作入力にする。
 
-1. 作業開始時、各処理バッチ開始時、PDF を `draft/` へ公開する直前、`out/` へ昇格する直前に `inbox/` を再走査する。
-2. 検出結果を `.workspace/records/source-ingestion-manifest.*` に追記する。各 revision について、少なくとも相対パス、バイトサイズ、更新時刻、強い content hash の方式と値、初回検出時刻、処理状態、採用・保留・除外理由を保持する。採用する revision は全内容を読み取った強い content hash を必須とし、省略しない。
+1. 作業開始時、各処理バッチ開始時、PDF を `projects/<project-id>/draft/` へ公開する直前、`projects/<project-id>/out/` へ昇格する直前に `projects/<project-id>/inbox/` を再走査する。
+2. 検出結果を `projects/<project-id>/.workspace/records/source-ingestion-manifest.*` に追記する。各 revision について、少なくとも相対パス、バイトサイズ、更新時刻、強い content hash の方式と値、初回検出時刻、処理状態、採用・保留・除外理由を保持する。採用する revision は全内容を読み取った強い content hash を必須とし、省略しない。
 3. 同一性をパス、ファイル名、時刻だけで判断しない。採用前に時間を置いて2回以上検査し、各回で hash 計算の直前と直後の size、mtime 等の利用可能な stat が一致し、全内容の読み取りが成功し、全回の強い content hash が一致することを要求する。同名、同 size/mtime の内容変更も hash で新 revision として検出し、翻訳、引用、ページ対応、権利、既存 PDF への影響を評価する。
-4. 書き込み・同期・ロック中、一時拡張子、stat/hash の不一致、読み取り・parse 失敗は `pending` として処理しない。ユーザーの完了合図は安定確認の代替ではなく再検査のトリガーに限り、長い固定 sleep を前提にしない。採用後は権利・機密上許される場合に限り、immutable snapshot を `.workspace/` 内の案件に適した永続・保護領域へ保存し、その所在と hash を manifest に記録する。保存しない、または保存できない場合は、入力を使用するたびと `draft/`・`out/` への公開直前に記録済み hash を再検証する。`.workspace/` 自体を秘密保管場所とはみなさない。
-5. アーカイブは自動展開しない。形式、path traversal、symlink、巨大展開、入れ子、暗号化の有無を先に検査し、安全と判断したものだけを `.workspace/tmp/` の隔離先へ展開する。展開物も個別に受け入れ判定する。
+4. 書き込み・同期・ロック中、一時拡張子、stat/hash の不一致、読み取り・parse 失敗は `pending` として処理しない。ユーザーの完了合図は安定確認の代替ではなく再検査のトリガーに限り、長い固定 sleep を前提にしない。採用後は権利・機密上許される場合に限り、immutable snapshot を `projects/<project-id>/.workspace/` 内の案件に適した永続・保護領域へ保存し、その所在と hash を manifest に記録する。保存しない、または保存できない場合は、入力を使用するたびと `projects/<project-id>/draft/`・`projects/<project-id>/out/` への公開直前に記録済み hash を再検証する。`projects/<project-id>/.workspace/` 自体を秘密保管場所とはみなさない。
+5. アーカイブは自動展開しない。形式、path traversal、symlink、巨大展開、入れ子、暗号化の有無を先に検査し、安全と判断したものだけを `projects/<project-id>/.workspace/tmp/` の隔離先へ展開する。展開物も個別に受け入れ判定する。
 6. PDF、Office、画像等を信頼して実行せず、マクロ、埋め込みファイル、外部リンク、偽装形式に注意する。必要なら内容を検証し、関連性、版、権利、重複、既存成果への影響を記録する。
 7. ユーザーが入力を削除しても manifest の検出・採用・削除履歴は消さず `missing` として影響を確認する。制作中の追加・更新を見つけても、既存ユーザー入力を移動・削除せず、作業を黙って巻き戻さない。
 8. 並行処理では担当 snapshot を分け、同じ manifest や canonical source を競合更新しない。更新の所有者を一つにするか、直列に統合する。
-9. `draft/` への公開時に、採用した manifest の snapshot/revision を `STATUS` または変更要約へ記録する。
-10. `out/` 昇格直前の再走査で、未評価の安定ファイル、変更 revision、`pending`、新規 `missing`、採用 revision の欠落、読み取り失敗、hash の計算または再検証そのものの失敗、または記録済み hash との不一致があれば停止して報告する。例外進行は、影響評価とユーザー合意を manifest に記録した場合だけ認める。
+9. `projects/<project-id>/draft/` への公開時に、採用した manifest の snapshot/revision を `STATUS` または変更要約へ記録する。
+10. `projects/<project-id>/out/` 昇格直前の再走査で、未評価の安定ファイル、変更 revision、`pending`、新規 `missing`、採用 revision の欠落、読み取り失敗、hash の計算または再検証そのものの失敗、または記録済み hash との不一致があれば停止して報告する。例外進行は、影響評価とユーザー合意を manifest に記録した場合だけ認める。
 
 ## draft と out
 
-- `draft/` の PDF は途中成果であり final と呼ばない。`out/` への移動・複製は、完了条件を確認した明示的な promotion とする。
-- 公開状態を `draft/STATUS.*` 等へ記録し、少なくともビルド日時、成功・失敗・陳腐化、source revision または commit、採用した inbox snapshot、検証状態、残件、対応する PDF 名を含める。
+- `projects/<project-id>/draft/` の PDF は途中成果であり final と呼ばない。`projects/<project-id>/out/` への移動・複製は、完了条件を確認した明示的な promotion とする。
+- 公開状態を `projects/<project-id>/draft/STATUS.*` 等へ記録し、少なくともビルド日時、成功・失敗・陳腐化、source revision または commit、採用した inbox snapshot、検証状態、残件、対応する PDF 名を含める。
 - 新しいビルドを開始した時、inbox revision や canonical source が変わった時、またはビルドが失敗した時は、残っている古い成功 PDF を最新版と誤認しないよう `STATUS` を先に `building`、`failed` または `stale` に更新する。
-- `out/` の既存成果を直接上書きする前に、対象名、版、検証結果、承認を確認する。可能なら成果物と共にビルド日時、source revision/commit、採用 inbox snapshot、検証状態を記録する。
-- ビルド失敗時は `out/` を変更しない。`draft/` と `out/` の公開物を clean 対象にしない。
+- `projects/<project-id>/out/` の既存成果を直接上書きする前に、対象名、版、検証結果、承認を確認する。可能なら成果物と共にビルド日時、source revision/commit、採用 inbox snapshot、検証状態を記録する。
+- ビルド失敗時は `projects/<project-id>/out/` を変更しない。`projects/<project-id>/draft/` と `projects/<project-id>/out/` の公開物を clean 対象にしない。
 
 ## ツールチェーンと latexmk 契約
 
 - LaTeX、Typst、Pandoc 等をこの指示だけで固定しない。既存方式を優先し、新規案件では日本語組版、数式、索引、相互参照、長文分割、再現性を比較してユーザー確認後に最小構成を作る。
 - 合意前に大量のテンプレートや依存を追加しない。既存エンジンを uplatex から LuaLaTeX 等へ無断で変えない。
-- LaTeX/latexmk を採用する案件では、ローカル latexmk 4.83 の `-outdir`、`-auxdir`、`-emulate-aux-dir` 相当の分離機能を利用できる。`out_dir` 相当を `.workspace/build/out`、`aux_dir` 相当を `.workspace/build/aux` とする。
-- latexmk が生成する PDF、DVI、SyncTeX、log、aux、fls、fdb 等は、まず全て `.workspace/build/` 配下へ置く。`draft/` や `out/` を latexmk の直接 outdir にしない。
-- latexmk の終了コード成功、生成 PDF の存在と今回の更新、ログ、未解決参照、引用、フォント、ページを確認する。その後 PDF だけを `draft/` 内の一時名へコピーし、同一ファイルシステム上の rename 等で原子的に公開する。`STATUS` は公開 PDF と同じ検証結果を指すよう更新する。
-- 失敗時は古い PDF を最新とみなさず `STATUS` を `failed` または `stale` にし、`out/` は不変とする。完了条件を満たした draft PDF だけを明示的に `out/` へ promotion する。
-- clean は `.workspace/build/` 等の再生成領域に限定する。相対パス、`-cd`、BibTeX、MakeIndex、glossary、画像参照は案件の実文書で検証する。
-- 現時点では実文書がなく未検証のため、latexmkrc や build script は作らない。案件開始時に採用方式を確定し、`.workspace/tools/` に最小設定を作って実ビルドで検証する。
+- LaTeX/latexmk を採用する案件では、ローカル latexmk 4.83 の `-outdir`、`-auxdir`、`-emulate-aux-dir` 相当の分離機能を利用できる。`out_dir` 相当を `projects/<project-id>/.workspace/build/out`、`aux_dir` 相当を `projects/<project-id>/.workspace/build/aux` とする。
+- latexmk が生成する PDF、DVI、SyncTeX、log、aux、fls、fdb 等は、まず全て `projects/<project-id>/.workspace/build/` 配下へ置く。`projects/<project-id>/draft/` や `projects/<project-id>/out/` を latexmk の直接 outdir にしない。
+- latexmk の終了コード成功、生成 PDF の存在と今回の更新、ログ、未解決参照、引用、フォント、ページを確認する。その後 PDF だけを `projects/<project-id>/draft/` 内の一時名へコピーし、同一ファイルシステム上の rename 等で原子的に公開する。`STATUS` は公開 PDF と同じ検証結果を指すよう更新する。
+- 失敗時は古い PDF を最新とみなさず `STATUS` を `failed` または `stale` にし、`projects/<project-id>/out/` は不変とする。完了条件を満たした draft PDF だけを明示的に `projects/<project-id>/out/` へ promotion する。
+- clean は `projects/<project-id>/.workspace/build/` 等の再生成領域に限定する。相対パス、`-cd`、BibTeX、MakeIndex、glossary、画像参照は案件の実文書で検証する。
+- 現時点では実文書がなく未検証のため、latexmkrc や build script は作らない。案件開始時に採用方式を確定し、`projects/<project-id>/.workspace/tools/` に最小設定を作って実ビルドで検証する。
 
 ## 標準ワークフロー
 
-1. `inbox/` を受け入れプロトコルどおり走査し、対象書籍、版、翻訳範囲、読者、単一 PDF の構成、公開範囲、納期、既存ツールチェーンを確認する。
+1. `projects/<project-id>/inbox/` を受け入れプロトコルどおり走査し、対象書籍、版、翻訳範囲、読者、単一 PDF の構成、公開範囲、納期、既存ツールチェーンを確認する。
 2. 資料ごとに一意な Source ID を付け、書誌・版・権利・参照方式を rights ledger と source map に登録する。版違いは別 revision/record とする。
 3. 統合章節ごとに Source ID、原章節、版、ページ範囲、翻訳・要約・再構成・引用・補足の種別を source map に登録する。
 4. 重要語の候補訳、採用訳、例外、初出説明、原語併記を glossary に定める。
 5. 意味、論理関係、条件、否定、数量、定義、数式を原文に照らして翻訳する。不確かな箇所は推測で確定せず、検索可能な未確定表示と根拠を残す。
 6. 配列変更、要約、接続文、重複整理を翻訳と分離し、変更種別、採用元、省略元、理由を translation decisions に記録する。
 7. 原文対応、固有名詞、引用、数値、数式、図表、ページ、用語を照合する。重要箇所は可能なら別の視点で再確認する。
-8. 受け入れ snapshot を再確認してビルドし、ログと全ページ表示を検証して `draft/` へ公開する。
-9. 権利、ライセンス、配布範囲、不要物混入、直前の inbox 状態を確認し、承認後にだけ `out/` へ昇格する。
+8. 受け入れ snapshot を再確認してビルドし、ログと全ページ表示を検証して `projects/<project-id>/draft/` へ公開する。
+9. 権利、ライセンス、配布範囲、不要物混入、直前の inbox 状態を確認し、承認後にだけ `projects/<project-id>/out/` へ昇格する。
 
 ## 翻訳・再構成・出典規約
 
@@ -104,7 +126,7 @@ ingestion と翻訳・執筆を分離し、受け入れが確定したスナッ�
 - 図表ごとに出典、版、元番号、ページ、権利、引用・翻訳・改変・新規作成の別を図表台帳へ記録する。改変範囲を明示し、番号、キャプション、凡例、単位、本文参照、白黒・縮小時の可読性、アクセシビリティ、画像解像度を確認する。
 - ビルド成功だけで完成としない。エラー、警告、未解決参照、重複ラベル、欠落引用、目次、索引、しおり、式番号、図表位置を確認する。
 - 日本語・欧文・数式フォント、埋め込み、代替、文字化け、禁則、行末、脚注、余白、見開き、空白ページ、ページ番号、はみ出しを確認する。最終候補は全ページを目視またはレンダリング検査する。
-- 検証記録には実施日、対象 source revision、採用 inbox snapshot、引用・文体・権利・図表を含む実施項目、結果、残件を残す。Git 差分に原資料、中間物、秘密情報、権利不明素材、無関係な変更がないことを確認し、台帳またはQAに未解決の不備があれば `out/` へ promotion しない。
+- 検証記録には実施日、対象 source revision、採用 inbox snapshot、引用・文体・権利・図表を含む実施項目、結果、残件を残す。Git 差分に原資料、中間物、秘密情報、権利不明素材、無関係な変更がないことを確認し、台帳またはQAに未解決の不備があれば `projects/<project-id>/out/` へ promotion しない。
 
 ## 禁止事項
 
@@ -121,5 +143,5 @@ ingestion と翻訳・執筆を分離し、受け入れが確定したスナッ�
 - 全章節を Source ID、版、章節、ページまで追跡でき、翻訳・要約・再構成・補足の区別が明瞭である。
 - 原文照合、用語統一、重複・矛盾処理、引用・権利確認が完了し、未確定事項は残件として明示されている。
 - 合意した手順で再生成でき、警告、参照、数式、フォント、全ページのレイアウト検証を通過している。
-- 採用 inbox snapshot、source revision、検証結果、承認が記録され、最終成果だけが `out/` に明示的に昇格されている。
+- 採用 inbox snapshot、source revision、検証結果、承認が記録され、最終成果だけが `projects/<project-id>/out/` に明示的に昇格されている。
 - 配布対象に原資料、中間物、秘密情報、権利不明素材が混在せず、公開・配布条件が確認済みである。
