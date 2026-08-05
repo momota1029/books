@@ -143,7 +143,7 @@ ingestion と読解・執筆を分離し、受け入れが確定したスナッ�
 
 - 数学を含む成果物は `../MATH_PROSE_REVIEW.md` の独立 read-only review と再レビューを完了する。definition-before-use violation、未追跡の仮定・依存、open blocking finding がいずれも 0 件になるまで `out/` へ promotion しない。scope 除外で対応する場合も、影響とユーザーの明示合意を private record に残して gate を再実行する。
 - formal claim は、意味に応じた番号付き semantic environment（`theorem`、`lemma`、`proposition`、`corollary`、`definition` 等）に置き、自動生成番号と一意で安定した `label` を付ける。形式的主張を無番号の強調文や通常 prose だけで提示しない。
-- 各 formal proof は、明示的な番号と一意で安定した `label` を持つ proof environment に置き、冒頭で証明対象の statement を `label` により参照する。statement、proof、definition、equation 間の参照は番号の直書きではなく `label` による cross-reference とし、prose だけの形式的証明を作らない。
+- 各 formal proof は明示的な proof environment に置く。直前の theorem-like statement を証明する通常の proof は無番号とし、proof 自体の `label` や対象 statement への明示的な cross-reference を要求しない。statement から離れた proof、複数ある proof、代替証明、proof 自体を他所から参照する場合に限り、番号付き proof environment と一意で安定した `label` を用い、対象 statement を `label` により示す。必要な statement、番号付き proof、definition、equation 間の参照は番号の直書きではなく `label` による cross-reference とし、prose だけの形式的証明を作らない。
 - proof と derivation は、前提、依存結果、各変形の根拠、場合分け、境界条件から結論までを明示して完結させる。「明らか」「同様」「容易に分かる」等で非自明な段階を省略しない。derivation の主要な段階は番号付き・ラベル付きの式または適切な semantic environment に置き、本文から参照できるようにする。
 - 原論文の claim・proof と、ノート執筆者による reconstruction・補足導出・correction を、見出し、環境名、注記等で読者が明確に識別できるようにする。再構成や訂正を原論文の主張として表示せず、その根拠と truth status を trace および review record に対応付ける。
 - 記号は初出で定義し、型、次元、定義域、添字範囲、確率変数か実現値かを必要に応じて示す。原論文と記号を変える場合は対応表と理由を残す。

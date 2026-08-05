@@ -98,6 +98,7 @@ ingestion と翻訳・執筆を分離し、受け入れが確定した snapshot 
 ## ツールチェーンと latexmk 契約
 
 - 既存案件では合意済みの toolchain を優先し、engine や toolchain を無断で変更しない。合意前に大量の template や依存を追加しない。
+- upLaTeX 文書で日本語索引を作る場合は、原則として upmendex を用いる。別の索引処理系は、案件要件が必要とする場合、またはユーザーが明示的に決定した場合に限り採用する。
 - LaTeX/latexmk を採用する案件では、local latexmk 4.83 の `-outdir`、`-auxdir`、`-emulate-aux-dir` 相当の分離機能を利用できる。`out_dir` 相当を `.workspace/build/out`、`aux_dir` 相当を `.workspace/build/aux` とする。
 - latexmk が生成する PDF、DVI、SyncTeX、log、aux、fls、fdb 等は、まず全て `.workspace/build/` 配下へ置く。`draft/` や `out/` を latexmk の直接 outdir にしない。
 - latexmk の終了 code 成功、生成 PDF の存在と今回の更新、log、未解決参照、引用、font、page を確認する。その後 PDF だけを `draft/` 内の一時名へ copy し、同一 filesystem 上の rename 等で原子的に公開する。`STATUS` は公開 PDF と同じ検証結果を指すよう更新する。
@@ -124,7 +125,8 @@ ingestion と翻訳・執筆を分離し、受け入れが確定した snapshot 
 - 翻訳、要約、再構成、直接引用、訳注、編者補足を識別可能にする。原文にない説明、例、接続、評価、推論は合意した表示で明示し、原著者の主張に見せない。
 - 直接引用は原文と照合して正確性を保ち、脱落・省略、原文にない強調、訳文の併記を明示する。引用と翻訳の表示・照合結果を source map または translation decisions に残す。
 - 欠落・判読不能箇所を推測で埋めない。原資料間の矛盾は安易に解消せず、版、定義、文脈を確認して両論と編集判断を記録する。
-- 原文に論証の gap、欠落、または誤りがあると判断しても、訳文で黙って補完・訂正したり、もっともらしい内容を創作したりしない。source issue として原文どおりの内容、疑義、影響、確認根拠、採用した扱いを translation decisions に記録し、本文では原文の問題と訳者注を識別可能に示す。訂正候補や補足を載せる場合も訳者によるものと明示する。`reviewed` と表示する draft の範囲に、無表示の gap や未記録の補完を残さない。
+- 翻訳では語順や構文の逐語的対応より、原文の意味、論理、modality、著者の声、および合意した self-contained 性を優先する。文脈上省略された主語・指示対象・接続関係や、原文から妥当に復元できる非自明な中間推論は、読者が追える自然な日本語として明示する。実質的な補足は訳注または translation decisions で追跡し、原著者の明示的な記述と混同させない。
+- 原文に成立しない論証の gap、欠落、または誤りがあると判断した場合は、訳文で黙って補完・訂正したり、もっともらしい内容を創作したりしない。source issue として原文どおりの内容、疑義、影響、確認根拠、採用した扱いを translation decisions に記録し、本文では原文の問題と訳者注を識別可能に示す。訂正候補や補足を載せる場合も訳者によるものと明示する。`reviewed` と表示する draft の範囲に、無表示の gap や未記録の補完を残さない。
 - 意味を変える意訳、説明追加、節移動は追跡可能にする。AI 生成の補足、候補訳、要約は、原文・出典との照合なしに確定本文へ入れない。
 - 引用・翻訳・図表には可能な限り Source ID、章節、版、page または安定位置を付ける。統合先から原資料へ、原資料の使用範囲から統合先へ双方向に追跡できるようにする。
 - 定義、列挙、比較、条件、例外、否定、数量、専門用語、引用、数値、数式を重点照合する。訳語変更時は既存箇所を検索し、文脈依存の例外には理由を残す。
@@ -135,11 +137,11 @@ ingestion と翻訳・執筆を分離し、受け入れが確定した snapshot 
 
 - 原文の記号、添字、上付き、演算子、式番号、定義域、量化範囲を照合する。複数書籍の記号を統一する場合は原記号、統一記号、範囲、理由を記録し、原文引用は勝手に改変しない。
 - 数学上の formal claim は、内容に合う theorem、lemma、proposition、corollary 等の番号付き semantic environment に置き、自動生成番号と一意で安定した label を付ける。正式な主張を通常の prose だけで済ませない。
-- proof は明示的な番号付き proof environment に置き、一意で安定した label を付け、証明対象の theorem 等を label による cross-reference で明示する。statement、proof、definition、equation 間の参照も手入力番号ではなく label による cross-reference とする。
+- 直前の theorem-like statement を証明する通常の proof は無番号の proof environment に置き、proof 自体の label や証明対象への明示的な cross-reference を要求しない。statement から離れた proof、複数ある proof または別証明、proof 自体を他所から参照する場合に限り、番号付き proof environment と一意で安定した label を用いる。必要な statement、番号付き proof、definition、equation 間の参照は、手入力番号ではなく label による cross-reference とする。
 - proof に非自明な gap を残さない。十分性は任意の語数や page 数ではなく、主張に必要な依存関係と推論が明示され、読者が各段階を追跡できる長さと内容を備えるかで判定する。原文由来の gap は創作して埋めず、source issue と訳者注として扱う。
 - 数学を含む場合、各 affected work unit の完成時とその後のあらゆる revision/change ごとに `../MATH_PROSE_REVIEW.md` の該当 phase と unit gate を適用する。label/ref、notation、punctuation、formatting、translation wording の変更も例外にせず、純粋に編集上の小変更では checklist を affected correctness、definition、label/ref、rendering の項目に限定してよいが、review 自体を省略してはならない。review は原則として authoring 担当とは別の read-only phase とし、記録を private records に保存する。さらに promotion 対象全体に同文書の全 phase と promotion 条件を適用し、blocking finding の解消または scope 除外へのユーザー合意を記録して open blocking を 0 件にするまで `out/` へ promotion しない。
 - 図表ごとに出典、版、元番号、page、権利、引用・翻訳・改変・新規作成の別を図表台帳へ記録する。改変範囲を明示し、番号、caption、凡例、単位、本文参照、白黒・縮小時の可読性、accessibility、画像解像度を確認する。
-- build 成功だけで完成としない。error、warning、未解決参照、重複 label、欠落引用、目次、索引、bookmark、式番号、図表位置を確認する。
+- build 成功だけで完成としない。self-contained な書籍には、明示的な scope 除外がない限り、収録章節を案内する目次と巻末の用語索引を設ける。error、warning、未解決参照、重複 label、欠落引用、式番号、図表位置に加え、目次と索引の生成成功、採用した目次処理系の artifact（LaTeX なら `.toc`）と索引処理系の入力・出力・ログ（makeidx/upmendex なら `idx`/`ind`/`ilg`）の存在と非空性、索引処理の warning/error、索引の目次掲載、ページ参照、PDF bookmark を確認する。
 - 日本語・欧文・数式 font、埋め込み、代替、文字化け、禁則、行末、脚注、余白、見開き、空白 page、page 番号、はみ出しを確認する。最終候補は全 page を目視または rendering 検査する。
 - 検証記録には実施日、対象 source revision、採用 inbox snapshot、引用・文体・権利・図表を含む実施項目、結果、残件を残す。Git 差分に原資料、中間物、秘密情報、権利不明素材、無関係な変更がないことを確認し、台帳または QA に未解決の不備があれば `out/` へ promotion しない。
 
@@ -155,7 +157,7 @@ ingestion と翻訳・執筆を分離し、受け入れが確定した snapshot 
 
 ## 完了条件
 
-- 合意範囲が単一 PDF に収録され、構成、本文、目次、相互参照が整合している。
+- 合意範囲が単一 PDF に収録され、構成、本文、scope 内の目次・巻末用語索引、相互参照が整合している。目次または索引を scope から除外する場合は、対象、理由、読者と quality gate への影響、代替する案内手段、ユーザーの明示合意を private record に記録し、残る成果物について gate を再実行する。
 - 全章節を Source ID、版、章節、page まで追跡でき、翻訳・要約・再構成・補足の区別が明瞭である。
 - 原文照合、用語統一、重複・矛盾・原文の誤りの処理、引用・権利確認が完了し、未確定事項は残件として明示されている。
 - 合意した手順で再生成でき、warning、参照、数式、font、全 page の layout 検証を通過している。

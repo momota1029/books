@@ -140,7 +140,7 @@ ingestion と数学的執筆を分離し、受け入れが確定したスナッ�
 - 各章の冒頭に前提、学習目標、後続章での役割、末尾に要約、依存の追加分、演習を置く。定義直後に典型例と非例を示し、直観を定義や証明の代わりにしない。
 - 定義、命題、補題、定理、系、例、反例、注意、演習を区別する。すべての formal assertion は意味に対応する番号付き semantic environment に置き、一意で安定した label を付ける。説明的 prose は動機・直観・接続に使えるが、formal statement または proof の代わりにしない。
 - 定義は型、量化範囲、条件、同値定式化を明確にし、定義前に本文、見出し、caption、例、演習を含むどの場所でも本質的な意味で使わない。
-- 定理は仮定と結論を明示する。すべての proof は番号付きで一意かつ安定した label を持つ明示的な proof environment に置き、冒頭で証明対象の theorem、lemma、proposition、corollary 等を label によって参照する。statement、proof、definition、equation 間も label による cross-reference を使う。標準の番号なし `proof` environment は、番号と label を付与するよう明示的に customization した場合を除き使わない。
+- 定理は仮定と結論を明示し、すべての proof を明示的な proof environment に置く。直前の theorem-like statement を証明する通常の proof は無番号とし、proof 自体の label や対象 statement への明示的な cross-reference を要求しない。statement から離れた proof、複数ある proof、代替証明、proof 自体を他所から参照する場合に限り、番号付き proof environment と一意で安定した label を用い、対象 statement を label により示す。必要な statement、番号付き proof、definition、equation 間の参照は label による cross-reference を使い、prose だけの形式的証明を作らない。
 - proof は、非自明な各推論、各含意の向き、場合分けの網羅性と各場合、計算の各変形根拠、使用する外部結果の仮定と適用条件を明示する。「証明を省略」「同様」「明らか」「容易」「標準的」だけで step または case を代替しない。proof の十分性は語数やページ数ではなく、reviewer が statement から結論までの dependency trace を先行する定義・公理・結果・直接導出に対応させて再構成できることで判定する。
 - 計算証明では変形根拠、収束、定義域、零除算回避、極限と演算の交換条件を示す。存在、well-definedness、一意性を必要な順に証明し、反例と端点で仮定を検討する。
 - AI 生成の証明、例、反例は候補として扱い、全推論と依存を独立検証するまで確定しない。
@@ -189,7 +189,7 @@ ingestion と数学的執筆を分離し、受け入れが確定したスナッ�
 - 未定義語・記号がなく、非自明な結果は原則証明済みで、例外は承認済みスコープ外依存として出典、仮定、使用箇所が明示されている。
 - 依存台帳に欠落、循環、前方論証依存がなく、公理、規約、既知事項、スコープ外事項が分類されている。
 - `../MATH_PROSE_REVIEW.md` の独立 read-only review と再レビューが完了し、definition-before-use violation、未追跡依存、unresolved blocking gap、open blocking finding がすべて 0 件である。
-- すべての formal assertion と proof が種類に応じた番号付き semantic environment、一意で安定した label、証明対象および依存先への cross-reference を持ち、番号なしの標準 proof environment、prose だけの formal statement・proof、再構成不能な proof dependency trace が 0 件である。
+- すべての formal assertion が種類に応じた番号付き semantic environment と一意で安定した label を持ち、すべての proof が明示的な proof environment に置かれている。直前の statement に続く通常の無番号 proof には proof 自体の label を要求せず、それ以外の番号を要する proof は一意で安定した label と証明対象への cross-reference を持つ。prose だけの formal statement・proof と再構成不能な proof dependency trace が 0 件である。
 - 各章が定義、例・非例、命題・定理、証明、応用、要約、演習の教育的流れを持ち、演習の難度、依存、ヒント・解答方針が記録されている。
 - 記号表、用語、索引、参考文献、相互参照が本文と一致し、初学者への局所説明と修士水準までの全体整合性がレビュー済みである。
 - 合意した手順で再生成でき、警告、参照、目次、数式、フォント、全ページのレイアウト検証を通過している。

@@ -47,6 +47,7 @@ project 名と案件内容は repository mode にかかわらず、外部共有�
 ## 共通 TeX toolchain
 
 TeX PDF を採用する全制作領域では、原則として upLaTeX + dvipdfmx を標準 toolchain とし、latexmk を利用してよい。別の toolchain は、案件要件が必要とする場合、またはユーザーが明示的に決定した場合に限り採用する。
+upLaTeX 文書で日本語索引を作る場合は、原則として upmendex を用いる。別の索引処理系は、案件要件が必要とする場合、またはユーザーが明示的に決定した場合に限り採用する。
 
 ## 委譲の判断基準
 
@@ -147,22 +148,23 @@ RISKS: 残る懸念、判断待ち、または none
 - affected unit の数学文章レビューは、原則として authoring 担当と分けた independent read-only review phase とし、レビュー記録は project の private area に保存する。
 - draft PDF を公開または読者へ共有する前に、その input snapshot と含まれる全 unit の review status を確定し、`reviewed` とする各 unit が `MATH_PROSE_REVIEW.md` の unit gate を満たすことを確認する。何らかの変更後に draft を再公開する場合は、affected unit の再レビューを完了し、変更後 snapshot に対する gate と review status を更新する。draft は可読な進捗成果物とし、input snapshot、review status、WIP とその未完了範囲を本文で明示する。
 - blocking gap、unlabeled formal claim、broken reference のいずれかがある unit を `reviewed` と表示して draft PDF を公開または共有しない。
-- formal claim は意味に合う番号付き semantic environment に置き、自動生成番号と一意で安定した `label` を付ける。proof は番号付き proof environment に置いて一意で安定した `label` を付け、statement、proof、definition、equation 間の参照は `label` による cross-reference とする。
+- formal claim は意味に合う番号付き semantic environment に置き、自動生成番号と一意で安定した `label` を付ける。直前の theorem-like statement を証明する通常の proof は無番号の proof environment に置き、proof 自体の `label` や対象 statement への明示的な cross-reference を要求しない。statement から離れた proof、複数ある proof または別証明、proof 自体を他所から参照する場合に限り、番号付き proof environment と一意で安定した `label` を用い、必要な参照は `label` による cross-reference とする。
 - proof に非自明な gap を残さない。十分な長さは `MATH_PROSE_REVIEW.md` の proof dependency trace の基準で判定し、任意の語数または page 数を要件にしない。
 - unit ごとの review に加え、`out/` への promotion 前に成果物全体を一つの snapshot として `MATH_PROSE_REVIEW.md` の全 phase で再 review する。
 - blocking finding が解消されるか、scope 除外などの対応についてユーザーの明示合意が記録され、open blocking が 0 件になるまで `out/` へ promotion しない。
-- self-contained 書籍/長編ノートは、明示的な scope 除外がない限り、原則として巻末に用語索引を持つ。
+- self-contained な書籍、長編講義ノート、長編数学ノートは、明示的な scope 除外がない限り、本文全体を案内する目次と巻末の用語索引を持つ。
 - 技術用語は、定義・正式導入の初出時に正規項目として索引登録する。日本語見出しは明示的な読み（sort key）を必須とし、別名/英名/表記揺れは `see` 参照で正規項目へ集約する。一般語や偶然の言及は索引登録しない。
 - 索引登録は definition-before-use、symbol registry、本文参照と整合させ、用語・索引の変更は affected unit revision として再レビューする。
-- promotion gate では、索引生成の成功、`idx`/`ind`/`ilg` の非空性と存在、upmendex warning/error 無し、重複・未解決参照の不整合なし、ページ参照と目次掲載の検証、および input snapshot 一致を確認する。
+- promotion gate では、目次と索引の生成成功、採用した目次処理系の artifact（LaTeX なら `.toc`）と索引処理系の入力・出力・ログ（makeidx/upmendex なら `idx`/`ind`/`ilg`）の存在と非空性、索引処理の warning/error がないこと、重複・未解決参照の不整合がないこと、収録章節と目次項目、索引の目次掲載、ページ参照、PDF bookmark が実際の render と一致すること、および input snapshot の一致を確認する。
 
 ### 図表と視覚要素の完全・忠実な再現
 
 - すべての制作領域で、図、diagram、plot、table、caption は本文と同等の翻訳・制作対象とする。省略、placeholder、内容を落とす模式化、単なる関係式への置換を禁止する。
 - 原図の幾何、配置、軸、目盛、ラベル、矢印、領域、境界、陰影、色、凡例、注記、caption、本文からの参照、および数学的・論理的関係を完全かつ忠実に再現する。
+- 自由な近似、目視だけによる作図、見た目だけの代用を原図の再現として扱わない。投影、視点、曲率、位相、接続、遮蔽、前後関係、立体面を含む幾何学的構造を原図と照合し、要素の欠落または意味を変える歪みは blocking finding とする。
 - 原画像の利用権を確認できない場合は、TeX、TikZ、PGFPlots、SVG などの repository-native な vector source で再構成し、権利確認なしに原画像をコピーしない。
 - 簡略化または省略は、ユーザーが明示的に許可した場合に限る。その決定内容と成果物への影響を review 記録に残す。
-- 図表を含む affected unit は authoring 担当と分けた independent review で原図と要素単位に比較し、全要素の presence、placement、semantics を確認する。build 後は実際の render を全ページ・全図について検査する。図表に blocking finding がある unit は `reviewed` とせず、解消またはユーザーが明示的に合意した対応が記録されるまで draft PDF を公開・共有せず、`out/` へ promotion しない。
+- 図表を含む affected unit は authoring 担当と分けた independent review で原図と要素単位に比較し、全要素の presence、placement、semantics に加え、geometry、投影、遮蔽、前後関係、曲面・立体面の全面積と可視範囲を確認する。球面、半球面等の曲面・立体面を輪郭線だけで代用してはならない。build 後は実際の render を全ページ・全図について検査する。要素または曲面・立体面の欠落、意味を変える歪みその他の blocking finding がある unit は `reviewed` とせず、解消またはユーザーが明示的に合意した対応が記録されるまで draft PDF を公開・共有せず、`out/` へ promotion しない。
 
 ## 安全性と Git
 

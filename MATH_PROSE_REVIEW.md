@@ -74,7 +74,7 @@ severity は次のように分類する。
 各定義、補題、命題、定理、系、例、演習に対して、直接依存する定義・仮定・先行結果・外部結果を追跡する。
 
 - formal な数学的 assertion を prose に埋め込まず、definition、theorem、lemma、proposition、corollary、example、exercise など意味に合う semantic environment に置く。motivation や直観の prose は許容するが、formal claim の代用にはしない。
-- theorem-like statement には必ず自動生成の番号と一意で安定した `label` を与える。本文から theorem、definition、proof、equation を指すときは `label` による参照を使い、手書きの番号を使わない。
+- theorem-like statement には必ず自動生成の番号と一意で安定した `label` を与える。本文から theorem、definition、番号付き proof、equation を指すときは `label` による参照を使い、手書きの番号を使わない。
 - domain と codomain、量化子の順序、添字範囲、変数の scope を確認する。
 - 定数が何に依存するか、局所的な主張か一様な主張か、点ごとか概収束・ほとんど至る所かを明示する。
 - 存在、一意性、well-definedness、境界値、退化ケース、場合分け、極限操作を確認する。
@@ -91,10 +91,10 @@ severity は次のように分類する。
 
 証明を含意ごとに分解し、次を一つずつ検証する。
 
-- すべての proof を明示した proof environment に置く。標準の proof environment が無番号なら、選択した toolchain で番号付き proof environment を定義する。各 proof 自体に自動生成の番号と一意で安定した `label` を与え、冒頭で何を証明するかを対象 theorem-like statement の `label` 参照により示す。
+- すべての proof を明示した proof environment に置く。直前の theorem-like statement を証明する通常の proof は無番号とし、proof 自体の `label` や対象 statement への明示的な cross-reference を要求しない。statement から離れた proof、複数ある proof または別証明、proof 自体を他所から参照する場合に限り、自動生成番号と一意で安定した `label` のある proof environment を使い、対象 statement を `label` により示す。
 - 各 proof について、goal、hypotheses と変数の domain、construction または必要な intermediate claim、各 implication の justification、尽くすべき cases、target conclusion を識別する。末尾では得られた結論が target conclusion であることを明示する。
 - 各 implication の根拠が定義、先行結果、外部定理、または明示した直接計算に対応するか。
-- 暗黙の補題を必要としていないか。必要なら statement と証明を追加するか、正確な外部依存として記録する。再利用する、または構造上独立した非自明な intermediate claim は、番号と `label` のある lemma として分離する。
+- 暗黙の補題を必要としていないか。原文と合意した依存から妥当に復元できる非自明な中間推論は、読者が追えるよう具体的に展開する。必要なら statement と証明を追加するか、正確な外部依存として記録する。再利用する、または構造上独立した非自明な intermediate claim は、番号と `label` のある lemma として分離する。成立しない gap や原文の誤りを創作によって修正せず、source issue と訳注または review record で追跡する。
 - 代数変形、等式・不等式、符号、零除算、根号・対数等の domain、極限操作、写像の well-definedness を、読者が追跡できる step 列として示す。等号・不等号の向きと、極限と演算の交換の根拠も確認する。
 - 全 cases が排反かつ尽くされているか、境界・空集合・零・低次元などの退化ケースが落ちていないか。
 - 「明らか」「容易」「標準的」「同様」だけを根拠として step を省略しない。これらを使う場合も、直後に具体的な定義、置換、計算、先行結果、または推論を示す。「同様に」では実際の置換、前の議論との差分、追加条件を記す。
@@ -105,7 +105,7 @@ proof の十分な長さに任意の語数・page 数の下限を設けない。
 想定読者と合意した self-contained scope に対して、すべての非自明な step が明示され、reviewer が statement から conclusion までの proof dependency trace を再構成できることを十分性の基準とする。
 再構成できなければ blocking とし、単なる冗長な反復で長さを増やすことは求めない。
 
-unit ごとに statement、proof、definition、label、ref の件数を集計し、少なくとも proof を要する statement に対応する proof の欠落、proof の対象 statement 参照の欠落、必要な label の欠落、未定義・重複 label、broken ref、orphan proof がすべて 0 件であることを checklist に記録する。
+unit ごとに statement、proof、definition、label、ref の件数を集計し、少なくとも proof を要する statement に対応する proof の欠落、構造上対応先を同定できない proof、番号付き proof に必要な対象 statement 参照と label の欠落、未定義・重複 label、broken ref、orphan proof がすべて 0 件であることを checklist に記録する。
 
 計算機、CAS、proof assistant、検索結果は検証証拠になり得るが、入力、前提、適用範囲、再現方法を記録し、人間が読める論証との関係を示す。
 
@@ -121,15 +121,25 @@ unit ごとに statement、proof、definition、label、ref の件数を集計�
 
 - 定義、定理、命題、証明、例、演習には意味に合う semantic environment を使い、見た目だけの手動見出しで代用しない。
 - 括弧の対応と scope、上付き・下付き、添字範囲、演算子、delimiter、式番号、数式内 punctuation を確認する。
-- `label` の一意性、`ref` の存在と参照対象、定理・proof・式・定義・図表番号、文中の参照名を build 結果と照合する。未定義・重複 label、broken ref、orphan proof を 0 件にする。
+- `label` の一意性、`ref` の存在と参照対象、定理・番号付き proof・式・定義・図表番号、文中の参照名を build 結果と照合する。未定義・重複 label、broken ref、orphan proof を 0 件にする。
 - project の house macro は定義、引数、意味、scope を確認し、未定義 macro、意味の衝突、表示だけで意味を担う用法を残さない。
-- TeX の compile 成功だけで数式の意味が正しいとは判定しない。PDF 上でも theorem、proof、equation、definition の番号と参照、欠落 glyph、改行、式の切断、図表との対応を目視確認する。
+- TeX の compile 成功だけで数式の意味が正しいとは判定しない。PDF 上でも theorem、番号付き proof、equation、definition の番号と参照、無番号 proof と直前 statement の対応、欠落 glyph、改行、式の切断、図表との対応を目視確認する。
+- upLaTeX 文書で日本語索引を作る場合は、原則として upmendex を用いる。別の索引処理系は、案件要件が必要とする場合、またはユーザーが明示的に決定した場合に限り採用し、その決定を review artifact に記録する。
+- self-contained な書籍、長編講義ノート、長編数学ノートは、明示的な scope 除外がない限り、収録章節を案内する目次と巻末の用語索引を持つことを確認する。build gate では目次と索引の生成成功、採用した目次処理系の artifact（LaTeX なら `.toc`）と索引処理系の入力・出力・ログ（makeidx/upmendex なら `idx`/`ind`/`ilg`）の存在と非空性、索引処理の warning/error がないこと、索引の目次掲載、ページ参照、PDF bookmark と実際の render の一致を検証する。
+
+## phase 6b: 図表の原図照合と render audit
+
+原図がある図表ごとに、原図と再構成 source の要素 inventory を作る。軸、目盛、ラベル、矢印、領域、境界、陰影、色、凡例、caption に加え、投影、視点、曲率、位相、接続、遮蔽、前後関係、曲面・立体面の全面積と可視範囲を要素単位で照合する。球面、半球面等の曲面・立体面を輪郭線だけで代用してはならない。
+
+- 自由な近似、目視だけによる作図、見た目だけの代用を忠実な再現とみなさない。位置合わせが可能な図は、縮尺、向き、基準点を合わせた registered overlay により原図と再構成結果を比較する。位置合わせが困難な場合は、その理由と、control point、寸法、角度、投影、曲面・立体面の全面積と可視範囲等による同等の定量比較を review artifact に記録する。いずれの場合も各要素の presence、placement、geometry、semantics と比較結果を記録する。
+- build 後の PDF render を原図および再構成 source と再比較し、縮尺、線幅、文字、切断、重なり、配置によって意味または幾何が変わっていないことを確認する。
+- 要素または曲面・立体面の欠落、球面・半球面等を輪郭線だけで代用したもの、意味を変える歪み、投影・曲率・位相・接続・遮蔽・前後関係・全面積・可視範囲の不一致は blocking とし、解消されるまで対象 unit を `reviewed` と表示せず promotion しない。
 
 ## 文書種別ごとの追加検査
 
 ### 書籍翻訳
 
-- 数式、量化、否定、条件、modality、定義域、式番号を原文と逐語的に照合する。
+- 数式、量化、否定、条件、modality、定義域、式番号を、記号・意味・論理単位で原文と厳密に照合する。日本語の語順や構文の逐語性より、意味、論理、合意した self-contained 性と文脈上の行間が正確に伝わることを優先する。
 - source error の疑いを黙って修正しない。原文、問題、採用判断、根拠を private review record に残し、必要に応じて訳注・正誤注として原著者の主張と区別する。
 - 記号統一や節の再構成が原文の依存順と意味を変えていないか確認する。
 
@@ -169,7 +179,7 @@ WIP を `reviewed` の本文に混ぜず、`out/` では WIP を 0 件にする�
 - [ ] major finding が解消済み、または影響を理解した明示合意と理由が記録されている。
 - [ ] definition-before-use violation が 0 件である。
 - [ ] unjustified step と unlabeled formal claim が 0 件である。
-- [ ] statement、proof、definition、label、ref の件数を記録し、対応・label・参照の欠落、未定義・重複 label、broken ref、orphan proof が 0 件である。
+- [ ] statement、proof、definition、label、ref の件数を記録し、statement と proof の構造上の対応、番号付き proof に必要な label・参照、その他の label・参照に欠落がなく、未定義・重複 label、broken ref、orphan proof が 0 件である。
 - [ ] WIP、unreviewed unit、未完成の proof が 0 件である。
 - [ ] 未追跡の仮定と依存が 0 件である。
 - [ ] truth status、source fidelity、文書種別ごとの追加検査が完了している。
