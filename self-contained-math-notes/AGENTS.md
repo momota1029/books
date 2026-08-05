@@ -8,11 +8,11 @@
 
 ## 目的
 
-論理・集合・数学基礎から始め、合意した修士課程程度の到達範囲までを、完全に self-contained な講義ノート PDF として構築する。初学者が各局所を追える説明と、高度な章まで破綻しない定義・記号・定理依存の全体整合性を両立させる。
+論理・集合・数学基礎から始め、合意した修士課程程度の到達範囲までを、完全に self-contained な講義ノート PDF として構築する。初学者が各局所を追える説明と、高度な章まで破綻しない定義・記号・定理依存の全体整合性を両立させる。演習・確認問題・読者への課題は作らず、必要な推論、証明、計算、場合分けをすべて本文中で完結させる。
 
 ## Self-contained の運用定義
 
-- 各定義、命題、補題、定理、系、証明、例、演習が必要とする依存先を明示できる。
+- 各定義、命題、補題、定理、系、証明、例が必要とする依存先を明示できる。
 - 語と記号を使用前または明示的な前提節で定義する。
 - 非自明な結果には原則としてノート内の証明があり、既に導入済みの公理・定義・結果だけに依存する。
 - 公理、論理規則、規約、定義、証明済み結果、明示的なスコープ外依存を区別する。
@@ -20,7 +20,7 @@
 
 self-contained は参考文献が不要という意味ではない。歴史、標準的定式化、証明比較、追加学習、明示的なスコープ外依存の出典は正確に示す。
 
-想定成果物は、基礎から合意した修士水準までの講義ノート PDF、再現可能な編集ソース、カリキュラムとスコープ、基礎・定理依存・記号の台帳、演習メタデータ、参考文献、索引、相互参照、証明・PDF の検証記録である。
+想定成果物は、基礎から合意した修士水準までの講義ノート PDF、再現可能な編集ソース、カリキュラムとスコープ、基礎・定理依存・記号の台帳、参考文献、索引、相互参照、証明・PDF の検証記録である。
 
 ## ワークスペースの契約
 
@@ -57,13 +57,12 @@ repository mode は親の規則と `../.system/repository-mode` に従う。
 
 ## 永続データの配置
 
-- `.workspace/source/`: 章ごとの本文、証明、例・反例、演習、解答、成果用に作成した図表等の canonical source。
+- `.workspace/source/`: 章ごとの本文、証明、例・反例、成果用に作成した図表等の canonical source。
 - `.workspace/records/scope.*`: 想定読者、開始点、到達水準、採用する論理・集合論的基礎、分野、対象外、スコープ外依存。
 - `.workspace/records/curriculum.*`: 章構成、学習順序、到達目標、章間の橋渡し。
 - `.workspace/records/foundations.*`: 公理、論理規則、規約、定義、既知事項、承認済みスコープ外事項。
 - `.workspace/records/theorem-dependencies.*`: 定義・命題・補題・定理等の ID、直接依存、使用箇所、証明状態、依存グラフ。
 - `.workspace/records/symbol-registry.*`: 用語、記号、型、意味、導入箇所、使用範囲、同義語。
-- `.workspace/records/exercise-metadata.*`: 演習 ID、狙い、難度、依存節、ヒント・解答方針、検証状態。
 - `.workspace/records/reference-ingestion-manifest.*`: `inbox/` の検出履歴と、採用した入力スナップショット。
 - `.workspace/records/` のその他の用途別台帳: 参考文献、索引、図表、QA、公開判定等。台帳名と形式は案件開始時に決める。
 - `.workspace/tools/`: 採用後の案件固有のビルド設定、adapter、依存 lockfile。再利用可能な prompt、template、script、build/QA tool、test、fix の正本はここに置かず public shared system へ upstream する。
@@ -74,7 +73,7 @@ ingestion と数学的執筆を分離し、受け入れが確定したスナッ�
 
 1. 作業開始時、各処理バッチ開始時、PDF を `draft/` へ公開する直前、`out/` へ昇格する直前に `inbox/` を再走査する。
 2. 検出結果を `.workspace/records/reference-ingestion-manifest.*` に追記する。各 revision について、少なくとも相対パス、バイトサイズ、更新時刻、強い content hash の方式と値、初回検出時刻、処理状態、採用・保留・除外理由を保持する。採用する revision は全内容を読み取った強い content hash を必須とし、省略しない。
-3. 同一性をパス、ファイル名、時刻だけで判断しない。採用前に時間を置いて2回以上検査し、各回で hash 計算の直前と直後の size、mtime 等の利用可能な stat が一致し、全内容の読み取りが成功し、全回の強い content hash が一致することを要求する。同名、同 size/mtime の内容変更も hash で新 revision として検出し、定義、証明、演習、権利、既存 PDF への影響を評価する。
+3. 同一性をパス、ファイル名、時刻だけで判断しない。採用前に時間を置いて2回以上検査し、各回で hash 計算の直前と直後の size、mtime 等の利用可能な stat が一致し、全内容の読み取りが成功し、全回の強い content hash が一致することを要求する。同名、同 size/mtime の内容変更も hash で新 revision として検出し、定義、証明、権利、既存 PDF への影響を評価する。
 4. 書き込み・同期・ロック中、一時拡張子、stat/hash の不一致、読み取り・parse 失敗は `pending` として処理しない。ユーザーの完了合図は安定確認の代替ではなく再検査のトリガーに限り、長い固定 sleep を前提にしない。採用後は権利・機密上許される場合に限り、immutable snapshot を `.workspace/` 内の案件に適した永続・保護領域へ保存し、その所在と hash を manifest に記録する。保存しない、または保存できない場合は、入力を使用するたびと `draft/`・`out/` への公開直前に記録済み hash を再検証する。`.workspace/` 自体を秘密保管場所とはみなさない。
 5. アーカイブは自動展開しない。形式、path traversal、symlink、巨大展開、入れ子、暗号化の有無を先に検査し、安全と判断したものだけを `.workspace/tmp/` の隔離先へ展開する。展開物も個別に受け入れ判定する。
 6. PDF、Office、画像等を信頼して実行せず、マクロ、埋め込み、外部リンク、偽装形式に注意する。必要なら内容を検証し、関連性、権利、重複、既存成果への影響を記録する。
@@ -111,8 +110,8 @@ ingestion と数学的執筆を分離し、受け入れが確定したスナッ�
 2. 論理・集合から各分野への前提関係を整理し、章の学習順、到達目標、橋渡しとなる結果を curriculum に記録する。
 3. 公理、推論規則、メタレベル規約、定義、既知事項、スコープ外依存を foundations に分類する。「明らか」「標準的」を未分類の前提にしない。
 4. 各定義・命題・補題・定理に安定した ID を付け、直接依存を登録し、使用前定義と循環参照を確認する。
-5. 原則として「動機・学習目標 → 定義 → 例・非例 → 命題・定理 → 証明 → 応用 → 節末要約 → 演習」の順に、下記の work unit 単位で章を書く。
-6. work unit の完成時と semantic change 後の checkpoint で、新規の語・記号、証明の各推論、参照先、例、演習の解答可能性を検証し、authoring 担当とは別の独立レビューを完了してから `reviewed` とする。structural change と editorial change は親 `AGENTS.md` の分類に従って検査範囲を絞る。
+5. 原則として「動機・学習目標 → 定義 → 例・非例 → 命題・定理 → 証明 → 応用 → 節末要約」の順に、下記の work unit 単位で章を書く。
+6. work unit の完成時と semantic change 後の checkpoint で、新規の語・記号、証明の各推論、参照先、例、および必要な推論・計算・場合分けに欠落がないことを検証し、authoring 担当とは別の独立レビューを完了してから `reviewed` とする。structural change と editorial change は親 `AGENTS.md` の分類に従って検査範囲を絞る。
 7. 依存グラフ、記号表、索引、相互参照を更新し、循環、重複定義、意味変化、前方依存、章間のギャップを全体検証する。
 8. 初学者が局所的に追えるか、後続の修士水準で必要な厳密さ・一般性を損なわないかをレビューする。
 9. checkpoint では `../MATH_PROSE_REVIEW.md` の affected phase を authoring 担当とは分けた read-only review phase として実施し、finding と再検証結果を private records に保存する。配布・promotion 前には同文書の全 phase を実施する。
@@ -121,27 +120,27 @@ ingestion と数学的執筆を分離し、受け入れが確定したスナッ�
 
 ## work unit と制作サイクル
 
-- 追跡・制作・レビューの最小単位である work unit は、(1) definition chain、(2) theorem とその補題群および全 proof、(3) 相互に関連する example set、(4) 相互に関連する exercise set、(5) subsection のいずれかとする。依存台帳と review artifact には一意で安定した unit ID、範囲、直接依存、採用 input snapshot、source revision、状態を記録する。
+- 追跡・制作・レビューの最小単位である work unit は、(1) definition chain、(2) theorem とその補題群および全 proof、(3) 相互に関連する example set、(4) subsection のいずれかとする。依存台帳と review artifact には一意で安定した unit ID、範囲、直接依存、採用 input snapshot、source revision、状態を記録する。
 - 細かな編集は checkpoint まで batch する。work unit の新規作成、完成、semantic change では affected unit の review を必須とし、定義、主張、証明、依存、意味、参照に波及する変更では直接・間接の影響範囲を台帳から求め、影響を受ける unit を `WIP` または `review required` に戻す。structural change は対象を絞った検査、editorial change は差分確認と incremental build で再検証してよい。
 - 各 checkpoint は、unit の authoring、必要な台帳・相互参照の更新、変更分類に応じた `../MATH_PROSE_REVIEW.md` の review、finding の修正、同一 snapshot に対する再検証、必要な draft PDF の build・検証・公開、`STATUS` 更新を一組とする。
-- semantic change の independent review は affected unit ごとに行い、定義・主張・証明・例・演習・前後の接続、直接依存と下流影響を review artifact で追跡可能にする。複数 unit を一括確認しても、unit ごとの判定と finding を失わない。
+- semantic change の independent review は affected unit ごとに行い、定義・主張・証明・例・前後の接続、直接依存と下流影響を review artifact で追跡可能にする。複数 unit を一括確認しても、unit ごとの判定と finding を失わない。
 - `reviewed`、`WIP`、`review required` を混同しない。`reviewed` は記録された input snapshot と source revision に対して有効とする。semantic change または意味へ波及する structural change 後は自動継承せず、editorial change では差分と再検証結果を記録して status を更新できる。
 
 ## 数学文章レビューと promotion gate
 
 - `../MATH_PROSE_REVIEW.md` を shared versioned 正本として全 phase を適用し、authoring と independent read-only review、修正、再レビューを分離する。
-- definition-before-use audit は本文、見出し、定理・定義、証明、図表、caption、脚注、例、演習、解答、索引を対象とし、語・記号・概念の violation を全箇所で 0 件にする。教育上の予告であっても未定義語を見出しや caption に置かない。
-- definition、result、proof、exercise、external dependency の ledger を本文と双方向に照合し、未追跡の仮定・依存、存在しない参照、使用前依存、循環を 0 件にする。
+- definition-before-use audit は本文、見出し、定理・定義、証明、図表、caption、脚注、例、索引を対象とし、語・記号・概念の violation を全箇所で 0 件にする。教育上の予告であっても未定義語を見出しや caption に置かない。
+- definition、result、proof、external dependency の ledger を本文と双方向に照合し、未追跡の仮定・依存、存在しない参照、使用前依存、循環を 0 件にする。
 - self-contained scope 内の unresolved blocking gap を 0 件にする。未解決部分を scope 外へ除外する場合は truth status、影響、依存不能範囲、責任者、ユーザーの明示合意を private record に残し、残った成果物について gate を再実行する。
 - open blocking finding が 0 件になるまで `out/` へ promotion しない。review artifact は private area に保存し、public Git 差分へ混入させない。
 
 ## カリキュラム・定義・証明規約
 
 - 原則として論理、証明技法、集合・写像・関係から始め、合意した代数、解析、位相、幾何、確率・測度等へ依存順に進む。分野の採否と順序は到達目標と依存関係に基づいて合意する。
-- 各章の冒頭に前提、学習目標、後続章での役割、末尾に要約、依存の追加分、演習を置く。定義直後に典型例と非例を示し、直観を定義や証明の代わりにしない。
-- 定義、命題、補題、定理、系、例、反例、注意、演習を区別する。すべての formal assertion は意味に対応する番号付き semantic environment に置き、一意で安定した label を付ける。説明的 prose は動機・直観・接続に使えるが、formal statement または proof の代わりにしない。
-- 定義は型、量化範囲、条件、同値定式化を明確にし、定義前に本文、見出し、caption、例、演習を含むどの場所でも本質的な意味で使わない。
-- 定理は仮定と結論を明示し、すべての proof を明示的な proof environment に置く。直前の theorem-like statement を証明する通常の proof は、見出しを原則として「証明」とする bare な無番号 proof とし、proof 番号、proof 自体の label、対象 statement への明示的な cross-reference を付けない。statement から離れた証明・解答には対象 statement を label で示す無番号の説明見出しを用いてよい。番号付き proof は、複数の証明・別証明を区別する場合、または proof 自体を他所から参照する場合に限り、一意で安定した label と対象 statement への cross-reference を持たせる。必要な statement、番号付き proof、definition、equation 間の参照は label による cross-reference を使い、prose だけの形式的証明を作らない。
+- 各章の冒頭に前提、学習目標、後続章での役割を示し、末尾に要約と依存の追加分を置く。定義直後に典型例と非例を示し、直観を定義や証明の代わりにしない。
+- 定義、命題、補題、定理、系、例、反例、注意を区別する。すべての formal assertion は意味に対応する番号付き semantic environment に置き、一意で安定した label を付ける。説明的 prose は動機・直観・接続に使えるが、formal statement または proof の代わりにしない。
+- 定義は型、量化範囲、条件、同値定式化を明確にし、定義前に本文、見出し、caption、例を含むどの場所でも本質的な意味で使わない。
+- 定理は仮定と結論を明示し、すべての proof を明示的な proof environment に置く。直前の theorem-like statement を証明する通常の proof は、見出しを原則として「証明」とする bare な無番号 proof とし、proof 番号、proof 自体の label、対象 statement への明示的な cross-reference を付けない。statement から離れた証明には対象 statement を label で示す無番号の説明見出しを用いてよい。番号付き proof は、複数の証明・別証明を区別する場合、または proof 自体を他所から参照する場合に限り、一意で安定した label と対象 statement への cross-reference を持たせる。必要な statement、番号付き proof、definition、equation 間の参照は label による cross-reference を使い、prose だけの形式的証明を作らない。
 - proof は、非自明な各推論、各含意の向き、場合分けの網羅性と各場合、計算の各変形根拠、使用する外部結果の仮定と適用条件を明示する。「証明を省略」「同様」「明らか」「容易」「標準的」だけで step または case を代替しない。proof の十分性は語数やページ数ではなく、reviewer が statement から結論までの dependency trace を先行する定義・公理・結果・直接導出に対応させて再構成できることで判定する。
 - 計算証明では変形根拠、収束、定義域、零除算回避、極限と演算の交換条件を示す。存在、well-definedness、一意性を必要な順に証明し、反例と端点で仮定を検討する。
 - AI 生成の証明、例、反例は候補として扱い、全推論と依存を独立検証するまで確定しない。
@@ -155,20 +154,19 @@ ingestion と数学的執筆を分離し、受け入れが確定したスナッ�
 - 新規追加と変更時に、未定義語、存在しない ID、使用前依存、循環、全使用箇所を検査する。教育上の予告を論証依存に逆流させず、同値定理群には基点と各含意の方向を示す。
 - 台帳と本文が食い違う場合は推測で片方を正とせず、証明内容に基づいて修正する。
 
-## 執筆・記号・演習規約
+## 執筆・記号規約
 
 - 数学的事実、教育上の直観、歴史的説明、未確定事項、AI 生成案を区別する。欠落を推測で埋めず、`TODO`、未証明、要確認等の検索可能な表示を残して完成判定から除外する。
 - 用語、文体、句読点、全半角、定理名、人名表記、数式前後の文章を用途別台帳で統一する。簡略化には適用範囲を明記し、後続章で破綻する不正確・誤解を招く説明を scope、foundations、QAとの照合なしに採用しない。
 - すべての記号を初出で定義し、意味、型、定義域、添字範囲、導入箇所、使用範囲を symbol registry に登録する。同じ記号を近接文脈で別の意味に使わない。
 - 等号、同型、同値、定義による等号、近似を区別する。同一視には正当化と有効範囲を示し、式番号、本文参照、演算子、書体を PDF 上で確認する。
-- 各演習に ID、狙い、難度、依存節を付ける。難度基準を定義し、定義確認、基本適用、複合推論、発展を区別する。
-- ヒント、完全解答、解答方針の扱いを scope で統一する。解答は導入済み事項だけで成立させ、問題文不足、解なし、複数解釈、難度を実際に解いて検証する。
+- 読者に補完を求める問いや課題を設けない。理解に必要な確認、基本適用、複合推論、発展的帰結は、必要な前提と全段階を伴う本文または完全な例として提示する。
 - 用語・記号の導入箇所と主要使用箇所を索引または同等の導線で検索可能にし、安定ラベルを使う。予告と論証上の前方依存を区別する。
 
 ## 出典・図表・PDF 品質
 
-- 定義・定理の名称、歴史、証明の着想、例、演習、図表を資料から得た場合は書誌と使用箇所を記録する。直接引用は原文と照合し、脱落・省略、原文にない強調、翻訳の併記を明示して正確性を保ち、大規模転載や近接した書き換えを避ける。
-- 定理自体と特定表現・証明・図版の著作物としての扱いを混同しない。参考文献・権利台帳に URL、参照日、ライセンス・利用条件を残し、孫引きは明示し、外部演習、解答、図版、データ、コードの条件を確認する。個人情報、秘密情報、契約制限素材、権利不明素材をコミット・公開しない。
+- 定義・定理の名称、歴史、証明の着想、例、図表を資料から得た場合は書誌と使用箇所を記録する。直接引用は原文と照合し、脱落・省略、原文にない強調、翻訳の併記を明示して正確性を保ち、大規模転載や近接した書き換えを避ける。
+- 定理自体と特定表現・証明・図版の著作物としての扱いを混同しない。参考文献・権利台帳に URL、参照日、ライセンス・利用条件を残し、孫引きは明示し、外部の図版、データ、コードの条件を確認する。個人情報、秘密情報、契約制限素材、権利不明素材をコミット・公開しない。
 - 図表ごとに目的、作成者、出典、引用・改変・新規作成の別、権利、依存定義を図表台帳へ記録する。図を証明の代わりにせず、軸、尺度、向き、境界、凡例、単位、番号、キャプション、白黒・縮小時の可読性、アクセシビリティ、画像解像度を確認する。
 - ビルド成功だけで完成としない。エラー、警告、未解決参照、重複ラベル、索引、参考文献、目次、しおり、定理・式番号を確認する。
 - 日本語・欧文・数式フォント、埋め込み、グリフ欠落、文字化け、禁則、行間、脚注、余白、ページ番号、数式・表のはみ出しを確認する。最終候補は全ページを目視またはレンダリング検査する。
@@ -178,6 +176,7 @@ ingestion と数学的執筆を分離し、受け入れが確定したスナッ�
 
 - 未定義の語・記号、未証明の非自明な結果、暗黙の公理を説明なしに使うこと。
 - 必要な証明を「明らか」「同様」「標準的」「証明を省略」で置き換えること。
+- 必要な推論、証明、計算、場合分けを読者向けの問題または課題として本文外へ委ねること。
 - 循環参照、使用前依存、定義の循環、同値命題同士の循環証明を放置すること。
 - 根拠のない補足、推測、AI 生成証明を検証済み数学へ混ぜること。
 - inbox の入力をエージェント都合で変更し、不安定・未評価の入力を採用すること。
@@ -190,8 +189,8 @@ ingestion と数学的執筆を分離し、受け入れが確定したスナッ�
 - 未定義語・記号がなく、非自明な結果は原則証明済みで、例外は承認済みスコープ外依存として出典、仮定、使用箇所が明示されている。
 - 依存台帳に欠落、循環、前方論証依存がなく、公理、規約、既知事項、スコープ外事項が分類されている。
 - `../MATH_PROSE_REVIEW.md` の独立 read-only review と再レビューが完了し、definition-before-use violation、未追跡依存、unresolved blocking gap、open blocking finding がすべて 0 件である。
-- すべての formal assertion が種類に応じた番号付き semantic environment と一意で安定した label を持ち、すべての proof が明示的な proof environment に置かれている。直前の statement に続く通常の proof は原則「証明」の bare な無番号 proof で不要な proof 番号・label・対象参照がなく、離れた証明・解答と番号付き proof は前記規則どおり必要な対象参照・label を持つ。prose だけの formal statement・proof と再構成不能な proof dependency trace が 0 件である。
-- 各章が定義、例・非例、命題・定理、証明、応用、要約、演習の教育的流れを持ち、演習の難度、依存、ヒント・解答方針が記録されている。
+- すべての formal assertion が種類に応じた番号付き semantic environment と一意で安定した label を持ち、すべての proof が明示的な proof environment に置かれている。直前の statement に続く通常の proof は原則「証明」の bare な無番号 proof で不要な proof 番号・label・対象参照がなく、離れた証明と番号付き proof は前記規則どおり必要な対象参照・label を持つ。prose だけの formal statement・proof と再構成不能な proof dependency trace が 0 件である。
+- 各章が定義、例・非例、命題・定理、証明、応用、要約の教育的流れを持ち、演習・確認問題・読者への課題を含まず、必要な推論・証明・計算・場合分けが本文中で完結している。
 - 記号表、用語、索引、参考文献、相互参照が本文と一致し、初学者への局所説明と修士水準までの全体整合性がレビュー済みである。
 - 合意した手順で再生成でき、警告、参照、目次、数式、フォント、全ページのレイアウト検証を通過し、参照成果物がある場合は house style を一組として actual-size と fit-width の両方で比較済みである。
 - 採用 inbox snapshot、source revision、検証結果、承認が記録され、最終成果だけが `out/` に明示的に昇格されている。
