@@ -144,6 +144,7 @@ ingestion と翻訳・執筆を分離し、受け入れが確定した snapshot 
 - 数学を含む場合、work unit 完成時と semantic change 後の checkpoint で `../MATH_PROSE_REVIEW.md` の該当 phase と unit gate を affected scope に適用する。structural change と editorial change は親 `AGENTS.md` の分類に従い、変更のない unit の review を機械的にやり直さない。必要な review は原則として authoring 担当とは別の read-only phase とし、記録を private records に保存する。さらに promotion 対象全体に同文書の全 phase と promotion 条件を適用し、blocking finding の解消または scope 除外へのユーザー合意を記録して open blocking を 0 件にするまで `out/` へ promotion しない。
 - 図表ごとに出典、版、元番号、page、権利、引用・翻訳・改変・新規作成の別を図表台帳へ記録する。改変範囲を明示し、番号、caption、凡例、単位、本文参照、白黒・縮小時の可読性、accessibility、画像解像度を確認する。
 - build 成功だけで完成としない。self-contained な書籍には、明示的な scope 除外がない限り、収録章節を案内する目次と巻末の用語索引を設ける。error、warning、未解決参照、重複 label、欠落引用、式番号、図表位置に加え、目次と索引の生成成功、採用した目次処理系の artifact（LaTeX なら `.toc`）と索引処理系の入力・出力・ログ（makeidx/upmendex なら `idx`/`ind`/`ilg`）の存在と非空性、索引処理の warning/error、索引の目次掲載、ページ参照、PDF bookmark を確認する。
+- PDF の索引には内部リンクを付ける。各ページ参照は対応する本文ページへ移動できるようにし、`see` および採用時の `seealso` 参照も対象の索引項目または合意した適切な移動先へリンクする。生成された全リンクについて、リンク切れ、誤った移動先、リンク範囲の欠落がないことを実際の PDF で確認する。
 - 日本語・欧文・数式 font、埋め込み、代替、文字化け、禁則、行末、脚注、余白、見開き、空白 page、page 番号、はみ出しを確認する。最終候補は全 page を目視または rendering 検査する。
 - 検証記録には実施日、対象 source revision、採用 inbox snapshot、引用・文体・権利・図表を含む実施項目、結果、残件を残す。Git 差分に原資料、中間物、秘密情報、権利不明素材、無関係な変更がないことを確認し、台帳または QA に未解決の不備があれば `out/` へ promotion しない。
 
@@ -165,5 +166,6 @@ ingestion と翻訳・執筆を分離し、受け入れが確定した snapshot 
 - 合意した手順で再生成でき、warning、参照、数式、font、全 page の layout 検証を通過し、参照成果物がある場合は house style を一組として actual-size と fit-width の両方で比較済みである。
 - 数学を含む場合は `../MATH_PROSE_REVIEW.md` の独立 review phase が完了し、open blocking が 0 件である。
 - 翻訳・収録範囲に含まれるすべての演習問題に、行間を残さず検証された解答、または問題が不成立・解答不能であることの根拠を伴う分析が対応している。
+- PDF の索引に必要な内部リンクが設定され、すべてのページ参照および索引内参照が正しい移動先へ到達することを検証済みである。
 - 採用 inbox snapshot、source revision、work unit ごとの review 状態、quality gate、検証結果、承認が記録され、WIP が 0 件の最終成果だけが `out/` に明示的に昇格されている。
 - 配布対象に原資料、中間物、秘密情報、権利不明素材が混在せず、公開・配布条件が確認済みである。
