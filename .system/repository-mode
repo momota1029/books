@@ -10,9 +10,10 @@ usage:
   repository-mode private <remote>
   repository-mode add -- <path>...
 
-Private mode permits staging project data only when the configured push remote
-is verified private. It does not permit credentials, secrets, tokens, keys, or
-rights-restricted material that may not be stored in the repository.
+Private mode permits ordinary Git staging and commits only while the configured
+push remote remains verified private. The add command is retained as a checked
+convenience wrapper. Neither path permits credentials, secrets, tokens, keys,
+or rights-restricted material that may not be stored in the repository.
 USAGE
 }
 
@@ -83,6 +84,7 @@ cd "$repo_root"
 
 verify_private_remote="${repo_root}/.system/verify-private-remote"
 check_public_tree="${repo_root}/.githooks/check-public-tree"
+sync_mode_excludes="${repo_root}/.system/sync-mode-excludes"
 command_name=$1
 
 case "$command_name" in
@@ -113,14 +115,30 @@ case "$command_name" in
       private_base >/dev/null
     fi
     "$verify_private_remote" "$remote_name"
+    [[ -x $sync_mode_excludes ]] || die 'mode exclude synchronizer is unavailable'
+    "$sync_mode_excludes" private >/dev/null || \
+      die 'failed to synchronize mode excludes'
     if [[ $mode == public ]]; then
-      git config --local books.privateBase "$head_oid" 2>/dev/null ||
+      git config --local books.privateBase "$head_oid" 2>/dev/null || {
+        "$sync_mode_excludes" public >/dev/null 2>&1 || true
         die 'failed to store private base configuration'
+      }
     fi
-    git config --local books.privateRemote "$remote_name" 2>/dev/null ||
+    git config --local books.privateRemote "$remote_name" 2>/dev/null || {
+      if [[ $mode == public ]]; then
+        git config --local --unset-all books.privateBase >/dev/null 2>&1 || true
+        "$sync_mode_excludes" public >/dev/null 2>&1 || true
+      fi
       die 'failed to store private remote configuration'
-    git config --local books.repositoryMode private 2>/dev/null ||
+    }
+    git config --local books.repositoryMode private 2>/dev/null || {
+      if [[ $mode == public ]]; then
+        git config --local --unset-all books.privateRemote >/dev/null 2>&1 || true
+        git config --local --unset-all books.privateBase >/dev/null 2>&1 || true
+        "$sync_mode_excludes" public >/dev/null 2>&1 || true
+      fi
       die 'failed to enable private mode'
+    }
     printf "repository-mode: private mode enabled for remote '%s'\n" "$remote_name"
     ;;
 
@@ -133,14 +151,14 @@ case "$command_name" in
     done
 
     mode=$(current_mode)
-    [[ $mode == private ]] || die 'forced staging is allowed only in private mode'
+    [[ $mode == private ]] || die 'private staging is allowed only in private mode'
     private_base >/dev/null
     remote_name=$(private_remote)
     [[ -x $verify_private_remote ]] || die 'private remote verifier is unavailable'
     "$verify_private_remote" "$remote_name"
     printf '%s\n' \
       'repository-mode: credentials, secrets, tokens, keys, and rights-restricted material must not be staged.' >&2
-    git add -A -f -- "$@" >/dev/null 2>&1 || die 'staging failed'
+    git add -A -- "$@" >/dev/null 2>&1 || die 'staging failed'
     printf 'repository-mode: requested paths staged in private mode\n'
     ;;
 
@@ -152,6 +170,7 @@ case "$command_name" in
     mode=$(current_mode)
     if [[ $mode == private ]]; then
       private_base_oid=$(private_base)
+      previous_private_remote=$(private_remote)
       git merge-base --is-ancestor "$private_base_oid" "$head_oid" >/dev/null 2>&1 ||
         die 'private history is not eligible for public mode'
       revision_list=$(git rev-list "${private_base_oid}..${head_oid}" 2>/dev/null) ||
@@ -167,12 +186,37 @@ case "$command_name" in
     "$check_public_tree" --index >/dev/null 2>&1 ||
       die 'index is not eligible for public mode'
 
+    [[ -x $sync_mode_excludes ]] || die 'mode exclude synchronizer is unavailable'
+    "$sync_mode_excludes" public >/dev/null || \
+      die 'failed to synchronize mode excludes'
+
+    restore_previous_mode() {
+      if [[ $mode == private ]]; then
+        git config --local books.privateRemote "$previous_private_remote" \
+          >/dev/null 2>&1 || true
+        git config --local books.privateBase "$private_base_oid" \
+          >/dev/null 2>&1 || true
+        git config --local books.repositoryMode private >/dev/null 2>&1 || true
+        "$sync_mode_excludes" private >/dev/null 2>&1 || true
+      else
+        "$sync_mode_excludes" public >/dev/null 2>&1 || true
+      fi
+    }
+
     git config --local --unset-all books.privateRemote >/dev/null 2>&1 && rc=0 || rc=$?
-    (( rc == 0 || rc == 5 )) || die 'failed to clear private remote configuration'
+    if (( rc != 0 && rc != 5 )); then
+      restore_previous_mode
+      die 'failed to clear private remote configuration'
+    fi
     git config --local --unset-all books.privateBase >/dev/null 2>&1 && rc=0 || rc=$?
-    (( rc == 0 || rc == 5 )) || die 'failed to clear private base configuration'
-    git config --local books.repositoryMode public 2>/dev/null ||
+    if (( rc != 0 && rc != 5 )); then
+      restore_previous_mode
+      die 'failed to clear private base configuration'
+    fi
+    git config --local books.repositoryMode public 2>/dev/null || {
+      restore_previous_mode
       die 'failed to enable public mode'
+    }
     printf 'repository-mode: public mode enabled\n'
     ;;
 

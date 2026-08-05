@@ -52,7 +52,7 @@ project 間で inbox、source、records、tools、build、cache、tmp、logs、l
 repository mode は親の規則と `../.system/repository-mode` に従う。
 
 - public mode では、すべての `<project-id>/` とその全内容、project 名、原文、原稿、PDF、manifest、台帳、config、案件固有 tool を stage、commit、push しない。`book-translations/` 内で Git 対象にできるのは privacy review 済みの `AGENTS.md` だけである。
-- verified private mode では、configured remote の同一性と GitHub visibility が `PRIVATE` と検証できる場合に限り、inbox、draft、out、`.workspace/` を含む processing document を commit できる。stage は必ず `../.system/repository-mode add -- <paths>` を使い、直接の `git add` や `git add -f` を使わない。
+- verified private mode では、configured remote の同一性と GitHub visibility が `PRIVATE` と検証できる場合に限り、inbox、draft、out、`.workspace/` を含む processing document を通常の `git add` で stage、commit できる。互換用の `../.system/repository-mode add -- <paths>` も利用できるが、`git add -f` は使わない。
 - private mode でも credential、secret、token、鍵、契約・ライセンス上保存できない data、権利上 commit できない原資料は commit しない。private remote の存在は取得、保存、翻訳、配布の権限を与えない。
 - `out/` の配布承認と GitHub repository の visibility・commit 可否は別の判定である。配布承認済みでも GitHub に置けるとは限らず、private GitHub に置けても配布できるとは限らない。
 

@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || {
+  printf 'post-merge: repository root is unavailable\n' >&2
+  exit 1
+}
+
+"$repo_root/.system/sync-mode-excludes" >/dev/null || {
+  printf 'post-merge: repository-mode excludes could not be synchronized\n' >&2
+  exit 1
+}

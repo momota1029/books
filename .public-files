@@ -6,12 +6,14 @@ MATH_PROSE_REVIEW.md
 .public-files
 .codex/config.toml
 .githooks/check-public-tree
+.githooks/post-merge
 .githooks/pre-commit
 .githooks/pre-push
 .system/bootstrap
 .system/doctor
 .system/new-book-project
 .system/repository-mode
+.system/sync-mode-excludes
 .system/test-repository-mode
 .system/verify-private-remote
 book-translations/AGENTS.md

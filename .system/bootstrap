@@ -52,6 +52,12 @@ case "$mode" in
     ;;
 esac
 
+sync_mode_excludes="$repo_root/.system/sync-mode-excludes"
+if [[ ! -f "$sync_mode_excludes" || ! -x "$sync_mode_excludes" ]]; then
+  fail "mode exclude synchronizer is unavailable"
+fi
+"$sync_mode_excludes" >/dev/null || fail "mode excludes could not be synchronized"
+
 doctor="$repo_root/.system/doctor"
 if [[ ! -f "$doctor" || ! -x "$doctor" ]]; then
   fail "required doctor is unavailable"

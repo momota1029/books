@@ -32,7 +32,7 @@ fi
 project_id="$1"
 
 case "$project_id" in
-  AGENTS.md|agents.md|projects|shared|system|inbox|draft|out|workspace|tools|records|build|cache|tmp|logs|locks|readme.md|bootstrap|doctor|repository-mode|verify-private-remote|new-book-project)
+  AGENTS.md|agents.md|projects|shared|system|inbox|draft|out|workspace|tools|records|build|cache|tmp|logs|locks|readme.md|bootstrap|doctor|repository-mode|sync-mode-excludes|verify-private-remote|new-book-project)
     fail "project id is reserved"
     ;;
 esac
@@ -109,11 +109,20 @@ if ! { printf '%s\n' "$head_commit" >"$target/.workspace/system-version"; } 2>/d
 fi
 
 relative_target="book-translations/$project_id"
-ignore_match="$(git check-ignore --no-index -v -- "$relative_target/" 2>/dev/null)" || \
-  fail "private ignore check failed"
-ignore_rule="${ignore_match%%$'\t'*}"
-ignore_source="${ignore_rule%%:*}"
-[[ "$ignore_source" == .gitignore ]] || fail "private ignore check failed"
+mode="$(git config --local --get books.repositoryMode 2>/dev/null)" || \
+  fail "repository mode check failed"
+git check-ignore --no-index -q -- "$relative_target/" >/dev/null 2>&1 && \
+  ignore_status=0 || ignore_status=$?
+case "$mode:$ignore_status" in
+  public:0|private:1)
+    ;;
+  public:*)
+    fail "public private-path ignore check failed"
+    ;;
+  private:*)
+    fail "private path staging check failed"
+    ;;
+esac
 
 keep_target=1
 printf 'new-book-project: ok\n'

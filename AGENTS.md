@@ -200,7 +200,7 @@ private な内部確認用 preview は、`unreviewed internal WIP` と input sna
 
 repository mode は local Git config の `books.repositoryMode` に `public` または `private` を設定して管理する。
 未設定の場合は `public` として扱い、`public` と `private` 以外の不正値はエラーとして fail closed にする。
-mode の切り替え、stage、pre-commit、pre-push の各時点で `.system/repository-mode` と hook による検証を通し、bootstrap や hook を迂回しない。
+mode の切り替え、pre-commit、pre-push の各時点で `.system/repository-mode` と hook による検証を通し、bootstrap や hook を迂回しない。
 
 ### public mode
 
@@ -213,10 +213,11 @@ mode の切り替え、stage、pre-commit、pre-push の各時点で `.system/re
 
 - `.system/repository-mode private <remote>` は、指定 remote を解決し、GitHub repository の visibility が `PRIVATE` であることを確認できた場合だけ mode を切り替える。
 - query、authentication、network、parse の失敗、non-GitHub remote、未知の URL 形式、visibility が `PRIVATE` 以外の場合は fail closed にする。
-- private 作業内容の stage は `.system/repository-mode add -- <paths>` だけを使う。直接の `git add`、`git add -f`、hook の `--no-verify` による回避を禁止する。
-- mode 切り替え、`add`、pre-commit、pre-push のたびに private remote の同一性と visibility を再検証する。
+- private 作業内容は通常の `git add` で stage できる。`.system/repository-mode add -- <paths>` は remote を stage 時にも検証する互換用 wrapper として利用できるが、必須ではない。`git add -f` と hook の `--no-verify` による回避は禁止する。
+- mode 切り替え、pre-commit、pre-push のたびに private remote の同一性と visibility を再検証する。互換用 `add` wrapper を使う場合は stage 時にも検証する。
 - 実際に push する remote は configured private remote と完全に一致し、その時点でも GitHub visibility が `PRIVATE` でなければならない。
 - private mode では `inbox/`、`draft/`、`out/`、`.workspace/`、案件 directory を commit できる。ただし credential、secret、token、鍵、および契約・ライセンス・権利上 commit 自体が許されない data は含めない。
+- public mode 専用の privacy ignore は clone-local な `.git/info/exclude` の managed block とし、bootstrap、mode 切り替え、post-merge で同期する。private mode ではこの managed block を外し、通常の Git staging を可能にする。managed block 外の user 固有 exclude は保持する。
 - private remote の存在は内容の取得・保存・配布権限を与えない。`out/` の配布可否と GitHub visibility は別に審査する。
 
 ### mode の移行と共有

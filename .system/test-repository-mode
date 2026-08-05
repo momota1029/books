@@ -43,13 +43,17 @@ fake_bin=$test_root/bin
 mkdir -p "$repo_dir/.system" "$repo_dir/.githooks" "$fake_bin"
 
 cp -- "$source_root/.system/verify-private-remote" \
-  "$source_root/.system/repository-mode" "$repo_dir/.system/"
+  "$source_root/.system/repository-mode" \
+  "$source_root/.system/sync-mode-excludes" "$repo_dir/.system/"
 cp -- "$source_root/.githooks/check-public-tree" \
+  "$source_root/.githooks/post-merge" \
   "$source_root/.githooks/pre-commit" \
   "$source_root/.githooks/pre-push" "$repo_dir/.githooks/"
 chmod +x "$repo_dir/.system/verify-private-remote" \
   "$repo_dir/.system/repository-mode" \
+  "$repo_dir/.system/sync-mode-excludes" \
   "$repo_dir/.githooks/check-public-tree" \
+  "$repo_dir/.githooks/post-merge" \
   "$repo_dir/.githooks/pre-commit" \
   "$repo_dir/.githooks/pre-push"
 
@@ -82,24 +86,34 @@ cat >"$repo_dir/.public-files" <<'ALLOWLIST'
 .public-files
 .gitignore
 .githooks/check-public-tree
+.githooks/post-merge
 .githooks/pre-commit
 .githooks/pre-push
 .system/repository-mode
+.system/sync-mode-excludes
 .system/verify-private-remote
 public.txt
 ALLOWLIST
-printf '/private/\n' >"$repo_dir/.gitignore"
+printf '*.tmp\n' >"$repo_dir/.gitignore"
 printf 'public fixture\n' >"$repo_dir/public.txt"
 
 git init -q "$repo_dir"
 cd "$repo_dir"
 git config --local user.name 'Repository Mode Test'
 git config --local user.email 'repository-mode@example.invalid'
+git config --local core.hooksPath .githooks
 git add -- .public-files .gitignore .githooks .system public.txt
 git commit -q -m 'initial public tree'
+printf '\n*.user-local\n' >>.git/info/exclude
+.system/sync-mode-excludes >/dev/null
+.system/sync-mode-excludes >/dev/null
+[[ $(grep -Fxc -- '# BEGIN books repository-mode managed excludes' \
+  .git/info/exclude) == 1 ]] || fail 1 'managed exclude idempotence'
 
 remote_name=storage
 remote_url=https://github.com/example-owner/example-repository.git
+private_path=book-translations/example/inbox/data.txt
+user_ignored_path=book-translations/example/inbox/notes.user-local
 git remote add "$remote_name" "$remote_url"
 
 status_output=$(.system/repository-mode status 2>/dev/null) ||
@@ -119,26 +133,51 @@ else
   fail 2 'public visibility rejection'
 fi
 
+printf '%s\n' '# BEGIN books repository-mode managed excludes' \
+  >>.git/info/exclude
+if ! expect_failure env FAKE_VISIBILITY=PRIVATE \
+    .system/repository-mode private "$remote_name" ||
+  [[ $(.system/repository-mode status 2>/dev/null) != 'mode=public' ]] ||
+  git config --local --get books.privateRemote >/dev/null 2>&1 ||
+  git config --local --get books.privateBase >/dev/null 2>&1; then
+  fail 3 'failed transition rollback'
+fi
+sed -i '$d' .git/info/exclude
+.system/sync-mode-excludes >/dev/null
+
 base_oid=$(git rev-parse --verify 'HEAD^{commit}')
-if expect_success env FAKE_VISIBILITY=PRIVATE \
+if git check-ignore --no-index -q -- "$private_path" &&
+  expect_success env FAKE_VISIBILITY=PRIVATE \
   .system/repository-mode private "$remote_name" &&
   [[ $(git config --local --get books.repositoryMode) == private ]] &&
   [[ $(git config --local --get books.privateRemote) == "$remote_name" ]] &&
-  [[ $(git config --local --get books.privateBase) == "$base_oid" ]]; then
+  [[ $(git config --local --get books.privateBase) == "$base_oid" ]] &&
+  [[ $(grep -Fxc -- '*.user-local' .git/info/exclude) == 1 ]] &&
+  ! grep -Fq -- '# BEGIN books repository-mode managed excludes' \
+    .git/info/exclude; then
   pass 3 'private mode metadata'
 else
   fail 3 'private mode metadata'
 fi
+export FAKE_VISIBILITY=PRIVATE
 
-mkdir -p private
-printf 'temporary fixture\n' >private/data.txt
-if git check-ignore -q -- private/data.txt &&
+mkdir -p "$(dirname -- "$private_path")"
+printf 'temporary fixture\n' >"$private_path"
+printf 'user ignored fixture\n' >"$user_ignored_path"
+if ! git check-ignore --no-index -q -- "$private_path" &&
+  git check-ignore --no-index -q -- "$user_ignored_path" &&
+  expect_success git add . &&
+  [[ $(git diff --cached --name-only --diff-filter=A) == "$private_path" ]] &&
+  expect_success git reset -q &&
+  expect_failure env FAKE_VISIBILITY=PRIVATE \
+    .system/repository-mode add -- "$user_ignored_path" &&
+  git diff --cached --quiet &&
   expect_success env FAKE_VISIBILITY=PRIVATE \
-    .system/repository-mode add -- private/data.txt &&
-  [[ $(git diff --cached --name-only --diff-filter=A) == private/data.txt ]]; then
-  pass 4 'ignored content staging'
+    .system/repository-mode add -- "$private_path" &&
+  [[ $(git diff --cached --name-only --diff-filter=A) == "$private_path" ]]; then
+  pass 4 'ordinary private content staging'
 else
-  fail 4 'ignored content staging'
+  fail 4 'ordinary private content staging'
 fi
 
 if expect_success env FAKE_VISIBILITY=PRIVATE .githooks/pre-commit &&
@@ -149,7 +188,7 @@ else
 fi
 
 git commit -q -m 'temporary content'
-git rm -q -- private/data.txt
+git rm -q -- "$private_path"
 git commit -q -m 'remove temporary content'
 if expect_failure .system/repository-mode public &&
   [[ $(git config --local --get books.repositoryMode) == private ]]; then
@@ -159,13 +198,53 @@ else
 fi
 
 git switch -q -c public-base "$base_oid"
+printf '%s\n' '# BEGIN books repository-mode managed excludes' \
+  >>.git/info/exclude
+if ! expect_failure .system/repository-mode public ||
+  [[ $(git config --local --get books.repositoryMode) != private ]] ||
+  [[ $(git config --local --get books.privateRemote) != "$remote_name" ]] ||
+  [[ $(git config --local --get books.privateBase) != "$base_oid" ]]; then
+  fail 7 'failed transition rollback'
+fi
+sed -i '$d' .git/info/exclude
+.system/sync-mode-excludes >/dev/null
 if expect_success .system/repository-mode public &&
   [[ $(git config --local --get books.repositoryMode) == public ]] &&
   ! git config --local --get books.privateRemote >/dev/null 2>&1 &&
-  ! git config --local --get books.privateBase >/dev/null 2>&1; then
+  ! git config --local --get books.privateBase >/dev/null 2>&1 &&
+  git check-ignore --no-index -q -- "$private_path" &&
+  [[ $(grep -Fxc -- '*.user-local' .git/info/exclude) == 1 ]] &&
+  [[ $(grep -Fxc -- '# BEGIN books repository-mode managed excludes' \
+    .git/info/exclude) == 1 ]] &&
+  mkdir -p "$(dirname -- "$private_path")" &&
+  printf 'public guard fixture\n' >"$private_path" &&
+  expect_success git add . &&
+  git diff --cached --quiet &&
+  expect_success git add -f -- "$private_path" &&
+  expect_failure .githooks/pre-commit &&
+  expect_success git reset -q; then
   pass 7 'clean baseline restoration'
 else
   fail 7 'clean baseline restoration'
+fi
+
+git switch -q -c merge-source
+printf 'post-merge fixture\n' >>public.txt
+git add -- public.txt
+git commit -q -m 'post-merge fixture'
+git switch -q public-base
+sed -i \
+  '/^# BEGIN books repository-mode managed excludes$/,/^# END books repository-mode managed excludes$/d' \
+  .git/info/exclude
+if ! grep -Fq -- '# BEGIN books repository-mode managed excludes' \
+    .git/info/exclude &&
+  git merge -q --ff-only merge-source &&
+  [[ $(grep -Fxc -- '# BEGIN books repository-mode managed excludes' \
+    .git/info/exclude) == 1 ]] &&
+  [[ $(grep -Fxc -- '*.user-local' .git/info/exclude) == 1 ]]; then
+  pass 8 'post-merge exclude synchronization'
+else
+  fail 8 'post-merge exclude synchronization'
 fi
 
 git config --add "remote.${remote_name}.pushurl" "$remote_url"
@@ -175,24 +254,24 @@ if expect_failure env FAKE_VISIBILITY=PRIVATE \
   .system/verify-private-remote "$remote_name" &&
   expect_failure env FAKE_VISIBILITY=PRIVATE \
     .system/repository-mode private "$remote_name"; then
-  pass 8 'ambiguous push URL rejection'
+  pass 9 'ambiguous push URL rejection'
 else
-  fail 8 'ambiguous push URL rejection'
+  fail 9 'ambiguous push URL rejection'
 fi
 git config --unset-all "remote.${remote_name}.pushurl"
 
 expect_success env FAKE_VISIBILITY=PRIVATE \
   .system/repository-mode private "$remote_name" ||
-  fail 9 'push guard verification'
+  fail 10 'push guard verification'
 if expect_success env FAKE_VISIBILITY=PRIVATE \
   .githooks/pre-push "$remote_name" "$remote_url" </dev/null &&
   expect_failure env FAKE_VISIBILITY=PUBLIC \
     .githooks/pre-push "$remote_name" "$remote_url" </dev/null &&
   expect_failure env FAKE_VISIBILITY=PRIVATE \
     .githooks/pre-push alternate "$remote_url" </dev/null; then
-  pass 9 'push guard verification'
+  pass 10 'push guard verification'
 else
-  fail 9 'push guard verification'
+  fail 10 'push guard verification'
 fi
 
 # Public-mode pre-push is intentionally out of scope here: the copied hook has
@@ -203,7 +282,7 @@ git config --local books.repositoryMode invalid
 if expect_failure .system/repository-mode status &&
   expect_failure .githooks/pre-commit &&
   expect_failure .githooks/pre-push "$remote_name" "$remote_url" </dev/null; then
-  pass 10 'invalid mode rejection'
+  pass 11 'invalid mode rejection'
 else
-  fail 10 'invalid mode rejection'
+  fail 11 'invalid mode rejection'
 fi

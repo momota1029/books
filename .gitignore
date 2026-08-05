@@ -1,20 +1,5 @@
-# Privacy defense in depth only; ignore rules are not encryption or an access-control boundary.
-**/inbox/**
-**/draft/**
-**/out/**
-**/.workspace/**
-
-# Book translation projects stay private; add them in private mode only via the repository-mode wrapper.
-/book-translations/*
-!/book-translations/AGENTS.md
-
-# Documents and ebook source material.
-*.pdf
-*.epub
-*.mobi
-*.azw
-*.azw3
-*.djvu
+# Mode-dependent privacy patterns are managed clone-locally in .git/info/exclude.
+# This shared file contains build artifacts that remain ignored in every mode.
 
 # LaTeX auxiliary and build logs.
 *.aux

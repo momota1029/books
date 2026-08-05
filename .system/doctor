@@ -23,12 +23,14 @@ required_public_files=(
 
 required_scripts=(
   .githooks/check-public-tree
+  .githooks/post-merge
   .githooks/pre-commit
   .githooks/pre-push
   .system/bootstrap
   .system/doctor
   .system/verify-private-remote
   .system/repository-mode
+  .system/sync-mode-excludes
   .system/test-repository-mode
   .system/new-book-project
 )
@@ -97,10 +99,53 @@ private_probes=(
   self-contained-math-notes/.workspace/source/probe.tex
 )
 
+exclude_path="$(git rev-parse --git-path info/exclude 2>/dev/null)" || \
+  fail "local exclude check failed"
+if [[ $exclude_path != /* ]]; then
+  exclude_path="$repo_root/$exclude_path"
+fi
+[[ -f $exclude_path && ! -L $exclude_path ]] || \
+  fail "local exclude check failed"
+begin_count=$(grep -Fxc -- '# BEGIN books repository-mode managed excludes' \
+  "$exclude_path" || true)
+end_count=$(grep -Fxc -- '# END books repository-mode managed excludes' \
+  "$exclude_path" || true)
+case "$mode:$begin_count:$end_count" in
+  public:1:1|private:0:0)
+    ;;
+  *)
+    fail "mode exclude check failed"
+    ;;
+esac
+
 for probe_path in "${private_probes[@]}"; do
   git check-ignore --no-index -q -- "$probe_path" >/dev/null 2>&1 && \
     ignore_status=0 || ignore_status=$?
-  (( ignore_status == 0 )) || fail "private ignore check failed"
+  if [[ $mode == public ]]; then
+    (( ignore_status == 0 )) || fail "public private-path ignore check failed"
+    continue
+  fi
+
+  case "$ignore_status" in
+    1)
+      ;;
+    0)
+      ignore_match=$(git check-ignore --no-index -v -- "$probe_path" 2>/dev/null) || \
+        fail "private path staging check failed"
+      ignore_rule=${ignore_match%%$'\t'*}
+      ignore_source=${ignore_rule%%:*}
+      if [[ $ignore_source == .gitignore ||
+            $ignore_source == */.gitignore ]] &&
+         { [[ $ignore_source != /* ]] ||
+           [[ $ignore_source == "$repo_root/.gitignore" ]] ||
+           [[ $ignore_source == "$repo_root/"* ]]; }; then
+        fail "repository ignore blocks private path staging"
+      fi
+      ;;
+    *)
+      fail "private path staging check failed"
+      ;;
+  esac
 done
 
 for required_path in "${required_public_paths[@]}"; do

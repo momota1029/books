@@ -49,7 +49,7 @@ self-contained-math-notes/
 repository mode は親の規則と `../.system/repository-mode` に従う。
 
 - public mode では、`inbox/`、`draft/`、`out/`、`.workspace/` の4 private 領域とその全内容、project 名、manifest のファイル名・hash、PDF、原稿、講義ノート、台帳、案件固有の data・config・tool を stage、commit、push しない。この project 内で Git 対象にできるのは privacy review 済みの `AGENTS.md` だけである。
-- verified private mode では、configured remote の同一性と GitHub visibility が `PRIVATE` と検証できる場合に限り、4 private 領域を含む processing document を commit できる。stage は必ず `../.system/repository-mode add -- <paths>` を使い、直接の `git add` や `git add -f` を使わない。
+- verified private mode では、configured remote の同一性と GitHub visibility が `PRIVATE` と検証できる場合に限り、4 private 領域を含む processing document を通常の `git add` で stage、commit できる。互換用の `../.system/repository-mode add -- <paths>` も利用できるが、`git add -f` は使わない。
 - private mode でも credential、secret、token、鍵、契約・ライセンス上保存できない data、権利上 commit できない参考資料は commit しない。private remote の存在は取得、保存、利用、配布の権限を与えない。
 - `out/` の配布承認と GitHub repository の visibility・commit 可否は別に判定する。配布承認済みでも GitHub に置けるとは限らず、private GitHub に置けても配布できるとは限らない。
 

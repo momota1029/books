@@ -13,7 +13,7 @@ cd books
 .system/repository-mode status
 ```
 
-`bootstrap` は repository local の Git 設定と hook を準備し、`doctor` は system を検査します。どちらかが失敗した場合は、原因を解消して再実行するまで制作を始めません。system 更新後にも両方を再実行します。
+`bootstrap` は repository local の Git 設定、hook、mode 別の `.git/info/exclude` を準備し、`doctor` は system を検査します。どちらかが失敗した場合は、原因を解消して再実行するまで制作を始めません。system 更新後にも両方を再実行します。
 
 repository mode は clone ごとの local Git config `books.repositoryMode` に記録されます。未設定の clone は `public` として扱われ、`bootstrap` も既定値として `public` を設定します。この時点の通常の出力は `mode=public` です。
 
@@ -77,23 +77,23 @@ mode=private
 privateRemote=origin
 ```
 
-切替コマンドは、切替時点の HEAD と index が public allowlist に適合することに加え、GitHub CLI の認証、`origin` の単一の push URL、repository identity、GitHub API 上の `PRIVATE` visibility を検証します。確認できない項目があれば fail closed で停止し、private mode を有効にしません。成功時には切替時の HEAD を `books.privateBase` として clone の local Git config に記録します。
+切替コマンドは、切替時点の HEAD と index が public allowlist に適合することに加え、GitHub CLI の認証、`origin` の単一の push URL、repository identity、GitHub API 上の `PRIVATE` visibility を検証します。確認できない項目があれば fail closed で停止し、private mode を有効にしません。成功時には切替時の HEAD を `books.privateBase` として clone の local Git config に記録し、public mode 専用の local ignore を外します。
 
 ## 4. private data の通常運用
 
 たとえば `book-translations/PROJECT-ID` を stage、commit、push する手順は次のとおりです。
 
 ```sh
-.system/repository-mode add -- book-translations/PROJECT-ID
+git add -- book-translations/PROJECT-ID
 git diff --cached --name-status
 git diff --cached --
 git commit -m "Describe the private work"
 git push origin main
 ```
 
-private data の stage には必ず `repository-mode add --` を使います。直接の `git add`、`git add -f`、hook を飛ばす `--no-verify` は使いません。この wrapper は credential、secret、token、鍵や、契約・ライセンス・権利上 Git に保存できない資料を自動判定しないため、commit 前に staged diff の対象と内容を必ず確認します。binary file は通常の diff に内容が表示されないため、別途内容を確認します。private remote の存在は、資料の取得、保存、翻訳、配布の権限を与えません。
+verified private mode では、通常の `git add`、`git commit`、`git push` を使えます。既存手順との互換性のため `.system/repository-mode add -- <paths>` も checked wrapper として残しますが、必須ではありません。ignore を強制的に迂回する `git add -f` と hook を飛ばす `--no-verify` は使いません。いずれの stage 方法も credential、secret、token、鍵や、契約・ライセンス・権利上 Git に保存できない資料を自動判定しないため、commit 前に staged diff の対象と内容を必ず確認します。binary file は通常の diff に内容が表示されないため、別途内容を確認します。private remote の存在は、資料の取得、保存、翻訳、配布の権限を与えません。
 
-mode 切替、`add`、pre-commit、pre-push の各 gate は、その都度 online で remote の repository identity と `PRIVATE` visibility を再検証します。pre-push は、実際の送信先が local config に記録した `origin` と完全に一致することも確認します。network、認証、identity、visibility の確認に失敗した場合、stage、commit、push は停止します。
+mode 切替、pre-commit、pre-push の各 gate は、その都度 online で remote の repository identity と `PRIVATE` visibility を再検証します。checked wrapper を使う場合は stage 時にも検証します。pre-push は、実際の送信先が local config に記録した `origin` と完全に一致することも確認します。network、認証、identity、visibility の確認に失敗した場合、mode 切替、commit、push は停止します。
 
 検証済み private mode では、処理中の文書を `inbox/`、`draft/`、`out/`、`.workspace/`、または直接の book project 内に置いて commit できます。ただし、credential・secret・権利上保存できない data の禁止は変わりません。
 
@@ -109,10 +109,10 @@ git merge --no-edit upstream/main
 git push origin main
 ```
 
-merge conflict が発生した場合は、内容を解決した各 path を次のように stage してから merge commit を完了します。解決時にも直接の `git add` は使いません。
+merge conflict が発生した場合は、内容を解決した各 path を通常の Git 操作で stage してから merge commit を完了します。
 
 ```sh
-.system/repository-mode add -- RESOLVED-PATH
+git add -- RESOLVED-PATH
 git diff --cached --name-status
 git diff --cached --
 git commit

@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+fail() {
+  printf 'sync-mode-excludes: %s\n' "$1" >&2
+  exit 1
+}
+
+if (( $# > 1 )); then
+  printf 'usage: .system/sync-mode-excludes [public|private]\n' >&2
+  exit 2
+fi
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(git -C "$script_dir/.." rev-parse --show-toplevel 2>/dev/null)" || \
+  fail 'repository root is unavailable'
+cd -- "$repo_root"
+
+if (( $# == 1 )); then
+  mode=$1
+else
+  mode="$(git config --local --get books.repositoryMode 2>/dev/null)" && \
+    mode_status=0 || mode_status=$?
+  if (( mode_status == 1 )); then
+    mode=public
+  elif (( mode_status != 0 )); then
+    fail 'repository mode lookup failed'
+  fi
+fi
+case "$mode" in
+  public|private) ;;
+  *) fail 'repository mode is invalid' ;;
+esac
+
+exclude_path="$(git rev-parse --git-path info/exclude 2>/dev/null)" || \
+  fail 'local exclude path is unavailable'
+if [[ $exclude_path != /* ]]; then
+  exclude_path="$repo_root/$exclude_path"
+fi
+exclude_dir="$(dirname -- "$exclude_path")"
+mkdir -p -- "$exclude_dir" || fail 'local exclude directory is unavailable'
+if [[ ! -e $exclude_path ]]; then
+  : >"$exclude_path" || fail 'local exclude file could not be created'
+fi
+[[ -f $exclude_path && ! -L $exclude_path ]] || \
+  fail 'local exclude file is invalid'
+
+begin_marker='# BEGIN books repository-mode managed excludes'
+end_marker='# END books repository-mode managed excludes'
+begin_count=$(grep -Fxc -- "$begin_marker" "$exclude_path" || true)
+end_count=$(grep -Fxc -- "$end_marker" "$exclude_path" || true)
+if ! { [[ $begin_count == 0 && $end_count == 0 ]] ||
+       [[ $begin_count == 1 && $end_count == 1 ]]; }; then
+  fail 'managed local exclude block is malformed'
+fi
+
+clean_file=$(mktemp "$exclude_dir/.books-exclude-clean.XXXXXX") || \
+  fail 'temporary exclude file could not be created'
+output_file=$(mktemp "$exclude_dir/.books-exclude-output.XXXXXX") || {
+  rm -f -- "$clean_file"
+  fail 'temporary exclude file could not be created'
+}
+cleanup() {
+  rm -f -- "$clean_file" "$output_file"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+if ! awk -v begin="$begin_marker" -v end="$end_marker" '
+  $0 == begin {
+    if (inside) exit 2
+    inside = 1
+    found_begin = 1
+    next
+  }
+  $0 == end {
+    if (!inside) exit 2
+    inside = 0
+    found_end = 1
+    next
+  }
+  !inside { print }
+  END {
+    if (inside || found_begin != found_end) exit 2
+  }
+' "$exclude_path" >"$clean_file"; then
+  fail 'managed local exclude block is malformed'
+fi
+
+if [[ $mode == public ]]; then
+  {
+    printf '%s\n' "$begin_marker"
+    printf '%s\n' \
+      '# Public-mode privacy guard. Managed by .system/sync-mode-excludes.' \
+      '**/inbox/**' \
+      '**/draft/**' \
+      '**/out/**' \
+      '**/.workspace/**' \
+      '/book-translations/*' \
+      '!/book-translations/AGENTS.md' \
+      '*.pdf' \
+      '*.epub' \
+      '*.mobi' \
+      '*.azw' \
+      '*.azw3' \
+      '*.djvu'
+    printf '%s\n' "$end_marker"
+    cat -- "$clean_file"
+  } >"$output_file" || fail 'local exclude file could not be prepared'
+else
+  cp -- "$clean_file" "$output_file" || \
+    fail 'local exclude file could not be prepared'
+fi
+
+if ! cmp -s -- "$exclude_path" "$output_file"; then
+  chmod --reference="$exclude_path" "$output_file" 2>/dev/null || true
+  mv -- "$output_file" "$exclude_path" || \
+    fail 'local exclude file could not be updated'
+fi
+
+printf 'sync-mode-excludes: mode=%s\n' "$mode"
