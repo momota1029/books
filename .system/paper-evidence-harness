@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import contextlib
 import datetime as dt
 import fcntl
@@ -114,6 +116,22 @@ VISUAL_ORIGINS = {
     "pending", "source-original", "permitted-copy", "faithful-redraw",
     "adapted", "note-original", "software-output",
 }
+VISUAL_REVIEW_CHECKS = (
+    "decode-render", "visual-presence-crop", "source-completeness",
+    "panels-reading-order", "axes-units-scales", "legend-color-symbols",
+    "statistical-encoding", "biological-context", "caption-body-consistency",
+    "geometry-semantics", "scientific-interpretation", "accessibility",
+)
+VISUAL_REVIEW_ALWAYS_REQUIRED = {
+    "decode-render", "visual-presence-crop", "source-completeness",
+}
+VISUAL_REVIEW_STATUSES = {"complete", "not-applicable", "blocked"}
+VISUAL_REVIEW_VERDICTS = {"pass", "needs-revision", "blocked"}
+RASTER_CODERS = {
+    "image/avif": "AVIF", "image/bmp": "BMP", "image/gif": "GIF",
+    "image/heic": "HEIC", "image/jpeg": "JPEG", "image/png": "PNG",
+    "image/tiff": "TIFF", "image/webp": "WEBP",
+}
 REFERENCE_SECTIONS = {
     "asset": "assets", "visual": "visuals", "original-caption": "visuals",
     "resource": "resources", "software": "software",
@@ -177,6 +195,8 @@ def managed_paths(project: pathlib.Path) -> dict[str, pathlib.Path]:
         "external_cache": workspace / "cache" / "external",
         "software_cache": workspace / "cache" / "software",
         "scan_tmp": workspace / "tmp" / "evidence-scan",
+        "visual_reviews": workspace / "review" / "visuals",
+        "visual_review_tmp": workspace / "tmp" / "visual-review",
         "lock": workspace / "locks" / "paper-evidence-harness.lock",
     }
 
@@ -275,6 +295,12 @@ def default_config(project: pathlib.Path) -> dict:
         },
         "ingestion": {"min_stability_interval_seconds": 1.0},
         "parsing": {"max_snapshot_bytes": 536870912},
+        "visual_review": {
+            "default_dpi": 144,
+            "default_max_dimension": 4096,
+            "max_rendered_frames": 200,
+            "max_rendered_bytes": 536870912,
+        },
     }
 
 
@@ -318,6 +344,23 @@ def validate_registry_shape(registry: dict) -> None:
             annotation = entry.get("annotations", {})
             if not isinstance(annotation, dict):
                 raise HarnessError(f"entry annotations must be an object: {key}")
+            preparations = entry.get("visual_review_preparations", {})
+            reviews = entry.get("visual_reviews", {})
+            if not isinstance(preparations, dict) or not all(
+                isinstance(preparation_id, str) and isinstance(receipt, dict)
+                for preparation_id, receipt in preparations.items()
+            ):
+                raise HarnessError(f"visual review preparations must be an object: {key}")
+            if not isinstance(reviews, dict) or not all(
+                isinstance(review_id, str) and isinstance(receipt, dict)
+                for review_id, receipt in reviews.items()
+            ):
+                raise HarnessError(f"visual reviews must be an object: {key}")
+            active_preparation = entry.get("active_visual_review_preparation", "")
+            if not isinstance(active_preparation, str) or (
+                active_preparation and active_preparation not in preparations
+            ):
+                raise HarnessError(f"active visual review preparation is invalid: {key}")
             if annotation.get("disposition", "pending") not in DISPOSITIONS:
                 raise HarnessError(f"unknown entry disposition: {key}")
             if annotation.get("rights_status", "pending") not in RIGHTS_STATUSES:
@@ -345,7 +388,10 @@ def validate_registry_shape(registry: dict) -> None:
 
 def initialize(project: pathlib.Path) -> tuple[dict, dict]:
     paths = managed_paths(project)
-    for key in ("generated", "figures", "assets", "outputs", "external_cache", "software_cache", "scan_tmp"):
+    for key in (
+        "generated", "figures", "assets", "outputs", "external_cache", "software_cache",
+        "scan_tmp", "visual_reviews", "visual_review_tmp",
+    ):
         secure_directory(paths[key], project)
     for key in ("config", "registry", "audit", "ingestion", "transaction"):
         reject_symlink_chain(paths[key], project)
@@ -420,6 +466,165 @@ def stable_file_snapshot(path: pathlib.Path, capture_limit: int = 0) -> dict:
     return result
 
 
+def lexical_relative_path(path: pathlib.Path, root: pathlib.Path) -> pathlib.Path:
+    """Return a normalized lexical path without following any filesystem link."""
+    absolute_path = pathlib.Path(os.path.abspath(os.fspath(path)))
+    absolute_root = pathlib.Path(os.path.abspath(os.fspath(root)))
+    try:
+        relative = absolute_path.relative_to(absolute_root)
+    except ValueError as exc:
+        raise HarnessError("managed path escapes project lexically") from exc
+    if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+        raise HarnessError("managed path has an unsafe lexical component")
+    return relative
+
+
+@contextlib.contextmanager
+def managed_directory_fd(project: pathlib.Path, directory: pathlib.Path):
+    """Open a project directory component-by-component without following links."""
+    relative = lexical_relative_path(directory, project)
+    directory_flags = (
+        os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+    )
+    descriptor = os.open(project, directory_flags)
+    try:
+        for component in relative.parts:
+            next_descriptor = os.open(component, directory_flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = next_descriptor
+        info = os.fstat(descriptor)
+        if not stat.S_ISDIR(info.st_mode):
+            raise HarnessError("managed directory descriptor is not a directory")
+        yield descriptor
+    except OSError as exc:
+        raise HarnessError(f"managed directory could not be opened safely: {directory}") from exc
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(descriptor)
+
+
+def stable_managed_file_snapshot(
+    project: pathlib.Path, path: pathlib.Path, expected_parent: pathlib.Path,
+) -> dict:
+    """Hash a managed file through no-follow directory and file descriptors."""
+    relative = lexical_relative_path(path, project)
+    parent_relative = lexical_relative_path(expected_parent, project)
+    if relative.parts[:len(parent_relative.parts)] != parent_relative.parts:
+        raise HarnessError("managed file is outside its expected package")
+    file_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    with managed_directory_fd(project, path.parent) as parent_fd:
+        try:
+            descriptor = os.open(path.name, file_flags, dir_fd=parent_fd)
+        except OSError as exc:
+            raise HarnessError(f"managed file could not be opened safely: {path}") from exc
+        digest = hashlib.sha256()
+        head = b""
+        try:
+            before = os.fstat(descriptor)
+            if not stat.S_ISREG(before.st_mode):
+                raise HarnessError(f"managed review path is not a regular file: {path}")
+            bytes_read = 0
+            while bytes_read < before.st_size:
+                chunk = os.read(descriptor, min(1024 * 1024, before.st_size - bytes_read))
+                if not chunk:
+                    break
+                bytes_read += len(chunk)
+                if not head:
+                    head = chunk[:16]
+                digest.update(chunk)
+            grew_during_read = bool(os.read(descriptor, 1))
+            after = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+    stable = (
+        before.st_size == after.st_size
+        and before.st_mtime_ns == after.st_mtime_ns
+        and before.st_ino == after.st_ino
+        and before.st_dev == after.st_dev
+        and bytes_read == before.st_size
+        and not grew_during_read
+    )
+    return {
+        "sha256": digest.hexdigest(), "size": after.st_size,
+        "mtime_ns": after.st_mtime_ns, "inode": after.st_ino,
+        "device": after.st_dev, "stable": stable, "head": head,
+    }
+
+
+def publish_managed_directory(
+    project: pathlib.Path, working_root: pathlib.Path,
+    target_root: pathlib.Path, target_name: str,
+) -> None:
+    """Publish one new directory using no-follow source and destination dirfds."""
+    def remove_owned_tree(parent_fd: int, name: str, depth: int = 0) -> None:
+        if depth > 16:
+            raise HarnessError("managed publication cleanup depth exceeded")
+        directory_flags = (
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_DIRECTORY", 0)
+        )
+        try:
+            child_fd = os.open(name, directory_flags, dir_fd=parent_fd)
+        except OSError:
+            os.unlink(name, dir_fd=parent_fd)
+            return
+        try:
+            names = os.listdir(child_fd)
+            if len(names) > 10000:
+                raise HarnessError("managed publication cleanup entry limit exceeded")
+            for child_name in names:
+                info = os.stat(child_name, dir_fd=child_fd, follow_symlinks=False)
+                if stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode):
+                    remove_owned_tree(child_fd, child_name, depth + 1)
+                else:
+                    os.unlink(child_name, dir_fd=child_fd)
+        finally:
+            os.close(child_fd)
+        os.rmdir(name, dir_fd=parent_fd)
+
+    if pathlib.PurePath(target_name).name != target_name or target_name in {".", ".."}:
+        raise HarnessError("managed publication name is invalid")
+    with managed_directory_fd(project, working_root) as working_fd:
+        if not stat.S_ISDIR(os.fstat(working_fd).st_mode):
+            raise HarnessError("managed publication source is not a directory")
+    with (
+        managed_directory_fd(project, working_root.parent) as source_parent_fd,
+        managed_directory_fd(project, target_root) as target_fd,
+    ):
+        try:
+            os.stat(target_name, dir_fd=target_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise HarnessError("visual review preparation ID collision")
+        try:
+            os.rename(
+                working_root.name, target_name,
+                src_dir_fd=source_parent_fd, dst_dir_fd=target_fd,
+            )
+        except OSError as exc:
+            raise HarnessError("visual review package could not be published safely") from exc
+        target_identity = os.fstat(target_fd)
+        try:
+            with managed_directory_fd(project, target_root) as current_target_fd:
+                current_identity = os.fstat(current_target_fd)
+                target_is_current = (
+                    target_identity.st_dev == current_identity.st_dev
+                    and target_identity.st_ino == current_identity.st_ino
+                )
+        except HarnessError:
+            target_is_current = False
+        if not target_is_current:
+            try:
+                remove_owned_tree(target_fd, target_name)
+            except (HarnessError, OSError) as exc:
+                raise HarnessError(
+                    "visual review publication target changed and cleanup was incomplete"
+                ) from exc
+            raise HarnessError("visual review publication target changed during publish")
+
+
 @contextlib.contextmanager
 def immutable_parse_snapshot(
     project: pathlib.Path, path: pathlib.Path, expected: dict, max_bytes: int,
@@ -491,6 +696,76 @@ def immutable_parse_snapshot(
         temp_path.unlink(missing_ok=True)
 
 
+def descriptor_snapshot(descriptor: int) -> dict:
+    """Hash one already-open regular descriptor and restore its read offset."""
+    digest = hashlib.sha256()
+    before = os.fstat(descriptor)
+    if not stat.S_ISREG(before.st_mode):
+        raise HarnessError("decoder snapshot descriptor is not a regular file")
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    bytes_read = 0
+    while bytes_read < before.st_size:
+        chunk = os.read(descriptor, min(1024 * 1024, before.st_size - bytes_read))
+        if not chunk:
+            break
+        bytes_read += len(chunk)
+        digest.update(chunk)
+    grew_during_read = bool(os.read(descriptor, 1))
+    after = os.fstat(descriptor)
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    return {
+        "sha256": digest.hexdigest(), "size": after.st_size,
+        "mtime_ns": after.st_mtime_ns, "inode": after.st_ino,
+        "device": after.st_dev,
+        "stable": (
+            before.st_size == after.st_size
+            and before.st_mtime_ns == after.st_mtime_ns
+            and before.st_ino == after.st_ino
+            and before.st_dev == after.st_dev
+            and bytes_read == before.st_size
+            and not grew_during_read
+        ),
+    }
+
+
+@contextlib.contextmanager
+def immutable_decoder_snapshot(
+    project: pathlib.Path, path: pathlib.Path, expected: dict, max_bytes: int,
+):
+    """Expose an unlink-only, read-only verified snapshot to selected child processes."""
+    with immutable_parse_snapshot(project, path, expected, max_bytes) as snapshot_path:
+        os.chmod(snapshot_path, 0o400)
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(snapshot_path, flags)
+        before = descriptor_snapshot(descriptor)
+        if (
+            not before.get("stable")
+            or before.get("sha256") != expected.get("sha256")
+            or before.get("size") != expected.get("size")
+        ):
+            os.close(descriptor)
+            raise HarnessError("decoder snapshot does not match the scanned source")
+        snapshot_path.unlink()
+        verification_error = ""
+        try:
+            yield pathlib.Path(f"/proc/self/fd/{descriptor}"), descriptor
+        finally:
+            try:
+                after = descriptor_snapshot(descriptor)
+                if (
+                    not after.get("stable")
+                    or after.get("sha256") != expected.get("sha256")
+                    or after.get("size") != expected.get("size")
+                    or after.get("inode") != before.get("inode")
+                    or after.get("device") != before.get("device")
+                ):
+                    verification_error = "decoder snapshot changed while it was in use"
+            finally:
+                os.close(descriptor)
+            if verification_error:
+                raise HarnessError(verification_error)
+
+
 def short_id(prefix: str, material: str) -> str:
     digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:16].upper()
     return f"{prefix}-{digest}"
@@ -506,14 +781,15 @@ def parser_process_limits() -> None:
 
 def run_tool(
     argv: list[str], timeout: int = 60, max_output_bytes: int = 16 * 1024 * 1024,
+    environment: dict[str, str] | None = None, pass_fds: tuple[int, ...] = (),
 ) -> tuple[int, str, str]:
     """Run an untrusted-document parser with bounded process and captured output."""
     try:
         with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
             result = subprocess.run(
                 argv, check=False, stdout=stdout_file, stderr=stderr_file,
-                timeout=timeout, env={**os.environ, "LC_ALL": "C"},
-                preexec_fn=parser_process_limits,
+                timeout=timeout, env=environment or {**os.environ, "LC_ALL": "C"},
+                preexec_fn=parser_process_limits, pass_fds=pass_fds,
             )
             stdout_size = stdout_file.tell()
             stderr_size = stderr_file.tell()
@@ -526,6 +802,96 @@ def run_tool(
     except (OSError, subprocess.TimeoutExpired) as exc:
         return 127, "", str(exc)
     return result.returncode, stdout, stderr
+
+
+def renderer_process_limits() -> None:
+    import resource
+    resource.setrlimit(resource.RLIMIT_AS, (2 * 1024 * 1024 * 1024, 2 * 1024 * 1024 * 1024))
+    resource.setrlimit(resource.RLIMIT_CPU, (300, 300))
+    resource.setrlimit(resource.RLIMIT_FSIZE, (128 * 1024 * 1024, 128 * 1024 * 1024))
+    resource.setrlimit(resource.RLIMIT_NOFILE, (128, 128))
+
+
+def renderer_environment(temp_root: pathlib.Path) -> dict[str, str]:
+    return {
+        "PATH": os.environ.get("PATH", os.defpath),
+        "LANG": "C", "LC_ALL": "C", "TZ": "UTC",
+        "TMPDIR": str(temp_root), "MAGICK_TEMPORARY_PATH": str(temp_root),
+        "MAGICK_MEMORY_LIMIT": "512MiB", "MAGICK_MAP_LIMIT": "512MiB",
+        "MAGICK_DISK_LIMIT": "512MiB", "MAGICK_AREA_LIMIT": "100MP",
+        "MAGICK_WIDTH_LIMIT": "32KP", "MAGICK_HEIGHT_LIMIT": "32KP",
+        "MAGICK_THREAD_LIMIT": "1", "MAGICK_TIME_LIMIT": "300",
+    }
+
+
+def render_output_budget(root: pathlib.Path, max_files: int, max_bytes: int) -> tuple[int, int]:
+    file_count = 0
+    total_size = 0
+    for current_root, directories, files in os.walk(root, followlinks=False):
+        current = pathlib.Path(current_root)
+        for name in directories:
+            if (current / name).is_symlink():
+                raise HarnessError("visual review renderer created a symlink")
+        for name in files:
+            path = current / name
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode):
+                raise HarnessError("visual review renderer created a special file")
+            file_count += 1
+            total_size += info.st_size
+            if file_count > max_files:
+                raise HarnessError("visual review renderer exceeded the frame limit")
+            if total_size > max_bytes:
+                raise HarnessError("visual review renderer exceeded the output byte limit")
+    return file_count, total_size
+
+
+def run_bounded_renderer(
+    argv: list[str], output_root: pathlib.Path, temp_root: pathlib.Path,
+    max_files: int, max_bytes: int, timeout: int = 300,
+    pass_fds: tuple[int, ...] = (),
+) -> subprocess.CompletedProcess:
+    try:
+        process = subprocess.Popen(
+            argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=renderer_environment(temp_root), preexec_fn=renderer_process_limits,
+            start_new_session=True, pass_fds=pass_fds,
+        )
+    except OSError as exc:
+        raise HarnessError(f"visual review renderer could not start: {argv[0]}") from exc
+    assert process.stdout is not None and process.stderr is not None
+    stdout_fd = process.stdout.fileno()
+    stderr_fd = process.stderr.fileno()
+    buffers = {stdout_fd: bytearray(), stderr_fd: bytearray()}
+    open_streams = {stdout_fd, stderr_fd}
+    deadline = time.monotonic() + timeout
+    try:
+        while open_streams:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise HarnessError("visual review renderer timed out")
+            ready, _, _ = select.select(list(open_streams), [], [], min(0.25, remaining))
+            for descriptor in ready:
+                chunk = os.read(descriptor, 65536)
+                if not chunk:
+                    open_streams.remove(descriptor)
+                    continue
+                buffers[descriptor].extend(chunk)
+                if len(buffers[descriptor]) > 4 * 1024 * 1024:
+                    raise HarnessError("visual review renderer diagnostic output exceeded 4 MiB")
+            render_output_budget(output_root, max_files, max_bytes)
+        return_code = process.wait(timeout=max(1.0, deadline - time.monotonic()))
+    except (HarnessError, subprocess.TimeoutExpired):
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, 9)
+        process.wait()
+        raise
+    render_output_budget(output_root, max_files, max_bytes)
+    return subprocess.CompletedProcess(
+        argv, return_code,
+        bytes(buffers[stdout_fd]).decode("utf-8", errors="replace"),
+        bytes(buffers[stderr_fd]).decode("utf-8", errors="replace"),
+    )
 
 
 def sniff_type(path: pathlib.Path, head: bytes | None = None) -> str:
@@ -572,20 +938,61 @@ def valid_svg_document(data: bytes) -> bool:
     """Validate one bounded SVG document without fetching or expanding entities."""
     if not data:
         return False
+    if re.search(rb"(?i)(?:@import|url\s*\(\s*['\"]?\s*(?!#))", data):
+        return False
     root_name = ""
     parser = xml.parsers.expat.ParserCreate(namespace_separator="}")
     parser.SetParamEntityParsing(xml.parsers.expat.XML_PARAM_ENTITY_PARSING_NEVER)
 
+    def valid_embedded_raster(value: str) -> bool:
+        match = re.fullmatch(
+            r"data:(image/(?:avif|bmp|gif|heic|jpeg|png|tiff|webp));base64,(.*)",
+            value, re.IGNORECASE | re.DOTALL,
+        )
+        if not match:
+            return False
+        media_type = match.group(1).lower()
+        encoded = re.sub(r"\s+", "", match.group(2))
+        if len(encoded) > 24 * 1024 * 1024:
+            return False
+        try:
+            decoded = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError):
+            return False
+        if not decoded or len(decoded) > 16 * 1024 * 1024:
+            return False
+        suffix = {
+            "image/avif": ".avif", "image/bmp": ".bmp", "image/gif": ".gif",
+            "image/heic": ".heic", "image/jpeg": ".jpg", "image/png": ".png",
+            "image/tiff": ".tiff", "image/webp": ".webp",
+        }[media_type]
+        return sniff_type(pathlib.Path(f"embedded{suffix}"), decoded[:16]) == media_type
+
     def start_element(name: str, attributes: dict) -> None:
         nonlocal root_name
+        local_name = name.rsplit("}", 1)[-1]
         if not root_name:
-            root_name = name.rsplit("}", 1)[-1]
+            root_name = local_name
+        if local_name.lower() in {"script", "foreignobject"}:
+            raise ValueError("active or foreign SVG content is not accepted")
+        for attribute_name, raw_value in attributes.items():
+            local_attribute = attribute_name.rsplit("}", 1)[-1].lower()
+            value = str(raw_value).strip()
+            if local_attribute.startswith("on"):
+                raise ValueError("SVG event handlers are not accepted")
+            if local_attribute == "href":
+                if value.startswith("#"):
+                    continue
+                if not valid_embedded_raster(value):
+                    raise ValueError("external or nested SVG references are not accepted")
 
     def reject_entity(*arguments: object) -> None:
         raise ValueError("SVG entity declarations are not accepted")
 
     parser.StartElementHandler = start_element
     parser.EntityDeclHandler = reject_entity
+    parser.StartDoctypeDeclHandler = lambda *arguments: reject_entity()
+    parser.ProcessingInstructionHandler = lambda *arguments: reject_entity()
     parser.ExternalEntityRefHandler = lambda *arguments: 1
     try:
         parser.Parse(data, True)
@@ -1026,6 +1433,12 @@ def scan_file(
         "security_status": "pending" if stable else "blocked",
         "annotations": merge_annotation(old_assets.get(asset_id, {}).get("annotations"), kind),
     }
+    old_asset = old_assets.get(asset_id, {})
+    for field in (
+        "visual_review_preparations", "visual_reviews", "active_visual_review_preparation",
+    ):
+        if field in old_asset:
+            entry[field] = json.loads(json.dumps(old_asset[field]))
     if path.suffix.lower() == ".svg":
         entry["metadata_status"] = "parsed-bounded-memory" if svg_valid else "blocked"
     observations = list(old_assets.get(asset_id, {}).get("stable_observations", []))
@@ -1304,6 +1717,13 @@ def discover(project: pathlib.Path, config: dict, previous: dict) -> dict:
             retained = json.loads(json.dumps(old))
             retained["state"] = "current" if manual else "missing"
             visuals[visual_id] = retained
+    for visual_id, visual in visuals.items():
+        old = old_visuals.get(visual_id, {})
+        for field in (
+            "visual_review_preparations", "visual_reviews", "active_visual_review_preparation",
+        ):
+            if field in old:
+                visual[field] = json.loads(json.dumps(old[field]))
     registry["visuals"] = visuals
 
     note_refs, note_urls, integrations, source_files = collect_note_references(project, config)
@@ -1424,7 +1844,10 @@ def discover(project: pathlib.Path, config: dict, previous: dict) -> dict:
 
 def discovery_fingerprint(registry: dict) -> str:
     def cleaned(section: str, entry: dict) -> dict:
-        ignored = {"annotations", "stable_observations"}
+        ignored = {
+            "annotations", "stable_observations", "visual_review_preparations",
+            "visual_reviews", "active_visual_review_preparation",
+        }
         if section == "resources":
             ignored.update({"verification", "retrieval"})
         if section == "software":
@@ -1548,6 +1971,11 @@ def catalog_fingerprint(registry: dict) -> str:
         for key in ("schema_version", "project", "scope", "scan", "assets", "visuals", "resources", "software", "runs", "relations")
     }
     payload = json.dumps(view, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def json_fingerprint(value: object) -> str:
+    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -1863,6 +2291,88 @@ def inspect_reader_visibility(entry: dict, strict: bool, errors: list[str], warn
             (errors if strict else warnings).append(f"reader-visible entry lacks a public summary: {entry_id}")
 
 
+def review_receipt_fingerprint(review: dict) -> str:
+    view = json.loads(json.dumps(review))
+    view.pop("receipt_fingerprint", None)
+    return json_fingerprint(view)
+
+
+def inspect_visual_review_target(
+    project: pathlib.Path, registry: dict, target_id: str, strict: bool,
+    errors: list[str], warnings: list[str],
+) -> None:
+    try:
+        _, target, _, current_input = visual_review_target(registry, target_id)
+    except HarnessError as exc:
+        errors.append(str(exc))
+        return
+    preparation_id = target.get("active_visual_review_preparation", "")
+    preparation = target.get("visual_review_preparations", {}).get(preparation_id, {})
+    if not preparation_id:
+        (errors if strict else warnings).append(f"Codex visual review preparation is missing: {target_id}")
+        return
+    preparation_errors = validate_visual_review_preparation(
+        project, registry, target_id, preparation,
+    )
+    if preparation_errors:
+        errors.extend(preparation_errors)
+        return
+    current_reviews: dict[str, dict] = {}
+    for review_id, review in target.get("visual_reviews", {}).items():
+        if review.get("receipt_fingerprint") != review_receipt_fingerprint(review):
+            errors.append(f"visual review receipt fingerprint is invalid: {target_id} {review_id}")
+            continue
+        if review.get("target_id") != target_id:
+            errors.append(f"visual review target identity is invalid: {target_id} {review_id}")
+            continue
+        checks = review.get("checks", {})
+        if (
+            not isinstance(checks, dict) or set(checks) != set(VISUAL_REVIEW_CHECKS)
+            or any(status not in VISUAL_REVIEW_STATUSES for status in checks.values())
+            or review.get("reviewer_kind") not in {"codex", "human", "domain-expert"}
+            or review.get("role") not in {"primary", "independent"}
+            or review.get("verdict") not in VISUAL_REVIEW_VERDICTS
+            or (
+                review.get("verdict") == "pass"
+                and any(checks.get(key) != "complete" for key in VISUAL_REVIEW_ALWAYS_REQUIRED)
+            )
+        ):
+            errors.append(f"visual review receipt schema is invalid: {target_id} {review_id}")
+            continue
+        if (
+            review.get("preparation_id") == preparation_id
+            and review.get("preparation_fingerprint") == preparation.get("receipt_fingerprint")
+            and review.get("input_fingerprint") == current_input
+        ):
+            current_reviews[review_id] = review
+    nonpassing = [review_id for review_id, review in current_reviews.items() if review.get("verdict") != "pass"]
+    if nonpassing:
+        (errors if strict else warnings).append(
+            f"current visual review has open findings: {target_id} ({', '.join(sorted(nonpassing))})"
+        )
+    primaries = {
+        review_id: review for review_id, review in current_reviews.items()
+        if review.get("role") == "primary" and review.get("verdict") == "pass"
+        and review.get("reviewer_kind") == "codex"
+        and not review.get("findings") and "blocked" not in review.get("checks", {}).values()
+    }
+    independent_pairs = [
+        (review_id, review, primaries.get(review.get("independent_of")))
+        for review_id, review in current_reviews.items()
+        if review.get("role") == "independent" and review.get("verdict") == "pass"
+        and review.get("reviewer_kind") == "codex"
+        and not review.get("findings") and "blocked" not in review.get("checks", {}).values()
+    ]
+    valid_pair = any(
+        primary is not None and primary.get("reviewer") != review.get("reviewer")
+        for _, review, primary in independent_pairs
+    )
+    if not primaries:
+        (errors if strict else warnings).append(f"passing primary Codex visual review is missing: {target_id}")
+    if not valid_pair:
+        (errors if strict else warnings).append(f"independent Codex visual re-review is missing: {target_id}")
+
+
 def inspect_gate(project: pathlib.Path, config: dict, registry: dict, phase: str) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
@@ -1972,7 +2482,14 @@ def inspect_gate(project: pathlib.Path, config: dict, registry: dict, phase: str
                 if annotation.get(field) not in {"complete", "not-applicable"}:
                     errors.append(f"{field} is incomplete for {asset['id']}")
             if not annotation.get("reviewer") or not annotation.get("reviewed_at"):
-                errors.append(f"manual completeness review lacks reviewer metadata: {asset['id']}")
+                errors.append(f"completeness review lacks reviewer metadata: {asset['id']}")
+        if asset.get("kind") == "source-document" and disposition in {"include", "explain"}:
+            if annotation.get("visual_review_status") != "complete":
+                (errors if strict else warnings).append(
+                    f"source document requires complete Codex full-page visual review: {asset['id']}"
+                )
+            else:
+                inspect_visual_review_target(project, registry, asset["id"], strict, errors, warnings)
         attachment_names = [
             item.get("name") if isinstance(item, dict) else str(item)
             for item in asset.get("pdf", {}).get("attachments", [])
@@ -2077,6 +2594,7 @@ def inspect_gate(project: pathlib.Path, config: dict, registry: dict, phase: str
                 rel.get("from") == visual["id"] and rel.get("kind") == "generated-by" for rel in relations
             ):
                 errors.append(f"software visual lacks generator lineage: {visual['id']}")
+            inspect_visual_review_target(project, registry, visual["id"], strict, errors, warnings)
 
     for resource in registry.get("resources", {}).values():
         if resource.get("state") != "current":
@@ -2430,7 +2948,7 @@ def annotate_entry(registry: dict, args: argparse.Namespace) -> None:
     review_values = (args.visual_review, args.link_review, args.attachment_review, args.archive_review)
     if any(value == "complete" for value in review_values):
         if not args.reviewer and not annotation.get("reviewer"):
-            raise HarnessError("manual completeness review requires --reviewer")
+            raise HarnessError("completeness review requires --reviewer")
         annotation["reviewer"] = args.reviewer or annotation["reviewer"]
         annotation["reviewed_at"] = now_utc()
     if args.revision is not None:
@@ -2442,6 +2960,509 @@ def annotate_entry(registry: dict, args: argparse.Namespace) -> None:
         entry["requested_revision"] = args.revision
         entry["revision_requires_review"] = not bool(args.revision)
         entry["revision_source"] = "manual"
+
+
+def current_asset_path(project: pathlib.Path, asset: dict) -> tuple[pathlib.Path, dict]:
+    for relative in asset.get("locations", []):
+        try:
+            path = ensure_within(project / relative, project)
+            if not path.is_file() or path.is_symlink():
+                continue
+            snapshot = stable_file_snapshot(path)
+        except (HarnessError, OSError):
+            continue
+        if (
+            snapshot.get("stable")
+            and snapshot.get("sha256") == asset.get("sha256")
+            and snapshot.get("size") == asset.get("size")
+        ):
+            return path, snapshot
+    raise HarnessError(f"visual review source asset is missing or stale: {asset.get('id')}")
+
+
+def visual_review_target(registry: dict, target_id: str) -> tuple[str, dict, dict, str]:
+    section, target = find_entry(registry, target_id)
+    if section == "assets":
+        asset = target
+    elif section == "visuals":
+        asset = registry.get("assets", {}).get(target.get("source_asset"), {})
+        if not asset:
+            raise HarnessError("visual review target has no current source asset")
+    else:
+        raise HarnessError("visual review targets must be asset or visual IDs")
+    if target.get("state", "current") != "current" or asset.get("state", "current") != "current":
+        raise HarnessError("visual review target or source asset is not current")
+    target_view = {
+        "target_id": target_id,
+        "target_section": section,
+        "source_asset": asset.get("id"),
+        "source_sha256": asset.get("sha256"),
+        "source_size": asset.get("size"),
+        "source_media_type": asset.get("media_type"),
+        "source_pdf_pages": asset.get("pdf", {}).get("pages"),
+        "target_annotations": target.get("annotations", {}),
+    }
+    if section == "visuals":
+        target_view.update({
+            "visual_type": target.get("visual_type"),
+            "locator": target.get("locator", {}),
+            "caption_candidate": target.get("caption_candidate", ""),
+            "candidate_basis": target.get("candidate_basis", ""),
+        })
+    relevant_ids = {target_id, str(asset.get("id", ""))}
+    target_view["relations"] = sorted(
+        (
+            str(relation.get("from", "")), str(relation.get("kind", "")),
+            str(relation.get("to", "")),
+        )
+        for relation in registry.get("relations", [])
+        if relation.get("from") in relevant_ids or relation.get("to") in relevant_ids
+    )
+    referenced_paths = {
+        reference.get("path") for reference in registry.get("note_references", [])
+        if reference.get("id") in relevant_ids
+    }
+    target_view["note_source_files"] = sorted(
+        (source.get("path"), source.get("sha256"))
+        for source in registry.get("scan", {}).get("note_source_files", [])
+        if source.get("path") in referenced_paths
+    )
+    return section, target, asset, json_fingerprint(target_view)
+
+
+def imagemagick_review_policy(temp_root: pathlib.Path) -> tuple[str, str]:
+    identify = shutil.which("identify")
+    convert = shutil.which("convert")
+    if not identify or not convert:
+        raise HarnessError("ImageMagick identify and convert are required for raster/SVG visual review")
+    environment = renderer_environment(temp_root)
+    status_code, policy_text, policy_error = run_tool(
+        [identify, "-list", "policy"], timeout=30, max_output_bytes=1024 * 1024,
+        environment=environment,
+    )
+    if status_code != 0:
+        raise HarnessError(f"ImageMagick policy could not be inspected: {policy_error.strip()[:200]}")
+    policy_blocks = re.split(r"\n\s*Policy:\s*", policy_text)
+    denied_delegates: set[str] = set()
+    path_indirection_denied = False
+    for block in policy_blocks:
+        if re.search(r"^Delegate\s*$", block, re.MULTILINE) and re.search(r"rights:\s*None", block, re.IGNORECASE):
+            pattern = re.search(r"pattern:\s*(\S+)", block)
+            if pattern:
+                denied_delegates.add(pattern.group(1).upper())
+        if re.search(r"^Path\s*$", block, re.MULTILINE) and re.search(r"rights:\s*None", block, re.IGNORECASE):
+            if re.search(r"pattern:\s*@\*", block):
+                path_indirection_denied = True
+    if not {"URL", "HTTP", "HTTPS"} <= denied_delegates or not path_indirection_denied:
+        raise HarnessError("ImageMagick policy must deny URL/HTTP/HTTPS delegates and @ path indirection")
+    status_code, version_out, version_error = run_tool(
+        [identify, "-version"], timeout=30, max_output_bytes=65536,
+        environment=environment,
+    )
+    if status_code != 0:
+        raise HarnessError(f"ImageMagick version could not be recorded: {version_error.strip()[:200]}")
+    version = version_out.splitlines()[0].strip()
+    return version, json_fingerprint(policy_text)
+
+
+def preparation_receipt_fingerprint(receipt: dict) -> str:
+    view = json.loads(json.dumps(receipt))
+    view.pop("receipt_fingerprint", None)
+    return json_fingerprint(view)
+
+
+def validate_visual_review_preparation(
+    project: pathlib.Path, registry: dict, target_id: str, receipt: dict,
+) -> list[str]:
+    errors: list[str] = []
+    try:
+        _, _, asset, current_input = visual_review_target(registry, target_id)
+    except HarnessError as exc:
+        return [str(exc)]
+    preparation_id = receipt.get("id", "")
+    if not preparation_id or receipt.get("target_id") != target_id:
+        errors.append(f"visual review preparation identity is invalid: {target_id}")
+    if receipt.get("input_fingerprint") != current_input:
+        errors.append(f"visual review preparation is stale for current input: {target_id}")
+    if receipt.get("receipt_fingerprint") != preparation_receipt_fingerprint(receipt):
+        errors.append(f"visual review preparation receipt fingerprint is invalid: {target_id}")
+    expected_root = managed_paths(project)["visual_reviews"] / target_id / preparation_id
+    expected_count = receipt.get("expected_frame_count")
+    source_count = receipt.get("source_frame_count")
+    outputs = receipt.get("outputs", [])
+    if (
+        not isinstance(expected_count, int) or expected_count < 1
+        or not isinstance(source_count, int) or source_count < expected_count
+        or not isinstance(outputs, list) or len(outputs) != expected_count
+    ):
+        errors.append(f"visual review frame count is incomplete: {target_id}")
+        outputs = outputs if isinstance(outputs, list) else []
+    if receipt.get("source_snapshot_sha256") != asset.get("sha256"):
+        errors.append(f"visual review source snapshot identity is invalid: {target_id}")
+    output_names: list[str] = []
+    output_indices: list[int] = []
+    for output in outputs:
+        try:
+            path = project / output.get("path", "")
+            if lexical_relative_path(path.parent, project) != lexical_relative_path(expected_root / "frames", project):
+                raise HarnessError("review frame is outside the exact frame directory")
+            name_match = re.fullmatch(r"frame-(\d+)\.png", path.name)
+            if not name_match:
+                raise HarnessError("review frame name is invalid")
+            snapshot = stable_managed_file_snapshot(project, path, expected_root)
+            if not snapshot.get("stable") or sniff_type(path, snapshot.get("head")) != "image/png":
+                raise HarnessError("review frame is missing, unsafe, or not PNG")
+            if (
+                snapshot.get("sha256") != output.get("sha256")
+                or snapshot.get("size") != output.get("size")
+            ):
+                raise HarnessError("review frame bytes do not match receipt")
+            if not isinstance(output.get("width"), int) or output["width"] < 1:
+                raise HarnessError("review frame width is invalid")
+            if not isinstance(output.get("height"), int) or output["height"] < 1:
+                raise HarnessError("review frame height is invalid")
+            output_names.append(path.name)
+            output_indices.append(int(name_match.group(1)))
+        except (HarnessError, OSError, AttributeError, TypeError) as exc:
+            errors.append(f"visual review output is stale or unsafe: {target_id}: {exc}")
+    if not outputs:
+        errors.append(f"visual review preparation has no rendered frames: {target_id}")
+    if output_indices and output_indices != list(range(output_indices[0], output_indices[0] + len(output_indices))):
+        errors.append(f"visual review frame sequence is incomplete: {target_id}")
+    try:
+        with managed_directory_fd(project, expected_root / "frames") as frames_fd:
+            actual_names = sorted(os.listdir(frames_fd))
+        if actual_names != sorted(output_names):
+            raise HarnessError("frame directory does not exactly match the receipt")
+    except (HarnessError, OSError) as exc:
+        errors.append(f"visual review frame directory is stale or unsafe: {target_id}: {exc}")
+    try:
+        manifest_path = project / receipt.get("manifest_path", "")
+        if lexical_relative_path(manifest_path.parent, project) != lexical_relative_path(expected_root, project):
+            raise HarnessError("review manifest is outside the exact preparation directory")
+        manifest_snapshot = stable_managed_file_snapshot(project, manifest_path, expected_root)
+        if (
+            not manifest_snapshot.get("stable")
+            or manifest_snapshot.get("sha256") != receipt.get("manifest_sha256")
+            or manifest_snapshot.get("size") != receipt.get("manifest_size")
+        ):
+            raise HarnessError("review manifest bytes do not match receipt")
+    except (HarnessError, OSError, AttributeError, TypeError):
+        errors.append(f"visual review manifest is stale or unsafe: {target_id}")
+    return errors
+
+
+def render_visual_review_source(
+    project: pathlib.Path, source_path: pathlib.Path, source_snapshot: dict,
+    max_input_bytes: int, section: str, target: dict, asset: dict, media_type: str,
+    dpi: int, max_dimension: int, max_frames: int, max_bytes: int,
+    frame_root: pathlib.Path, decoder_temp: pathlib.Path,
+) -> tuple[str, str, list[str], int, int]:
+    """Render exactly one immutable, hash-verified source revision."""
+    decoder_version = ""
+    decoder_policy_fingerprint = ""
+    normalized_command: list[str] = []
+    with immutable_decoder_snapshot(
+        project, source_path, source_snapshot, max_input_bytes,
+    ) as (decoder_source, decoder_source_fd):
+        if media_type == "application/pdf":
+            mutool = shutil.which("mutool")
+            if not mutool:
+                raise HarnessError("mutool is required for PDF visual review")
+            status_code, version_out, version_error = run_tool(
+                [mutool, "-v"], timeout=30, max_output_bytes=65536,
+                environment=renderer_environment(decoder_temp),
+            )
+            if status_code != 0:
+                raise HarnessError(f"MuPDF version could not be recorded: {version_error.strip()[:200]}")
+            decoder_version = (version_out or version_error).splitlines()[0].strip()
+            pages_status, pages_out, pages_error = run_tool(
+                [mutool, "pages", str(decoder_source)], timeout=120,
+                max_output_bytes=min(1024 * 1024, max_frames * 128 + 4096),
+                environment=renderer_environment(decoder_temp),
+                pass_fds=(decoder_source_fd,),
+            )
+            if pages_status != 0:
+                raise HarnessError(f"MuPDF page inventory failed: {pages_error.strip()[:200]}")
+            page_numbers = [int(value) for value in re.findall(r'<page\s+pagenum="(\d+)"', pages_out)]
+            source_frame_count = len(page_numbers)
+            if page_numbers != list(range(1, source_frame_count + 1)):
+                raise HarnessError("MuPDF page inventory is incomplete")
+            if source_frame_count != int(asset.get("pdf", {}).get("pages") or 0):
+                raise HarnessError("PDF page inventory does not match the scanned source metadata")
+            locator_page = target.get("locator", {}).get("page") if section == "visuals" else None
+            if locator_page is not None and (
+                not isinstance(locator_page, int) or not 1 <= locator_page <= source_frame_count
+            ):
+                raise HarnessError("PDF visual review page locator is outside the source")
+            expected_frame_count = 1 if locator_page else source_frame_count
+            if source_frame_count < 1 or not 1 <= expected_frame_count <= max_frames:
+                raise HarnessError("PDF visual review page count exceeds the configured frame limit")
+            page_spec = str(locator_page) if locator_page else f"1-{source_frame_count}"
+            output_pattern = frame_root / "frame-%04d.png"
+            command = [
+                mutool, "draw", "-q", "-r", str(dpi), "-w", str(max_dimension),
+                "-h", str(max_dimension), "-o", str(output_pattern), str(decoder_source), page_spec,
+            ]
+            normalized_command = [
+                "mutool", "draw", "-q", "-r", str(dpi), "-w", str(max_dimension),
+                "-h", str(max_dimension), "-o", "{FRAME_PATTERN}", "{IMMUTABLE_SOURCE}", page_spec,
+            ]
+        else:
+            decoder_version, decoder_policy_fingerprint = imagemagick_review_policy(decoder_temp)
+            identify = shutil.which("identify")
+            convert = shutil.which("convert")
+            if not identify or not convert:
+                raise HarnessError("ImageMagick identify and convert are required for visual review")
+            input_coder = "SVG" if media_type == "image/svg+xml" else RASTER_CODERS[media_type]
+            status_code, frame_metadata, frame_error = run_tool(
+                [
+                    identify, "-regard-warnings", "-format", "%p\t%n\n",
+                    f"{input_coder}:{decoder_source}",
+                ],
+                timeout=300, max_output_bytes=min(1024 * 1024, max_frames * 64 + 1024),
+                environment=renderer_environment(decoder_temp),
+                pass_fds=(decoder_source_fd,),
+            )
+            if status_code != 0:
+                raise HarnessError(f"visual review source frame inventory failed: {frame_error.strip()[:300]}")
+            frame_inventory: list[tuple[int, int]] = []
+            for line in frame_metadata.splitlines():
+                match = re.fullmatch(r"(\d+)\t(\d+)", line.strip())
+                if not match:
+                    raise HarnessError("visual review source frame inventory is malformed")
+                frame_inventory.append((int(match.group(1)), int(match.group(2))))
+            source_frame_count = len(frame_inventory)
+            if not 1 <= source_frame_count <= max_frames:
+                raise HarnessError("visual review source frame count exceeds the configured limit")
+            if (
+                [index for index, _ in frame_inventory] != list(range(source_frame_count))
+                or any(total != source_frame_count for _, total in frame_inventory)
+            ):
+                raise HarnessError("visual review source frame inventory is incomplete")
+            expected_frame_count = source_frame_count
+            output_pattern = frame_root / "frame-%04d.png"
+            command = [convert, "-regard-warnings"]
+            if media_type == "image/svg+xml":
+                command.extend(["-density", str(dpi)])
+            command.extend([
+                f"{input_coder}:{decoder_source}", "-coalesce", "-auto-orient",
+                "-thumbnail", f"{max_dimension}x{max_dimension}>", "-strip",
+                f"PNG:{output_pattern}",
+            ])
+            normalized_command = [
+                "convert", "-regard-warnings",
+                *(["-density", str(dpi)] if media_type == "image/svg+xml" else []),
+                f"{input_coder}:{{IMMUTABLE_SOURCE}}", "-coalesce", "-auto-orient",
+                "-thumbnail", f"{max_dimension}x{max_dimension}>", "-strip",
+                "PNG:{FRAME_PATTERN}",
+            ]
+        result = run_bounded_renderer(
+            command, frame_root, decoder_temp, max_frames, max_bytes,
+            pass_fds=(decoder_source_fd,),
+        )
+        if result.returncode != 0:
+            raise HarnessError(f"visual review decode/render failed: {result.stderr.strip()[:300]}")
+    return (
+        decoder_version, decoder_policy_fingerprint, normalized_command,
+        source_frame_count, expected_frame_count,
+    )
+
+
+def prepare_visual_review(
+    project: pathlib.Path, config: dict, registry: dict, args: argparse.Namespace,
+) -> None:
+    section, target, asset, input_fingerprint = visual_review_target(registry, args.target_id)
+    source_path, source_snapshot = current_asset_path(project, asset)
+    media_type = asset.get("media_type", "")
+    if asset.get("media_type_mismatch") or media_type not in set(RASTER_CODERS) | {"image/svg+xml", "application/pdf"}:
+        raise HarnessError("visual review source format is unsupported or has not passed format validation")
+    review_config = config.get("visual_review", {})
+    dpi = args.dpi or int(review_config.get("default_dpi", 144))
+    max_dimension = args.max_dimension or int(review_config.get("default_max_dimension", 4096))
+    max_frames = int(review_config.get("max_rendered_frames", 200))
+    max_bytes = int(review_config.get("max_rendered_bytes", 536870912))
+    max_input_bytes = int(config.get("parsing", {}).get("max_snapshot_bytes", 536870912))
+    if not 72 <= dpi <= 600 or not 512 <= max_dimension <= 16384:
+        raise HarnessError("visual review dpi/max-dimension is outside the accepted range")
+    if not 1 <= max_frames <= 1000 or not 16 * 1024 * 1024 <= max_bytes <= 4 * 1024 * 1024 * 1024:
+        raise HarnessError("visual review config limits are invalid")
+    if not 1 <= max_input_bytes <= 4 * 1024 * 1024 * 1024:
+        raise HarnessError("visual review input snapshot limit is invalid")
+
+    review_root = secure_directory(managed_paths(project)["visual_reviews"], project)
+    temp_root = secure_directory(managed_paths(project)["visual_review_tmp"], project)
+    target_root = secure_directory(review_root / args.target_id, project)
+    preparation_id = short_id(
+        "PREP", f"{args.target_id}:{input_fingerprint}:{dpi}:{max_dimension}:{time.time_ns()}",
+    )
+    final_root = target_root / preparation_id
+    if final_root.exists():
+        raise HarnessError("visual review preparation ID collision")
+    working_root = pathlib.Path(tempfile.mkdtemp(prefix=f".{preparation_id}.", dir=temp_root))
+    frame_root = working_root / "frames"
+    decoder_temp = working_root / "tmp"
+    frame_root.mkdir(mode=0o700)
+    decoder_temp.mkdir(mode=0o700)
+    try:
+        (
+            decoder_version, decoder_policy_fingerprint, normalized_command,
+            source_frame_count, expected_frame_count,
+        ) = render_visual_review_source(
+            project, source_path, source_snapshot, max_input_bytes, section, target, asset,
+            media_type, dpi, max_dimension, max_frames, max_bytes, frame_root, decoder_temp,
+        )
+        frame_paths = sorted(frame_root.glob("frame-*.png"))
+        if len(frame_paths) != expected_frame_count:
+            raise HarnessError("visual review renderer did not produce the exact expected frame count")
+        outputs: list[dict] = []
+        identify = shutil.which("identify")
+        if not identify:
+            raise HarnessError("ImageMagick identify is required to validate review frames")
+        for frame_path in frame_paths:
+            snapshot = stable_file_snapshot(frame_path)
+            if not snapshot.get("stable") or sniff_type(frame_path, snapshot.get("head")) != "image/png":
+                raise HarnessError("visual review renderer produced an invalid PNG frame")
+            status_code, metadata, metadata_error = run_tool(
+                [identify, "-regard-warnings", "-format", "%m\t%w\t%h\t%[channels]", f"PNG:{frame_path}"],
+                timeout=120, max_output_bytes=65536,
+                environment=renderer_environment(decoder_temp),
+            )
+            if status_code != 0:
+                raise HarnessError(f"rendered review frame could not be decoded: {metadata_error.strip()[:200]}")
+            fields = metadata.strip().split("\t")
+            if len(fields) != 4 or fields[0] != "PNG":
+                raise HarnessError("rendered review frame metadata is malformed")
+            outputs.append({
+                "path": (final_root / "frames" / frame_path.name).relative_to(project).as_posix(),
+                "size": snapshot["size"], "sha256": snapshot["sha256"],
+                "width": int(fields[1]), "height": int(fields[2]), "channels": fields[3],
+            })
+        manifest_lines = [
+            "# Codex visual review package", "",
+            f"- preparation_id: `{preparation_id}`",
+            f"- target_id: `{args.target_id}`",
+            f"- target_section: `{section}`",
+            f"- source_asset: `{asset.get('id')}`",
+            f"- input_fingerprint: `{input_fingerprint}`",
+            f"- decoder: `{decoder_version}`",
+            f"- source_frame_count: {source_frame_count}",
+            f"- expected_frame_count: {expected_frame_count}",
+            f"- rendered_frame_count: {len(outputs)}", "",
+            "## Frames", "",
+        ]
+        for output in outputs:
+            manifest_lines.append(
+                f"- `{output['path']}` — {output['width']}x{output['height']}, sha256 `{output['sha256']}`"
+            )
+        manifest_lines.extend([
+            "", "## Required review", "",
+            "Inspect every frame at useful zoom. Record every checklist item, limitations, and any open finding.",
+            "A different reviewer must record the independent receipt against this same preparation.", "",
+        ])
+        manifest_path = working_root / "REVIEW.md"
+        atomic_write(manifest_path, "\n".join(manifest_lines))
+        manifest_snapshot = stable_file_snapshot(manifest_path)
+        publish_managed_directory(project, working_root, target_root, preparation_id)
+        receipt = {
+            "id": preparation_id, "target_id": args.target_id,
+            "target_section": section, "source_asset": asset.get("id"),
+            "input_fingerprint": input_fingerprint,
+            "source_snapshot_sha256": source_snapshot.get("sha256"),
+            "source_frame_count": source_frame_count,
+            "expected_frame_count": expected_frame_count,
+            "prepared_at": now_utc(), "decoder_version": decoder_version,
+            "decoder_policy_fingerprint": decoder_policy_fingerprint,
+            "normalized_command": normalized_command,
+            "dpi": dpi, "max_dimension": max_dimension,
+            "outputs": outputs,
+            "manifest_path": (final_root / "REVIEW.md").relative_to(project).as_posix(),
+            "manifest_size": manifest_snapshot["size"],
+            "manifest_sha256": manifest_snapshot["sha256"],
+            "execution_policy": "bounded local decode/render only; no Codex semantic verdict was inferred",
+        }
+        receipt["receipt_fingerprint"] = preparation_receipt_fingerprint(receipt)
+        target.setdefault("visual_review_preparations", {})[preparation_id] = receipt
+        target["active_visual_review_preparation"] = preparation_id
+        preparation_errors = validate_visual_review_preparation(
+            project, registry, args.target_id, receipt,
+        )
+        if preparation_errors:
+            raise HarnessError(preparation_errors[0])
+    except BaseException:
+        if working_root.exists():
+            shutil.rmtree(working_root)
+        raise
+    print(preparation_id)
+    print(receipt["manifest_path"])
+
+
+def record_visual_review(registry: dict, project: pathlib.Path, args: argparse.Namespace) -> None:
+    if not ENTRY_ID.fullmatch(args.review_id) or not args.review_id.startswith("VREV-"):
+        raise HarnessError("visual review ID must match VREV-[A-Z0-9-]+")
+    for section in ("assets", "visuals"):
+        if any(args.review_id in entry.get("visual_reviews", {}) for entry in registry.get(section, {}).values()):
+            raise HarnessError("visual review IDs are immutable and globally unique")
+    _, target, _, input_fingerprint = visual_review_target(registry, args.target_id)
+    preparation_id = target.get("active_visual_review_preparation", "")
+    preparation = target.get("visual_review_preparations", {}).get(preparation_id, {})
+    preparation_errors = validate_visual_review_preparation(project, registry, args.target_id, preparation)
+    if preparation_errors:
+        raise HarnessError(preparation_errors[0])
+    reviewer = args.reviewer.strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@/-]{2,127}", reviewer):
+        raise HarnessError("visual reviewer identity contains unsupported characters")
+    checks: dict[str, str] = {}
+    for key, status in args.check:
+        if key not in VISUAL_REVIEW_CHECKS or status not in VISUAL_REVIEW_STATUSES:
+            raise HarnessError(f"unknown visual review checklist value: {key}={status}")
+        if key in checks:
+            raise HarnessError(f"duplicate visual review checklist item: {key}")
+        checks[key] = status
+    if set(checks) != set(VISUAL_REVIEW_CHECKS):
+        missing = sorted(set(VISUAL_REVIEW_CHECKS) - set(checks))
+        raise HarnessError(f"visual review checklist is incomplete: {', '.join(missing)}")
+    findings = [finding.strip() for finding in args.finding if finding.strip()]
+    if args.verdict == "pass" and (findings or "blocked" in checks.values()):
+        raise HarnessError("passing visual reviews cannot contain open findings or blocked checks")
+    if args.verdict == "pass" and any(
+        checks.get(key) != "complete" for key in VISUAL_REVIEW_ALWAYS_REQUIRED
+    ):
+        raise HarnessError(
+            "passing visual reviews require complete decode, crop/presence, and source completeness checks"
+        )
+    if args.verdict != "pass" and not findings:
+        raise HarnessError("non-passing visual reviews require at least one finding")
+    independent_of = args.independent_of or ""
+    if args.role == "primary" and independent_of:
+        raise HarnessError("primary visual reviews cannot use --independent-of")
+    if args.role == "independent":
+        if not independent_of:
+            raise HarnessError("independent visual reviews require --independent-of")
+        primary = target.get("visual_reviews", {}).get(independent_of, {})
+        if (
+            primary.get("role") != "primary" or primary.get("verdict") != "pass"
+            or primary.get("preparation_id") != preparation_id
+            or primary.get("preparation_fingerprint") != preparation.get("receipt_fingerprint")
+        ):
+            raise HarnessError("independent visual review does not reference a current passing primary review")
+        if primary.get("reviewer") == reviewer:
+            raise HarnessError("independent visual review must use a different reviewer identity")
+    review = {
+        "id": args.review_id, "target_id": args.target_id,
+        "preparation_id": preparation_id,
+        "preparation_fingerprint": preparation.get("receipt_fingerprint"),
+        "input_fingerprint": input_fingerprint,
+        "role": args.role, "reviewer": reviewer, "reviewer_kind": args.reviewer_kind,
+        "independent_of": independent_of, "reviewed_at": now_utc(),
+        "verdict": args.verdict, "checks": checks,
+        "summary": args.summary.strip(), "limitations": args.limitations.strip(),
+        "findings": findings,
+    }
+    if not review["summary"] or not review["limitations"]:
+        raise HarnessError("visual review summary and limitations are required")
+    review["receipt_fingerprint"] = json_fingerprint(review)
+    target.setdefault("visual_reviews", {})[args.review_id] = review
 
 
 def add_visual(registry: dict, args: argparse.Namespace) -> None:
@@ -3120,12 +4141,19 @@ def record_run(project: pathlib.Path, registry: dict, args: argparse.Namespace) 
             visual_annotation = merge_annotation(old_visual.get("annotations"), "software-output")
             if visual_annotation.get("origin") == "pending":
                 visual_annotation["origin"] = "software-output"
-            registry["visuals"][visual_id] = {
+            visual_entry = {
                 "id": visual_id, "state": "current", "source_asset": asset_id,
                 "visual_type": "figure", "locator": {"path": path.relative_to(project).as_posix()},
                 "candidate_basis": "recorded software visual output",
                 "annotations": visual_annotation,
             }
+            for key in (
+                "visual_review_preparations", "visual_reviews",
+                "active_visual_review_preparation",
+            ):
+                if key in old_visual:
+                    visual_entry[key] = old_visual[key]
+            registry["visuals"][visual_id] = visual_entry
             visual_relation = {"from": visual_id, "kind": "generated-by", "to": args.software, "automatic": False}
             if visual_relation not in registry["relations"]:
                 registry["relations"].append(visual_relation)
@@ -3316,6 +4344,35 @@ def build_parser() -> argparse.ArgumentParser:
     annotate.add_argument("--lfs-resolution")
     annotate.add_argument("--revision")
 
+    prepare_review = add_common_parser(
+        subparsers, "prepare-visual-review",
+        "decode/render private frames for Codex visual review",
+    )
+    prepare_review.add_argument("target_id")
+    prepare_review.add_argument("--dpi", type=int)
+    prepare_review.add_argument("--max-dimension", type=int)
+
+    record_review = add_common_parser(
+        subparsers, "record-visual-review",
+        "record an immutable primary or independent semantic visual review",
+    )
+    record_review.add_argument("review_id")
+    record_review.add_argument("--target", dest="target_id", required=True)
+    record_review.add_argument("--role", choices=("primary", "independent"), required=True)
+    record_review.add_argument("--reviewer", required=True)
+    record_review.add_argument(
+        "--reviewer-kind", choices=("codex", "human", "domain-expert"), required=True,
+    )
+    record_review.add_argument("--independent-of")
+    record_review.add_argument("--verdict", choices=sorted(VISUAL_REVIEW_VERDICTS), required=True)
+    record_review.add_argument("--summary", required=True)
+    record_review.add_argument("--limitations", required=True)
+    record_review.add_argument(
+        "--check", nargs=2, action="append", default=[], required=True,
+        metavar=("CHECK", "STATUS"),
+    )
+    record_review.add_argument("--finding", action="append", default=[])
+
     visual = add_common_parser(subparsers, "add-visual", "add a manually reviewed visual")
     visual.add_argument("visual_id")
     visual.add_argument("--source-asset", required=True)
@@ -3416,6 +4473,10 @@ def main() -> int:
             pending_ingestion_manifest = None
             if args.command == "annotate":
                 annotate_entry(registry, args)
+            elif args.command == "prepare-visual-review":
+                prepare_visual_review(project, config, registry, args)
+            elif args.command == "record-visual-review":
+                record_visual_review(registry, project, args)
             elif args.command == "add-visual":
                 add_visual(registry, args)
             elif args.command == "relate":

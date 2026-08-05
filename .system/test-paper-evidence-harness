@@ -27,6 +27,51 @@ pass() {
   printf 'ok %s - %s\n' "$1" "$2"
 }
 
+visual_review_checks=(
+  decode-render visual-presence-crop source-completeness panels-reading-order
+  axes-units-scales legend-color-symbols statistical-encoding biological-context
+  caption-body-consistency geometry-semantics scientific-interpretation accessibility
+)
+
+record_passing_visual_review() {
+  local target_id=$1
+  local review_id=$2
+  local role=$3
+  local reviewer=$4
+  local independent_of=${5:-}
+  local reviewer_kind=${6:-codex}
+  local -a command=(
+    "$repo_dir/.system/paper-evidence-harness" record-visual-review "$project" "$review_id"
+    --target "$target_id" --role "$role" --reviewer "$reviewer" --reviewer-kind "$reviewer_kind"
+    --verdict pass --summary 'fixture visual review completed'
+    --limitations 'synthetic fixture; no scientific interpretation claimed'
+  )
+  if [[ -n $independent_of ]]; then
+    command+=(--independent-of "$independent_of")
+  fi
+  local check
+  for check in "${visual_review_checks[@]}"; do
+    command+=(--check "$check" complete)
+  done
+  "${command[@]}" >/dev/null
+}
+
+record_all_na_visual_review() {
+  local target_id=$1
+  local review_id=$2
+  local -a command=(
+    "$repo_dir/.system/paper-evidence-harness" record-visual-review "$project" "$review_id"
+    --target "$target_id" --role primary --reviewer codex-all-na --reviewer-kind codex
+    --verdict pass --summary 'invalid all-not-applicable review'
+    --limitations 'fixture intended to be rejected'
+  )
+  local check
+  for check in "${visual_review_checks[@]}"; do
+    command+=(--check "$check" not-applicable)
+  done
+  "${command[@]}" >/dev/null
+}
+
 write_pdf() {
   python3 - "$1" "${2:-}" <<'PY'
 import json
@@ -65,6 +110,57 @@ for offset in offsets[1:]:
 payload.extend(
     f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
 )
+pathlib.Path(sys.argv[1]).write_bytes(payload)
+PY
+}
+
+write_two_page_pdf() {
+  python3 - "$1" <<'PY'
+import pathlib
+import sys
+
+streams = [b"BT /F1 12 Tf 30 100 Td (PAGE ONE) Tj ET", b"BT /F1 12 Tf 30 100 Td (PAGE TWO) Tj ET"]
+objects = [
+    b"<< /Type /Catalog /Pages 2 0 R >>",
+    b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+    b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 220] /Resources << /Font << /F1 7 0 R >> >> /Contents 5 0 R >>",
+    b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 220] /Resources << /Font << /F1 7 0 R >> >> /Contents 6 0 R >>",
+    f"<< /Length {len(streams[0])} >>\nstream\n".encode() + streams[0] + b"\nendstream",
+    f"<< /Length {len(streams[1])} >>\nstream\n".encode() + streams[1] + b"\nendstream",
+    b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+]
+payload = bytearray(b"%PDF-1.4\n")
+offsets = [0]
+for number, obj in enumerate(objects, 1):
+    offsets.append(len(payload))
+    payload.extend(f"{number} 0 obj\n".encode() + obj + b"\nendobj\n")
+xref = len(payload)
+payload.extend(f"xref\n0 {len(objects) + 1}\n".encode() + b"0000000000 65535 f \n")
+for offset in offsets[1:]:
+    payload.extend(f"{offset:010d} 00000 n \n".encode())
+payload.extend(f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode())
+pathlib.Path(sys.argv[1]).write_bytes(payload)
+PY
+}
+
+write_png() {
+  python3 - "$1" "${2:-32,128,224}" <<'PY'
+import pathlib
+import struct
+import sys
+import zlib
+
+def chunk(name, data):
+    return struct.pack(">I", len(data)) + name + data + struct.pack(">I", zlib.crc32(name + data) & 0xffffffff)
+
+width = height = 4
+pixel = bytes(int(value) for value in sys.argv[2].split(","))
+assert len(pixel) == 3
+scanlines = b"".join(b"\x00" + pixel * width for _ in range(height))
+payload = b"\x89PNG\r\n\x1a\n"
+payload += chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+payload += chunk(b"IDAT", zlib.compress(scanlines))
+payload += chunk(b"IEND", b"")
 pathlib.Path(sys.argv[1]).write_bytes(payload)
 PY
 }
@@ -306,6 +402,50 @@ fi
   --disposition include --rights-status cleared --license CC0-1.0 \
   --visibility reader --privacy-review complete --public-summary 'テスト用の円を示す独自図' \
   --origin note-original --creator tester --alt-text 'A test circle.' >/dev/null
+review_preparation=$("$repo_dir/.system/paper-evidence-harness" prepare-visual-review \
+  "$project" "$visual_id" | head -n 1)
+if expect_failure record_all_na_visual_review "$visual_id" VREV-FIXTURE-ALL-NA; then
+  pass visual-core-checks 'passing review cannot mark decode, crop, and source completeness not-applicable'
+else
+  fail visual-core-checks 'all-not-applicable visual review was accepted as pass'
+fi
+record_passing_visual_review "$visual_id" VREV-FIXTURE-PRIMARY primary codex-fixture-primary
+if expect_failure record_passing_visual_review \
+  "$visual_id" VREV-FIXTURE-NOT-INDEPENDENT independent codex-fixture-primary VREV-FIXTURE-PRIMARY; then
+  pass visual-independence 'independent visual review requires a different Codex identity'
+else
+  fail visual-independence 'same-reviewer visual re-review was accepted'
+fi
+record_passing_visual_review \
+  "$visual_id" VREV-FIXTURE-INDEPENDENT independent codex-fixture-independent VREV-FIXTURE-PRIMARY
+record_passing_visual_review \
+  "$visual_id" VREV-FIXTURE-HUMAN primary human-fixture-reviewer '' human
+record_passing_visual_review \
+  "$visual_id" VREV-FIXTURE-DOMAIN-EXPERT independent domain-expert-fixture \
+  VREV-FIXTURE-HUMAN domain-expert
+cp -- "$project/.workspace/records/evidence/registry.json" "$test_root/registry-before-reviewer-kind.json"
+python3 - "$project/.workspace/records/evidence/registry.json" "$visual_id" <<'PY'
+import json
+import pathlib
+import sys
+path = pathlib.Path(sys.argv[1])
+registry = json.loads(path.read_text())
+reviews = registry["visuals"][sys.argv[2]]["visual_reviews"]
+del reviews["VREV-FIXTURE-PRIMARY"]
+del reviews["VREV-FIXTURE-INDEPENDENT"]
+path.write_text(json.dumps(registry, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+PY
+"$repo_dir/.system/paper-evidence-harness" render-index "$project" >/dev/null
+"$repo_dir/.system/paper-evidence-harness" gate "$project" --phase internal-wip \
+  >"$test_root/reviewer-kind.log" 2>&1 || true
+if grep -Fq 'passing primary Codex visual review is missing' "$test_root/reviewer-kind.log" &&
+  grep -Fq 'independent Codex visual re-review is missing' "$test_root/reviewer-kind.log"; then
+  pass visual-reviewer-kind 'human/domain-expert receipts cannot substitute for the required Codex pair'
+else
+  fail visual-reviewer-kind 'non-Codex receipt pair satisfied the Codex visual review gate'
+fi
+mv -- "$test_root/registry-before-reviewer-kind.json" "$project/.workspace/records/evidence/registry.json"
+"$repo_dir/.system/paper-evidence-harness" render-index "$project" >/dev/null
 "$repo_dir/.system/paper-evidence-harness" annotate "$project" "$output_asset" \
   --disposition exclude --exclusion-reason 'lineage fixture only' \
   --visibility internal --privacy-review not-applicable >/dev/null
@@ -374,6 +514,12 @@ printf '%s\n' \
   '\end{document}' \
   >"$project/.workspace/source/main.tex"
 "$repo_dir/.system/paper-evidence-harness" scan "$project" >/dev/null
+"$repo_dir/.system/paper-evidence-harness" prepare-visual-review \
+  "$project" "$visual_id" >/dev/null
+record_passing_visual_review "$visual_id" VREV-FIXTURE-FINAL-PRIMARY primary codex-fixture-primary
+record_passing_visual_review \
+  "$visual_id" VREV-FIXTURE-FINAL-INDEPENDENT independent \
+  codex-fixture-independent VREV-FIXTURE-FINAL-PRIMARY
 mkdir -p "$project/.workspace/build"
 printf '%s\n' \
   "PWD $project" \
@@ -431,6 +577,9 @@ if grep -Fq '\nolinkurl{https://example.org/data.csv}' "$project/.workspace/sour
   ! grep -Fq 'tool --plot' "$project/.workspace/source/generated/evidence-index.tex" &&
   ! grep -Fq 'fixture environment' "$project/.workspace/source/generated/evidence-index.md" &&
   ! grep -Fq '.workspace/cache/software' "$project/.workspace/source/generated/evidence-index.tex" &&
+  ! grep -Fq '.workspace/review/visuals' "$project/.workspace/source/generated/evidence-index.tex" &&
+  ! grep -Fq 'codex-fixture-primary' "$project/.workspace/source/generated/evidence-index.tex" &&
+  ! grep -Fq 'fixture visual review completed' "$project/.workspace/source/generated/evidence-index.tex" &&
   grep -Fq "$private_resource" "$project/.workspace/source/generated/evidence-index.tex" &&
   ! grep -Fq 'confidential-subject-42' "$project/.workspace/source/generated/evidence-index.tex" &&
   ! grep -Fq 'confidential-subject-42' "$project/.workspace/source/generated/evidence-index.md" &&
@@ -440,6 +589,86 @@ if grep -Fq '\nolinkurl{https://example.org/data.csv}' "$project/.workspace/sour
 else
   fail 4 'completed evidence gate'
 fi
+
+review_frame=$(python3 - "$project/.workspace/records/evidence/registry.json" "$visual_id" <<'PY'
+import json
+import pathlib
+import sys
+registry = json.loads(pathlib.Path(sys.argv[1]).read_text())
+visual = registry["visuals"][sys.argv[2]]
+preparation = visual["visual_review_preparations"][visual["active_visual_review_preparation"]]
+print(preparation["outputs"][0]["path"])
+PY
+)
+cp -- "$project/$review_frame" "$test_root/review-frame.clean"
+printf '%s' tamper >"$project/$review_frame"
+if "$repo_dir/.system/paper-evidence-harness" gate "$project" --phase internal-wip >"$test_root/review-frame.log" 2>&1; then
+  fail visual-frame 'tampered Codex review frame passed the gate'
+elif grep -Fq 'visual review output is stale or unsafe' "$test_root/review-frame.log"; then
+  pass visual-frame 'Codex review frame bytes are bound to the preparation receipt'
+else
+  fail visual-frame 'review frame tamper failed for an unrelated reason'
+fi
+mv -- "$test_root/review-frame.clean" "$project/$review_frame"
+
+review_package_relative=$(dirname -- "$(dirname -- "$review_frame")")
+review_package=$project/$review_package_relative
+external_review_package=$test_root/external-review-package
+mv -- "$review_package" "$external_review_package"
+ln -s -- "$external_review_package" "$review_package"
+if "$repo_dir/.system/paper-evidence-harness" gate "$project" --phase internal-wip \
+    >"$test_root/review-symlink.log" 2>&1; then
+  fail visual-symlink 'review package redirected through a symlink passed the gate'
+elif grep -Eq 'visual review (output|frame directory|manifest) is stale or unsafe' \
+    "$test_root/review-symlink.log"; then
+  pass visual-symlink 'review package ancestors are opened without following symlinks'
+else
+  fail visual-symlink 'review package symlink was rejected for an unrelated reason'
+fi
+rm -- "$review_package"
+mv -- "$external_review_package" "$review_package"
+
+cp -- "$project/.workspace/records/evidence/registry.json" "$test_root/registry-before-review-receipt.json"
+python3 - "$project/.workspace/records/evidence/registry.json" "$visual_id" <<'PY'
+import json
+import pathlib
+import sys
+path = pathlib.Path(sys.argv[1])
+registry = json.loads(path.read_text())
+reviews = registry["visuals"][sys.argv[2]]["visual_reviews"]
+review = next(value for value in reviews.values() if value.get("role") == "independent" and value.get("preparation_id") == registry["visuals"][sys.argv[2]]["active_visual_review_preparation"])
+review["summary"] = "tampered review conclusion"
+path.write_text(json.dumps(registry, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+PY
+if "$repo_dir/.system/paper-evidence-harness" gate "$project" --phase internal-wip >"$test_root/review-receipt.log" 2>&1; then
+  fail visual-receipt 'tampered Codex review receipt passed the gate'
+elif grep -Fq 'visual review receipt fingerprint is invalid' "$test_root/review-receipt.log"; then
+  pass visual-receipt 'Codex semantic review fields are protected by an immutable receipt fingerprint'
+else
+  fail visual-receipt 'review receipt tamper failed for an unrelated reason'
+fi
+mv -- "$test_root/registry-before-review-receipt.json" "$project/.workspace/records/evidence/registry.json"
+
+cp -- "$project/.workspace/records/evidence/registry.json" "$test_root/registry-before-visual-input.json"
+python3 - "$project/.workspace/records/evidence/registry.json" "$visual_id" <<'PY'
+import json
+import pathlib
+import sys
+path = pathlib.Path(sys.argv[1])
+registry = json.loads(path.read_text())
+registry["visuals"][sys.argv[2]]["caption_candidate"] = "changed after semantic review"
+path.write_text(json.dumps(registry, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+PY
+"$repo_dir/.system/paper-evidence-harness" render-index "$project" >/dev/null
+if "$repo_dir/.system/paper-evidence-harness" gate "$project" --phase internal-wip >"$test_root/review-input.log" 2>&1; then
+  fail visual-input 'changed visual semantics retained stale Codex reviews'
+elif grep -Fq 'visual review preparation is stale for current input' "$test_root/review-input.log"; then
+  pass visual-input 'visual semantic changes invalidate preparation and both reviews'
+else
+  fail visual-input 'visual input change failed for an unrelated reason'
+fi
+mv -- "$test_root/registry-before-visual-input.json" "$project/.workspace/records/evidence/registry.json"
+"$repo_dir/.system/paper-evidence-harness" render-index "$project" >/dev/null
 
 python3 - "$project/.workspace/records/evidence/registry.json" "$resource_one" <<'PY'
 import json
@@ -617,6 +846,15 @@ printf '%s\n' 'not a PNG image' >"$magic_project/inbox/forged.png"
 printf '%s\n' 'not an SVG image' >"$magic_project/inbox/forged.svg"
 printf '%s\n' '<!-- <svg > -->' 'not XML' >"$magic_project/inbox/comment-only.svg"
 printf '%s\n' '<svg xmlns="http://www.w3.org/2000/svg"><g></svg>' >"$magic_project/inbox/malformed.svg"
+printf '%s\n' '<svg xmlns="http://www.w3.org/2000/svg"><image href="https://example.org/private.png"/></svg>' \
+  >"$magic_project/inbox/external-reference.svg"
+write_png "$test_root/embedded-raster.png"
+embedded_raster=$(base64 -w0 "$test_root/embedded-raster.png")
+printf '<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><image width="4" height="4" href="data:image/png;base64,%s"/></svg>\n' \
+  "$embedded_raster" >"$magic_project/inbox/embedded-raster.svg"
+nested_svg=$(printf '%s' '<svg xmlns="http://www.w3.org/2000/svg"><image href="file:///tmp/private.png"/></svg>' | base64 -w0)
+printf '<svg xmlns="http://www.w3.org/2000/svg"><image href="data:image/svg+xml;base64,%s"/></svg>\n' \
+  "$nested_svg" >"$magic_project/inbox/nested-data-svg.svg"
 printf 'II+\000\010\000\000\000fixture' >"$magic_project/inbox/microscopy-bigtiff.tif"
 "$repo_dir/.system/paper-evidence-harness" scan "$magic_project" >/dev/null
 if python3 - "$magic_project/.workspace/records/evidence/registry.json" <<'PY' &&
@@ -624,7 +862,10 @@ import json
 import pathlib
 import sys
 registry = json.loads(pathlib.Path(sys.argv[1]).read_text())
-for filename in ("forged.png", "forged.svg", "comment-only.svg", "malformed.svg"):
+for filename in (
+    "forged.png", "forged.svg", "comment-only.svg", "malformed.svg", "external-reference.svg",
+    "nested-data-svg.svg",
+):
     entry = next(value for value in registry["assets"].values() if value["locations"][0].endswith(filename))
     assert entry["media_type"] == "application/octet-stream"
     assert entry["media_type_mismatch"] is True
@@ -633,6 +874,10 @@ bigtiff = next(value for value in registry["assets"].values() if value["location
 assert bigtiff["media_type"] == "image/tiff"
 assert bigtiff["media_type_mismatch"] is False
 assert bigtiff["kind"] == "source-visual"
+embedded = next(value for value in registry["assets"].values() if value["locations"][0].endswith("embedded-raster.svg"))
+assert embedded["media_type"] == "image/svg+xml"
+assert embedded["media_type_mismatch"] is False
+assert embedded["kind"] == "source-visual"
 PY
   "$repo_dir/.system/paper-evidence-harness" gate "$magic_project" --phase internal-wip >"$test_root/magic.log" 2>&1; then
   fail magic 'forged visual signatures passed the gate'
@@ -640,6 +885,245 @@ elif grep -Fq 'asset media type does not match its extension' "$test_root/magic.
   pass magic 'known visual extensions require matching binary or SVG structure signatures'
 else
   fail magic 'forged visual was rejected for an unrelated reason'
+fi
+forged_visual_asset=$(python3 - "$magic_project/.workspace/records/evidence/registry.json" <<'PY'
+import json
+import pathlib
+import sys
+registry = json.loads(pathlib.Path(sys.argv[1]).read_text())
+print(next(value["id"] for value in registry["assets"].values() if value["locations"][0].endswith("forged.png")))
+PY
+)
+embedded_visual_asset=$(python3 - "$magic_project/.workspace/records/evidence/registry.json" <<'PY'
+import json
+import pathlib
+import sys
+registry = json.loads(pathlib.Path(sys.argv[1]).read_text())
+print(next(value["id"] for value in registry["assets"].values() if value["locations"][0].endswith("embedded-raster.svg")))
+PY
+)
+if expect_failure "$repo_dir/.system/paper-evidence-harness" prepare-visual-review \
+  "$magic_project" "$forged_visual_asset"; then
+  pass visual-decode 'format-invalid visual cannot produce a Codex review package'
+else
+  fail visual-decode 'format-invalid visual produced review frames'
+fi
+if "$repo_dir/.system/paper-evidence-harness" prepare-visual-review \
+  "$magic_project" "$embedded_visual_asset" >/dev/null; then
+  pass svg-data 'hash-bound base64 raster data is accepted while nested data SVG is rejected'
+else
+  fail svg-data 'safe embedded raster SVG could not produce review frames'
+fi
+
+review_format_project=$repo_dir/review-format-notes
+mkdir -p "$review_format_project/inbox" "$review_format_project/draft" \
+  "$review_format_project/out" "$review_format_project/.workspace/source"
+"$repo_dir/.system/paper-evidence-harness" init "$review_format_project" >/dev/null
+write_png "$review_format_project/inbox/valid.png"
+write_pdf "$review_format_project/inbox/valid.pdf"
+write_two_page_pdf "$review_format_project/inbox/two-pages.pdf"
+convert -size 4x4 xc:red -size 4x4 xc:blue -set delay 10 \
+  "$review_format_project/inbox/two-frames.gif"
+"$repo_dir/.system/paper-evidence-harness" scan "$review_format_project" >/dev/null
+readarray -t review_format_assets < <(python3 - "$review_format_project/.workspace/records/evidence/registry.json" <<'PY'
+import json
+import pathlib
+import sys
+registry = json.loads(pathlib.Path(sys.argv[1]).read_text())
+for suffix in ("valid.png", "valid.pdf", "two-pages.pdf", "two-frames.gif"):
+    print(next(value["id"] for value in registry["assets"].values() if value["locations"][0].endswith(suffix)))
+PY
+)
+if "$repo_dir/.system/paper-evidence-harness" prepare-visual-review \
+    "$review_format_project" "${review_format_assets[0]}" >/dev/null &&
+  "$repo_dir/.system/paper-evidence-harness" prepare-visual-review \
+    "$review_format_project" "${review_format_assets[1]}" >/dev/null &&
+  "$repo_dir/.system/paper-evidence-harness" prepare-visual-review \
+    "$review_format_project" "${review_format_assets[2]}" >/dev/null &&
+  "$repo_dir/.system/paper-evidence-harness" prepare-visual-review \
+    "$review_format_project" "${review_format_assets[3]}" >/dev/null &&
+  python3 - "$review_format_project/.workspace/records/evidence/registry.json" \
+    "${review_format_assets[@]}" <<'PY'
+import json
+import pathlib
+import sys
+registry = json.loads(pathlib.Path(sys.argv[1]).read_text())
+expected_counts = (1, 1, 2, 2)
+for asset_id, expected_count in zip(sys.argv[2:], expected_counts, strict=True):
+    asset = registry["assets"][asset_id]
+    preparation = asset["visual_review_preparations"][asset["active_visual_review_preparation"]]
+    assert preparation["source_frame_count"] == expected_count
+    assert preparation["expected_frame_count"] == expected_count
+    assert len(preparation["outputs"]) == expected_count
+    assert preparation["outputs"][0]["width"] > 0
+    assert preparation["outputs"][0]["height"] > 0
+PY
+then
+  pass visual-formats 'multi-frame raster and multi-page PDF inputs produce every expected bounded PNG frame'
+else
+  fail visual-formats 'valid raster/PDF review preparation'
+fi
+
+write_png "$test_root/alternate-source.png" '224,32,32'
+if python3 - "$repo_dir/.system/paper-evidence-harness" "$review_format_project" \
+    "${review_format_assets[0]}" "$test_root/alternate-source.png" <<'PY'
+import argparse
+import contextlib
+import io
+import json
+import os
+import pathlib
+import runpy
+import subprocess
+import sys
+
+module = runpy.run_path(sys.argv[1], run_name="paper_evidence_harness_module")
+project = pathlib.Path(sys.argv[2])
+target_id = sys.argv[3]
+alternate = pathlib.Path(sys.argv[4])
+config, registry = module["initialize"](project)
+asset = registry["assets"][target_id]
+source = project / asset["locations"][0]
+original_bytes = source.read_bytes()
+original_stat = source.stat()
+prepare_function = module["prepare_visual_review"]
+function_globals = prepare_function.__globals__
+original_renderer = function_globals["run_bounded_renderer"]
+wrapper_calls = 0
+
+def swap_live_source(*args, **kwargs):
+    global wrapper_calls
+    wrapper_calls += 1
+    source.write_bytes(alternate.read_bytes())
+    os.utime(source, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+    try:
+        return original_renderer(*args, **kwargs)
+    finally:
+        source.write_bytes(original_bytes)
+        os.utime(source, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+
+function_globals["run_bounded_renderer"] = swap_live_source
+try:
+    with contextlib.redirect_stdout(io.StringIO()):
+        prepare_function(
+            project, config, registry,
+            argparse.Namespace(target_id=target_id, dpi=None, max_dimension=None),
+        )
+finally:
+    function_globals["run_bounded_renderer"] = original_renderer
+active = registry["assets"][target_id]["active_visual_review_preparation"]
+receipt = registry["assets"][target_id]["visual_review_preparations"][active]
+frame = project / receipt["outputs"][0]["path"]
+pixel = subprocess.check_output([
+    "convert", f"PNG:{frame}", "-format", "%[pixel:p{0,0}]", "info:",
+], text=True)
+assert "32,128,224" in pixel, pixel
+assert source.read_bytes() == original_bytes
+assert wrapper_calls == 1
+PY
+then
+  pass visual-snapshot 'decoder reads the immutable hash-verified snapshot even if the live path changes'
+else
+  fail visual-snapshot 'visual decoder source snapshot TOCTOU protection'
+fi
+
+if python3 - "$repo_dir/.system/paper-evidence-harness" "$review_format_project" \
+    "${review_format_assets[0]}" "$test_root/alternate-source.png" <<'PY'
+import argparse
+import contextlib
+import io
+import os
+import pathlib
+import runpy
+import sys
+
+module = runpy.run_path(sys.argv[1], run_name="paper_evidence_harness_snapshot_mutation_module")
+project = pathlib.Path(sys.argv[2])
+target_id = sys.argv[3]
+alternate = pathlib.Path(sys.argv[4])
+config, registry = module["initialize"](project)
+prepare_function = module["prepare_visual_review"]
+function_globals = prepare_function.__globals__
+original_renderer = function_globals["run_bounded_renderer"]
+preparations_before = set(registry["assets"][target_id].get("visual_review_preparations", {}))
+wrapper_calls = 0
+
+def mutate_decoder_snapshot(*args, **kwargs):
+    global wrapper_calls
+    wrapper_calls += 1
+    descriptor = kwargs["pass_fds"][0]
+    os.fchmod(descriptor, 0o600)
+    with open(f"/proc/self/fd/{descriptor}", "wb") as handle:
+        handle.write(alternate.read_bytes())
+    return original_renderer(*args, **kwargs)
+
+function_globals["run_bounded_renderer"] = mutate_decoder_snapshot
+caught = False
+try:
+    with contextlib.redirect_stdout(io.StringIO()):
+        prepare_function(
+            project, config, registry,
+            argparse.Namespace(target_id=target_id, dpi=None, max_dimension=None),
+        )
+except module["HarnessError"]:
+    caught = True
+finally:
+    function_globals["run_bounded_renderer"] = original_renderer
+assert caught
+assert wrapper_calls == 1
+assert set(registry["assets"][target_id].get("visual_review_preparations", {})) == preparations_before
+PY
+then
+  pass visual-snapshot-mutation 'decoder snapshot mutation is detected before any receipt is recorded'
+else
+  fail visual-snapshot-mutation 'mutated decoder snapshot was accepted'
+fi
+
+if python3 - "$repo_dir/.system/paper-evidence-harness" "$review_format_project" "$test_root" <<'PY'
+import os
+import pathlib
+import runpy
+import sys
+
+module = runpy.run_path(sys.argv[1], run_name="paper_evidence_harness_publish_module")
+project = pathlib.Path(sys.argv[2])
+test_root = pathlib.Path(sys.argv[3])
+source_parent = project / ".workspace/tmp/visual-review"
+source = source_parent / "publish-source"
+source.mkdir()
+(source / "receipt.txt").write_text("private frame fixture")
+target_root = project / ".workspace/review/visuals/PUBLISH-TEST"
+target_root.mkdir()
+displaced = test_root / "displaced-review-target"
+outside = test_root / "outside-review-target"
+outside.mkdir()
+original_rename = module["os"].rename
+
+def swap_target_then_rename(src, dst, *args, **kwargs):
+    original_rename(target_root, displaced)
+    os.symlink(outside, target_root)
+    return original_rename(src, dst, *args, **kwargs)
+
+module["os"].rename = swap_target_then_rename
+caught = False
+try:
+    module["publish_managed_directory"](project, source, target_root, "PREP-RACE")
+except module["HarnessError"]:
+    caught = True
+finally:
+    module["os"].rename = original_rename
+    if target_root.is_symlink():
+        target_root.unlink()
+    if displaced.exists():
+        original_rename(displaced, target_root)
+assert caught
+assert not (outside / "PREP-RACE").exists()
+assert not (target_root / "PREP-RACE").exists()
+PY
+then
+  pass visual-publish 'package publication is dirfd-bound and cleans a displaced destination'
+else
+  fail visual-publish 'visual review package publication race protection'
 fi
 
 secret_project=$repo_dir/secret-notes
