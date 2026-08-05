@@ -27,7 +27,7 @@
 
 severity は次のように分類する。
 
-- `blocking`: 誤った主張、証明の成立を妨げる gap、未定義の形式要素、循環依存、原典の意味を変える翻訳、権利・出典上の重大問題など、promotion を禁止するもの。
+- `blocking`: 誤った主張、証明の成立を妨げる gap、未定義の数学的・技術的要素、正当化されない循環依存、原典の意味を変える翻訳、権利・出典上の重大問題など、promotion を禁止するもの。
 - `major`: 読者が結論を追えない省略、重要な仮定・場合・依存の不明確さ、例や演習の実質的欠陥など、解消または明示合意が必要なもの。
 - `minor`: 真偽や追跡可能性を損なわない局所的な表記、参照、文章上の不備。
 
@@ -64,6 +64,8 @@ severity は次のように分類する。
 本文だけでなく、タイトル、見出し、定理・定義、表、図、caption、脚注、演習、解答、索引も検査対象とする。
 
 - 形式的な記号、用語、略語は使用前に必ず定義する。first use が definition より前なら blocking とする。
+- 定義文を終端とみなさず、その定義に用いた数学的・技術的な語を新たな dependency として再帰的に調べる。日常語風の言い換えの中にある専門語も対象とし、例えば「弧状連結」を「道でつながる」と定義するなら、数学的な「道」が既知の前提でない限り先に定義するか正確に参照する。各 work unit について定義依存 graph の推移閉包を想定読者が既知としてよい前提まで辿り、未定義 node、曖昧な同義語置換、正当化されない循環を blocking とする。
+- 新出の専門用語は正式導入の初出で原語を併記し、glossary の原語・採用訳・異綴り・初出・正規索引項目と照合する。独立に読める章節で再導入する場合は原語付き定義へのリンクまたは原語の再掲を確認する。
 - 定義には対象の型、domain、codomain、引数、添字範囲、有効範囲を必要なだけ含める。
 - motivation で後の概念を自然語により preview してよいが、未定義の形式記号や未導入の推論には依存させない。
 - 同じ記号の再定義、重なる scope での別用途、表記だけ異なる重複概念、略語の揺れを検査する。
@@ -74,6 +76,8 @@ severity は次のように分類する。
 各定義、補題、命題、定理、系、例、演習に対して、直接依存する定義・仮定・先行結果・外部結果を追跡する。
 
 - formal な数学的 assertion を prose に埋め込まず、definition、theorem、lemma、proposition、corollary、example、exercise など意味に合う semantic environment に置く。motivation や直観の prose は許容するが、formal claim の代用にはしない。
+- assertion inventory は通常 prose だけでなく、example、remark、caption、脚注、演習、解答、proof 内の補助主張を含む全 content-bearing container を対象に作る。文が特定の対象について性質・関係・存在・一意性・等式・不等式等を真として述べるかを判定し、「実際」「なぜなら」「これを見るには」「したがって」等による論証の開始を強い検出 cue とするが、cue の有無だけで判定しない。主張の一般性、再利用回数、短さ、原資料の environment 名は formal 性を否定する理由にならない。
+- example 内で対象の構成・計算・解釈とは別に「この写像は連続である」のような真偽を持つ assertion とその論証がある場合、単一対象に固有でも、内容に合う番号付き theorem-like statement と明示した proof へ抽出する。example には具体的設定と適用を残し、statement と相互参照する。純粋な値の列挙や、別個の assertion を述べない一続きの計算は機械的に theorem 化しない。review artifact には各候補の原 container、判定、抽出先または非 formal とした根拠を残し、未分類候補と未抽出 formal assertion を 0 件にする。
 - theorem-like statement には必ず自動生成の番号と一意で安定した `label` を与える。本文から theorem、definition、番号付き proof、equation を指すときは `label` による参照を使い、手書きの番号を使わない。
 - domain と codomain、量化子の順序、添字範囲、変数の scope を確認する。
 - 定数が何に依存するか、局所的な主張か一様な主張か、点ごとか概収束・ほとんど至る所かを明示する。
@@ -81,7 +85,7 @@ severity は次のように分類する。
 - 必要に応じて可測性、可積分性、連続性、コンパクト性、完備性、閉性など、使用する外部結果の前提を確認する。
 - 各仮定が証明で使われているか、使われない仮定が不要か、暗黙に使った仮定が欠けていないかを調べる。
 - 結論の各部分がどの仮定・結果に依存するかを確認する。
-- 循環依存、未宣言の前方依存、存在しない参照、定義と定理の相互依存を禁止する。
+- 相互・帰納・余帰納定義等の正当な循環は一つの明示した dependency node として well-definedness または基礎付けを検証する。それ以外の循環依存、未宣言の前方依存、存在しない参照、定義と定理の相互依存を禁止する。
 - 定理 statement は仮定と結論に集中させ、長い構成、証明、解説は環境外へ置く。
 
 依存台帳がある project では本文と台帳を双方向に照合する。
@@ -99,11 +103,14 @@ severity は次のように分類する。
 - 全 cases が排反かつ尽くされているか、境界・空集合・零・低次元などの退化ケースが落ちていないか。
 - 「明らか」「容易」「標準的」「同様」だけを根拠として step を省略しない。これらを使う場合も、直後に具体的な定義、置換、計算、先行結果、または推論を示す。「同様に」では実際の置換、前の議論との差分、追加条件を記す。
 - 外部定理は名称、原典の定理番号と位置、正確な statement を示し、適用箇所ですべての条件が成立することを検証する。
+- 合意した self-contained scope 内の外部定理は、前項に加えて本文または付録に完全な proof を持たせる。「外部結果である」と記すことや引用だけを proof の代用にしない。原資料にない proof は訳注・編者補足等として由来を区別し、追加した proof 自体とその依存を independent review する。proof を収録しない外部結果は、ユーザーが既知の前提として scope から除くことに明示合意し、読者向けの前提一覧と review artifact に結果、理由、影響範囲を記録した場合だけ許容する。
 - 想定読者に routine でも、合意した self-contained scope 上で非自明なら説明または承認済み外部依存が必要である。
 
 proof の十分な長さに任意の語数・page 数の下限を設けない。
 想定読者と合意した self-contained scope に対して、すべての非自明な step が明示され、reviewer が statement から conclusion までの proof dependency trace を再構成できることを十分性の基準とする。
 再構成できなければ blocking とし、単なる冗長な反復で長さを増やすことは求めない。
+
+番号付き step の採否も proof の長さでは決めない。構成と検証、二方向の含意、場合の切替、置換と結論、補助観察と適用等、局所目標・入力・結論が切り替わる landmark があり、視覚的な区分で dependency trace が明瞭になるなら、短い proof でも step に分けてよい。一つの原子的推論を見かけだけの複数 step に分ける必要はないが、「短いから」という理由だけで有用な区分を退けない。reviewer は step の過不足を、語数ではなく各区分の局所目標、入力、結論と後続依存が説明できるかで判定する。
 
 unit ごとに statement、proof、definition、label、ref の件数を集計し、少なくとも proof を要する statement に対応する proof の欠落、構造上対応先を同定できない proof、番号付き proof に必要な対象 statement 参照と label の欠落、未定義・重複 label、broken ref、orphan proof がすべて 0 件であることを checklist に記録する。
 
@@ -112,6 +119,7 @@ unit ごとに statement、proof、definition、label、ref の件数を集計�
 ## phase 5: examples、counterexamples、exercises
 
 - 例が定義の全条件を満たし、主張した性質を実際に持つことを計算または証明する。
+- 例に埋め込まれた独立した formal assertion とその justification が phase 3 の statement/proof へ抽出され、例の具体的設定・適用・教育的役割と相互参照されているか確認する。「例だから」「単一対象だから」を未抽出の理由にしない。
 - 非例・反例が否定対象を正確に破り、より強い別主張だけを破っていないことを確認する。
 - 例の特殊性を一般的証拠として扱わず、heuristic と proof を区別する。
 - 演習は導入済みの定義・結果だけで解答可能か、問題文の条件が十分か、解が存在するか、曖昧な複数解釈がないかを実際に解いて確認する。
@@ -122,6 +130,7 @@ unit ごとに statement、proof、definition、label、ref の件数を集計�
 - 定義、定理、命題、証明、例、演習には意味に合う semantic environment を使い、見た目だけの手動見出しで代用しない。
 - 括弧の対応と scope、上付き・下付き、添字範囲、演算子、delimiter、式番号、数式内 punctuation を確認する。
 - `label` の一意性、`ref` の存在と参照対象、定理・番号付き proof・式・定義・図表番号、文中の参照名を build 結果と照合する。未定義・重複 label、broken ref、orphan proof を 0 件にする。
+- anchor/link inventory を作り、少なくとも work unit の入口から必要な前提・定義・先行結果へ、新出用語から原語付き定義と正規索引項目へ、theorem-like statement から対応 proof・使用する先行結果・主要な利用箇所へ、学習目標から対応本文と最小読解経路へ、本文から対応する学習目標へ辿れる必須 edge を検査する。目次、学習目標、本文内参照、索引を入口とする link graph で全 content-bearing node が到達可能であり、必要 edge の欠落、到達不能 node、誤った向き・移動先を 0 件にする。
 - project の house macro は定義、引数、意味、scope を確認し、未定義 macro、意味の衝突、表示だけで意味を担う用法を残さない。
 - TeX の compile 成功だけで数式の意味が正しいとは判定しない。PDF 上でも theorem、番号付き proof、equation、definition の番号と参照、無番号 proof と直前 statement の対応、欠落 glyph、改行、式の切断、図表との対応を目視確認する。
 - 参照する既存成果物が指定された場合は、判型、実効 font size、baseline、版面、段落 indent、見出し階層、theorem/proof、目次・索引、header/footer を一組として比較する。参照元の内容固有 macro は移植せず、point 数または page への収まりだけで大小を判定せず、actual-size と fit-width の両方の render で本文密度、可読性、階層と柱を確認する。
@@ -165,8 +174,13 @@ finding を severity 順に修正し、修正が定義、依存、後続証明�
 draft に完成 unit を含める場合、各 unit は次の unit gate を満たさなければならない。
 
 - [ ] definition-before-use violation が 0 件である。
+- [ ] 定義依存 graph の推移閉包に、未定義の技術語、曖昧な同義語置換、正当化されない循環が 0 件であり、新出専門語の原語と glossary・索引が整合している。
 - [ ] unjustified step が 0 件である。
 - [ ] unlabeled formal claim が 0 件である。
+- [ ] example、remark、caption、脚注、通常 prose を含む assertion inventory に、未分類候補と未抽出 formal assertion が 0 件である。
+- [ ] proof の番号付き step の有無が長さではなく論理的 landmark と navigation で判定され、有用な未分割と根拠のない過剰分割が 0 件である。
+- [ ] self-contained scope 内で使用する外部結果が完全な proof を持ち、proof のない外部依存はすべてユーザー合意済みの scope 除外として記録されている。
+- [ ] unit 内の anchor/link inventory と必須 edge が揃い、unit の入口から必要な前提・定義・先行結果へ到達でき、broken link と到達不能 node が 0 件である。
 - [ ] numbering error と reference error が 0 件である。
 - [ ] 直前の statement に続く通常の proof が、原則「証明」の見出しを持つ bare な無番号 proof であり、不要な proof 番号、proof label、対象参照が 0 件である。離れた証明・解答の無番号説明見出しには対象参照があり、番号付き proof は複数・別証明または proof 自体が参照対象となる場合に限定され、必要な proof label と対象参照を持つ。
 
@@ -181,7 +195,11 @@ WIP を `reviewed` の本文に混ぜず、`out/` では WIP を 0 件にする�
 - [ ] blocking finding が 0 件である。
 - [ ] major finding が解消済み、または影響を理解した明示合意と理由が記録されている。
 - [ ] definition-before-use violation が 0 件である。
+- [ ] 定義依存 graph の推移閉包、専門用語の初出原語、局所読解用の定義・前提リンクが検証済みである。
 - [ ] unjustified step と unlabeled formal claim が 0 件である。
+- [ ] 全 content-bearing container の assertion inventory に未分類候補と未抽出 formal assertion が 0 件であり、example 内から抽出した statement/proof と元の例の相互参照が検証済みである。
+- [ ] self-contained scope 内で使用する外部結果が完全な proof を持ち、proof のない外部依存はすべてユーザー合意済みの scope 除外として記録されている。
+- [ ] anchor/link inventory の必須 edge がすべて存在し、目次・学習目標・本文内参照・索引から全 content-bearing node が到達可能で、必要 edge の欠落、broken link、誤った移動先、到達不能 node が 0 件である。
 - [ ] statement、proof、definition、label、ref の件数を記録し、statement と proof の構造上の対応、番号付き proof に必要な label・参照、その他の label・参照に欠落がなく、未定義・重複 label、broken ref、orphan proof が 0 件である。
 - [ ] 通常の直後 proof、離れた証明・解答、番号付き proof の見出し・番号・label・対象参照が phase 4 の規則に一致している。
 - [ ] WIP、unreviewed unit、未完成の proof が 0 件である。

@@ -73,6 +73,14 @@ project 名と案件内容は repository mode にかかわらず、外部共有�
 - 領域別規約が draft 再公開前の review を要求する場合、その要件は変更後 snapshot を `reviewed` と表示し続ける場合、または読者への共有・配布境界に適用する。現在状態を明示した `unreviewed internal WIP` の live 同期は独立 review の完了まで延期せず、変更前 revision の review 結果を変更後 revision に流用しない。
 - `draft/` の更新は完成、review 済み、配布可能を意味しない。途中成果物には親規約と領域別規約に従って WIP、未通過 gate、未完了範囲、blocking finding を表示し、`out/` への promotion と明確に分離する。
 
+## self-contained 性と局所・大域 navigation
+
+- self-contained な書籍・講義ノート・数学ノートは、冒頭から通読できるだけでなく、各章節、定義、主張、証明、例から局所的に読み始めても、そこで必要となる前提へ到達できるようにする。各 work unit の入口で必要な定義・記号・先行結果を近接して再提示するか、正確な名称と安定した `label` を持つ本文内の定義・主張へクリック可能な参照を置く。「上で述べた」「周知の結果」等の曖昧な案内を依存の代用にしない。
+- definition-before-use は定義文の内部にも再帰的に適用する。定義項の説明に現れる数学的・技術的な語も依存であり、日常語風の言い換えに埋め込まれていても未定義のまま使わない。例えば「弧状連結とは道でつながっていることである」と書くなら、その前または同じ箇所で数学的な「道」を定義するか、既出の定義へ正確に参照する。定義依存 graph の推移閉包を各 unit の想定読者が既知としてよい前提まで辿り、未定義 node と正当化されない循環を 0 件にする。相互・帰納・余帰納定義等の正当な循環は一つの明示した dependency node とし、well-definedness または基礎付けを検証する。
+- 合意した self-contained scope の内側で使う外部結果は、単に名称、出典、または「外部結果である」という断りを置くだけで証明済みとしない。正確な statement、必要な前提、本文での適用確認に加え、本文または付録へ完全な証明を追加する。原資料にない証明は訳注・編者補足等として由来を明示し、独立 review を通す。証明を収録できない結果は、ユーザーが当該結果を既知の外部依存として self-contained scope から除くことに明示合意した場合だけ残せる。
+- 新出の専門用語は、定義または正式導入の初出で、採用した日本語と原語を「弧状連結（path-connected）」のように併記する。原語、採用訳、異綴り・別名、初出、正規索引項目を glossary と索引で対応付け、以後は日本語を基本とする。同じ用語を独立に読める章節で再導入する場合は、原語を再掲するか原語付きの定義へリンクする。
+- 定義、theorem-like statement、証明対象、式、図表、索引項目、学習目標その他の再訪対象には安定した `label` または同等の anchor を与える。学習目標から本文と最小前提へ、用語の初出から定義と索引へ、主張から証明・使用する先行結果・主要な利用箇所へ辿れるようにし、局所的なリンク切れと成果物全体の到達不能 node を 0 件にする。
+
 ## 共通 TeX toolchain
 
 TeX PDF を採用する全制作領域では、検証済みの同種成果物または既存 project の house style があればそれを優先する。新規の長編日本語数学書で別の案件要件またはユーザーの明示合意がない場合は、`bxjsbook`、upLaTeX + dvipdfmx、A4、11pt、`openany`、`oneside`、本文 1 行 40zw 前後、class 既定の見出し階層と柱（running head）を基準とし、latexmk を利用してよい。別の toolchain または版面は、案件要件が必要とする場合、またはユーザーが明示的に決定した場合に採用する。
@@ -179,8 +187,8 @@ RISKS: 残る懸念、判断待ち、または none
 
 検査の厳格さは制作中の各編集ではなく、成果物を確定・共有する境界で最大化する。頻繁な draft 同期と recovery checkpoint は、各回に完全な品質 gate を要求することを意味しない。領域別規約と `MATH_PROSE_REVIEW.md` は内容固有の検査項目を追加できるが、ユーザーが案件固有の高頻度 review を明示しない限り、検査の実行時期と変更分類は本節を継承する。
 
-- **WIP 制作中**: 意味のある小さな編集単位で canonical source を保存し、上記の live view 規則に従って draft と status を更新する。incremental build、構文、変更箇所の未解決参照、変更ページ・変更図の render 等、短時間で失敗を検出できる検査を行う。独立 review、全 phase、全ページ・全図、全索引 fixture の検査を各編集のたびに要求しない。既知の blocking finding を隠したり、WIP を `reviewed` または `out` として扱ったりしてはならない。
-- **recovery checkpoint**: 作業消失時にそこから再開でき、canonical source、draft/status、必要な永続台帳の関係を説明できる小さな状態を指す。work unit の完成を待たず頻繁に作り、対象差分と短時間の検査を確認して commit・push する。未完成または一時的に build 不可でも、状態と既知の問題が明示され、秘密情報・権利違反・無関係な変更を含まなければ WIP checkpoint としてよい。
+- **WIP 制作中**: 意味のある小さな編集単位で canonical source を保存し、上記の live view 規則に従って draft と status を更新する。incremental build、構文、変更箇所の未解決参照、変更ページ・変更図の render 等、短時間で失敗を検出できる検査を行う。build 可能な source を複数の意味ある編集単位にわたって未 build のままにせず、別 task、長時間処理、ownership 移管、進捗報告、turn・session 終了の前には最新 source を反映した incremental build または失敗を記録した `STATUS` を残す。独立 review、全 phase、全ページ・全図、全索引 fixture の検査を各編集のたびに要求しない。既知の blocking finding を隠したり、WIP を `reviewed` または `out` として扱ったりしてはならない。
+- **recovery checkpoint**: 作業消失時にそこから再開でき、採用した `inbox/` snapshot、canonical source、永続台帳、`draft/` の可読成果物と status の関係を説明できる小さな状態を指す。work unit の完成を待たず頻繁に作り、対象差分と短時間の検査を確認して commit・push する。verified private mode では、stable と確認した `inbox/` の新規・変更 input と、更新した `draft/` の PDF・`STATUS`・変更要約も、既知の保存禁止がない限り source・records と同じ recovery checkpoint に含める。未完成または一時的に build 不可でも、状態と既知の問題が明示され、秘密情報・保存自体を禁ずる契約・権利条件・無関係な変更を含まなければ WIP checkpoint としてよい。
 - **quality checkpoint**: 一つの work unit または意味のまとまりの終端で affected scope と依存範囲を確定し、必要な review と build を行う。細かな変更はこの境界まで batch してよいが、recovery checkpoint と draft 同期まで延期しない。各 keystroke や save の前に同じ検査を反復しない。
 - **配布・promotion 前**: 読者への共有、公開、または `out/` への promotion に使う input snapshot を固定し、要求される独立 review、全体 build、全ページ・全図、目次、索引、参照、権利、privacy の gate を完全に実施する。checkpoint の部分検査だけでこの gate を代替しない。
 
@@ -197,7 +205,9 @@ RISKS: 残る懸念、判断待ち、または none
 private な内部確認用 preview は、`unreviewed internal WIP` と input snapshot、未通過 gate、未完了範囲を明記し、配布対象から隔離する場合に限り、独立 review または全体 gate の前にも生成してよい。draft PDF を公開または読者へ共有する前には、その input snapshot と含まれる全 unit の review status を確定し、`reviewed` とする各 unit が `MATH_PROSE_REVIEW.md` の unit gate を満たすことを確認する。変更後に draft を再公開する場合は、変更分類に応じた affected scope の再検証を完了し、変更後 snapshot に対する gate と review status を更新する。draft は可読な進捗成果物とし、input snapshot、review status、WIP とその未完了範囲を本文で明示する。
 - blocking gap、unlabeled formal claim、broken reference のいずれかがある unit を `reviewed` と表示して draft PDF を公開または共有しない。
 - formal claim は意味に合う番号付き semantic environment に置き、自動生成番号と一意で安定した `label` を付ける。直前の theorem-like statement を証明する通常の proof は、見出しを原則として「証明」とする bare な無番号 proof environment に置き、proof 番号、proof 自体の `label`、対象 statement への明示的な cross-reference を付けない。statement から離れた証明・解答には対象 statement への `label` による cross-reference を含む無番号の説明見出しを用いてよい。番号付き proof は、複数の証明・別証明を区別する場合、または proof 自体が他所から参照される場合に限り、一意で安定した `label` と対象 statement への cross-reference を持たせる。
+- formal claim の判定は、原資料または現原稿の環境名、段落種別、主張の一般性や長さではなく、文の数学的役割で行う。example、remark、caption、脚注、導入 prose 等の内部でも、特定の対象について性質・関係・存在・一意性・等式・不等式等を真であると assertion し、「実際」「なぜなら」「これを見るには」等に続けて根拠を与える部分は formal claim と proof の強い候補である。単一対象に固有でも、独立した真偽判定を持つ assertion とその論証は意味に合う theorem-like statement と proof へ抽出し、元の構成・適用・解釈だけを example 等に残す。各 unit で prose と全 semantic environment を走査し、未抽出の formal assertion を 0 件にする。
 - proof に非自明な gap を残さない。十分な長さは `MATH_PROSE_REVIEW.md` の proof dependency trace の基準で判定し、任意の語数または page 数を要件にしない。
+- proof の番号付き step は長さではなく、局所目標、使用する入力、得られる結論、および読者の navigation が明瞭になるかで決める。短い proof でも、構成と検証、二方向の含意、置換と結論、補助観察と適用などの論理的 landmark が二つ以上あり、step 化で追跡しやすくなるなら分けてよい。短いことだけを未分割の理由にせず、逆に一つの原子的推論を見かけだけの step に細分しない。
 - unit ごとの review に加え、`out/` への promotion 前に成果物全体を一つの snapshot として `MATH_PROSE_REVIEW.md` の全 phase で再 review する。
 - blocking finding が解消されるか、scope 除外などの対応についてユーザーの明示合意が記録され、open blocking が 0 件になるまで `out/` へ promotion しない。
 - self-contained な書籍、長編講義ノート、長編数学ノートは、明示的な scope 除外がない限り、本文全体を案内する目次と巻末の用語索引を持つ。
@@ -221,6 +231,7 @@ private な内部確認用 preview は、`unreviewed internal WIP` と input sna
 - 削除、上書き、外部公開、送信、deploy など、重大または不可逆な操作は、親 Codex がユーザーの依頼範囲と対象を確認してから自ら実行するか、明示的に委譲する。
 - 編集開始前に branch、upstream、repository mode、`git status --short`、担当 task の対象 path を確認し、開始時点の既存変更を把握する。作業中に別担当またはユーザーの変更を検出した場合は自分の変更と仮定せず、ownership と差分を再確認する。
 - commit は巨大な work unit の完成時だけでなく、上記の recovery checkpoint ごとに小さく作る。少なくとも別 task への切替、担当・file ownership の移管、長時間処理、破壊的または大規模な書き換え、ユーザーへの進捗報告、turn・session 終了の前に、現在の復旧可能な状態を commit する。各 keystroke や一行ごとの commit は不要だが、session 終了まで未コミットのまま溜めない。
+- recovery checkpoint は canonical source だけを対象にしない。repository mode と保存可否を確認したうえで、採用済みまたは新たに stable と確認した `inbox/` revision、更新した `draft/` の可読成果物・`STATUS`・変更要約、必要な `out/` snapshot、`.workspace/` の canonical source・永続台帳・案件固有 tool を一体として確認する。これらのいずれかが意味ある単位で変わったのに、source だけまたは status だけを commit・push して復旧不能な組合せを作らない。
 - 未完成状態も、`draft/STATUS.*` 等に WIP、未検証範囲、既知の失敗が明記され、再開可能であれば recovery commit に含めてよい。commit したことを品質 gate 通過と扱わず、完成を装う message を付けない。秘密情報、権利上保存できない data、無関係な変更は WIP commit にも含めない。
 - 大幅な書き換え、削除、一時的な全消去の前には直前の利用可能な状態を先に commit・push する。操作後の途中状態で一旦作業を離れる場合も、source と draft/status を整合させた別の recovery checkpoint を commit・push する。
 - recovery commit 後は、原則として直ちに現在の追跡ブランチへ通常の push を行い、task 完了や quality checkpoint までローカルだけに保持しない。連続したごく短い編集で複数 commit をまとめて push する場合も、別 task への切替、長時間処理、ownership 移管、進捗報告、turn・session 終了より前に push する。push の失敗は放置せず、原因と未送信 commit をユーザーへ報告する。
@@ -254,6 +265,7 @@ mode の切り替え、pre-commit、pre-push の各時点で `.system/repository
 - mode 切り替え、pre-commit、pre-push のたびに private remote の同一性と visibility を再検証する。互換用 `add` wrapper を使う場合は stage 時にも検証する。
 - 実際に push する remote は configured private remote と完全に一致し、その時点でも GitHub visibility が `PRIVATE` でなければならない。
 - private mode では `inbox/`、`draft/`、`out/`、`.workspace/`、案件 directory を commit できる。ただし credential、secret、token、鍵、および契約・ライセンス・権利上 commit 自体が許されない data は含めない。
+- private mode では、復旧可能性を既定で優先し、stable な `inbox/` input、canonical source、records、案件固有 tool、可読な `draft/` PDF と `STATUS`、必要な `out/` snapshot を小さな checkpoint ごとに積極的に commit・push する。公開・再配布ライセンスが未確定であることだけを理由に private backup から除外しないが、秘密情報、credential、または保存先への複製自体を明示的に禁ずる契約・ライセンス・権利条件がある data は除外して blocker を記録する。private remote への保存と `out/` の配布承認は別に判定する。
 - public mode 専用の privacy ignore は clone-local な `.git/info/exclude` の managed block とし、bootstrap、mode 切り替え、post-merge で同期する。private mode ではこの managed block を外し、通常の Git staging を可能にする。managed block 外の user 固有 exclude は保持する。
 - private remote の存在は内容の取得・保存・配布権限を与えない。`out/` の配布可否と GitHub visibility は別に審査する。
 
