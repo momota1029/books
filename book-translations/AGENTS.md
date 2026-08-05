@@ -1,16 +1,27 @@
-# 書籍翻訳・統合 PDF 制作ガイド
+# 原書群に基づく再構成講義ノート制作ガイド
 
 ## 適用範囲と正本
 
-この `AGENTS.md` は `book-translations/` とその配下だけに適用する。書籍翻訳以外へ固有規則を持ち込まない。上位の指示と衝突する場合は上位を優先し、判断できなければ作業を止めて確認する。
+この `AGENTS.md` は `book-translations/` とその配下だけに適用する。原書群に基づく再構成講義ノート制作以外へ固有規則を持ち込まない。上位の指示と衝突する場合は上位を優先し、判断できなければ作業を止めて確認する。
 
-各 project は親の `../AGENTS.md`、`../JAPANESE_WRITING.md`、`../MATH_PROSE_REVIEW.md` と repository root の version 管理された `../.system/` tools を直接使う。これらの private copy を作って正本にしてはならない。案件固有の adapter が必要なら、差分と理由だけを project の private area に記録する。日本語の原稿・訳注・編集文は `../JAPANESE_WRITING.md` に従う。ただし、書籍翻訳では原文への忠実性、modality、著者の声の保持を共通規範より優先する。
+各 project は親の `../AGENTS.md`、`../JAPANESE_WRITING.md`、`../MATH_PROSE_REVIEW.md` と repository root の version 管理された `../.system/` tools を直接使う。これらの private copy を作って正本にしてはならない。案件固有の adapter が必要なら、差分と理由だけを project の private area に記録する。日本語の原稿・訳注・編集文は `../JAPANESE_WRITING.md` に従う。source-derived な数学的内容、条件、modality、proof idea、出典上の帰属は文体上の都合より優先して保存するが、原文の構文、paragraph、章節順、接続、継続的な著者 voice は最終成果の構成原理にしない。直接引用、歴史的見解、著者間の相違等を除き、完成本文の基本 voice は再構成講義ノート自身のものとする。
 
 ## 目的
 
 利用権限を確認できる複数の英語書籍を資料群として受け入れ、原書を先頭から順番に翻訳して連結するのではなく、概念、依存関係、教育上の導線に従って全面的に再構成した日本語講義ノートを単一の PDF として作る。合意した収録範囲の内容を過不足なく保持し、非自明な行間を残さず、未解答の演習を置かない。正確な翻訳、要約、再構成、訳注、編者補足を区別し、各記述を原資料まで追跡可能にする。
 
 想定成果物は、統合 PDF、再現可能な編集 source、書誌・版・権利台帳、原資料の全要素 inventory、原資料と再構成先の双方向 coverage matrix、再構成計画、依存・主張・演習の台帳、用語・表記規約、翻訳判断、照合・検証記録である。完成 PDF だけを残して編集根拠を失わず、原資料や中間生成物を公開成果へ無差別に含めない。
+
+## 成果物の identity
+
+- この領域の既定成果は「翻訳本」「抄訳」「複数翻訳の合本」ではなく、原書群を資料として用いた独立の日本語講義ノートである。原書の著者・章・page は provenance であり、読者向け構成の主語ではない。表題、序文、目次、running head、章の導入、本文の語り、まとめにもこの identity を一貫して反映する。
+- 制作を source analysis と destination authoring の二層に分ける。source analysis では全要素を精密に解釈・翻訳して台帳化するが、その逐次訳を本文の下書きにしない。destination authoring では、学習目標、中心的な問い、concept index、dependency graph、想定読者から成果物固有の章節と説明戦略を設計し、該当 Source Unit を根拠として統合する。
+- 原文の連続 passage を上から訳し、後から見出し、順序、接続語だけを変える workflow を禁止する。各 Destination Unit は、source paragraph ではなく、概念 cluster、問い、定義と結果の依存、比較、応用等の教育単位から書き始める。執筆後に source と照合して意味保存と coverage を確認する。
+- 完全被覆は semantic content の完全被覆であって、原文の文数、段落境界、局所順序、修辞、反復、著者の進行実況を保存することではない。定義条件、主張、proof idea、必要な推論、例の役割、歴史的・書誌的内容等は失わない一方、複数箇所の説明を統合し、重複を解消し、成果物固有の説明へ書き直してよい。単なる言い換えや同義語置換は再構成とみなさない。
+- 各章節は少なくとも、なぜ読むか、何を前提とするか、何を理解・証明できるようになるか、どの経路で到達するかが分かる学習上の契約を持つ。動機、見通し、定義、概念説明、主張、証明、例・反例、比較、応用、振り返り、次の入口を内容に応じて配置し、原書の「次の節だから続く」という接続を使わない。
+- 複数資料が同じ概念を扱う場合は、source ごとの塊を順に紹介せず、共通核、仮定・一般性・記法・proof strategy・例の差を一つの説明へ統合する。単一資料にしか現れない内容も、原章節の翻訳として孤立させず、成果物内の目的と依存に応じた役割を与える。
+- source の著者名や「著者は次に述べる」といった語りは、直接引用、歴史、帰属、相違の説明に必要な場合だけ本文へ出す。通常の説明は「本ノートでは」または無標の講義ノート voice で書き、source ごとの narrator の切替を読者へ負わせない。訳注を本文の主要な接続手段にせず、必要な provenance と編集判断は citation、注、巻末資料、private record へ適切に分離する。
+- source と同じ構成が数学的・教育的に最適な箇所は一致を機械的に避けなくてよい。ただし、各一致について dependency または pedagogy 上の理由を reconstruction record に残す。差を作るためだけの不自然な並替え、数学的 statement や不可避な proof structure の表面的な言い換えも行わない。
 
 ## 再構成型・完全被覆講義ノート契約
 
@@ -19,7 +30,7 @@
 - 「全内容」は、合意した source snapshot の本文、見出し、定義、記号、式、主張、証明、導出、説明、動機、例、反例、注、脚注、演習、解答、図、表、caption、歴史的・書誌的注記、付録その他、読者の理解または数学的意味に寄与する要素をいう。前付・後付、目次、原索引、参考文献等も inventory に登録し、本文へ統合するか、成果物固有のものへ再生成するか、明示的に対象外とするかを記録する。
 - 原書の章節順は出典位置として保存するが、無検討に成果物の章節順として採用しない。成果物は definition-before-use、主張と証明の依存、動機から形式化への流れ、基礎から応用への順序に従って独立に設計する。その結果として原書順の一部または全体と一致する場合も、依存上または教育上の理由を記録する。
 - 同内容の重複は無表示で反復せず統合してよいが、統合後の一箇所から全 Source Unit へ逆引きでき、各原資料の仮定、一般性、証明法、例、解釈の差が失われないようにする。相違を潰して見かけ上同一にすることは omission とみなす。
-- 原資料にない接続、補題、説明、例または計算は、self-contained 性と行間解消に必要な最小限だけ追加し、編者補足として出典由来の内容と識別し、根拠と導入理由を記録する。根拠のない新規主張、過剰な一般化、原資料より強い断定は addition error として禁止する。
+- 原資料にない接続、補題、説明、例、比較、概観、振り返りまたは計算は、self-contained 性、教育上の導線、複数資料の統合、局所読解のために必要な範囲で追加し、編者補足として出典由来の内容と識別し、根拠と導入理由を記録する。「最小限」を逐語訳へ留まる理由にしない。根拠のない新規主張、過剰な一般化、原資料より強い断定は addition error として禁止する。
 - 最終成果には読者へ解答を委ねる「演習」「問題」「課題」を残さない。原資料中の演習は一つ残らず解いて `exercise-ledger` に記録し、その問題が担う定義確認、計算、例、反例、補題、命題または応用と完全解答を、適切な本文、例、導出、定理・証明へ統合する。問題文固有の条件と教育的内容も coverage の対象とし、単に解答だけを載せて問題の意味を失わない。
 - 原資料の誤り、不足条件、相互矛盾、解答不能箇所は、完全性を装うために創作で埋めない。該当 Source Unit、影響範囲、根拠、採用した訂正候補または制限を source issue として記録し、本文では原著者の内容と訳者・編者の分析を識別する。解消できない blocking issue があれば完成扱いにしない。
 - 内容の省略または scope 除外は、対象 Source Unit、理由、失われる依存と読者への影響、代替策、ユーザーの明示合意を記録した場合に限る。「重複」「自明」「周辺的」「紙幅」等のラベルだけでは除外理由にならない。除外後は残る scope に対して inventory、coverage、依存および review gate を再計算する。
@@ -59,7 +70,7 @@ book-translations/
 
 project 間で inbox、source、records、tools、build、cache、tmp、logs、locks、draft、out、manifest、state を一切共有しない。並行作業の単位は project とし、同一 project 内で同じ canonical source または manifest を更新する処理は直列化するか `.workspace/locks/` の project-local lock を使う。ある project の inbox 追加によって他 project の状態や成果を無効化してはならない。project 横断で資料や訳文を再利用する場合は権利と版を再評価し、symlink、共有可変 cache、共有 lock を使わない。
 
-複数案件で有効な翻訳 prompt、用語処理、source mapping、build、QA の改善は、案件名、原文、書誌、用語、権利情報、ファイル名等を除去して generic 化し、privacy review と共通の検証を通して repository root の shared system へ upstream する。generic な改善を private project 内だけに残さない。案件固有の用語、権利判断、原文、manifest、config、adapter は private project に置く。
+複数案件で有効な source-analysis・再構成 authoring prompt、用語処理、source mapping、build、QA の改善は、案件名、原文、書誌、用語、権利情報、ファイル名等を除去して generic 化し、privacy review と共通の検証を通して repository root の shared system へ upstream する。generic な改善を private project 内だけに残さない。案件固有の用語、権利判断、原文、manifest、config、adapter は private project に置く。
 
 ## プライバシーと Git 境界
 
@@ -74,10 +85,11 @@ repository mode は親の規則と `../.system/repository-mode` に従う。
 
 ## 永続データの配置
 
-- `<project-id>/.workspace/source/`: 翻訳・統合本文、章構成、訳注、索引、成果用に作成した図表等の canonical source。
+- `<project-id>/.workspace/source/`: 再構成講義ノート本文、成果物固有の章構成、注、索引、成果用に作成した図表等の canonical source。逐次訳等の source-analysis 記録を最終本文の正本として置かない。
 - `<project-id>/.workspace/records/content-inventory.*`: 採用 source snapshot の全要素を安定した Source Unit ID へ分解した inventory。Source ID、版、原章節、page、logical unit、rendered region、time range 等の形式に応じた安定位置、要素種別、親子関係、短い内容識別子、参照先、図表・脚注等との包含関係、状態を持つ。Source Unit は独立して対応付け・意味照合できる最小の実質要素とし、異なる定義、主張、証明内の実質的論法・中間推論、導出、例、注、脚注、演習の各条件、図表の semantic element、caption を件数削減のため一つに束ねない。原目次・原索引・抽出結果は発見補助として利用できるが、page または page を持たない形式の全 logical unit、rendered region、time range の走査と原資料照合を省略しない。
 - `<project-id>/.workspace/records/source-map.*` または `coverage-matrix.*`: 収録対象の各 Source Unit から再構成先の chapter/section、定義、主張、証明、段落、図表、索引項目等への forward mapping と、成果物の各実質要素から Source Unit または明示した編者補足への reverse mapping を持つ双方向 coverage matrix。`excluded-by-agreement` の Source Unit は本文 destination の代わりに有効な除外判断と影響評価へ参照する。成果物側も由来を独立に照合できる leaf Destination Unit に分解し、全 content-bearing span/region が少なくとも一つの leaf Destination Unit に属するよう inventory を作る。同じ段落内で出典由来部分と編者補足が混在する場合は論理的 subunit を分け、leaf 間の重なりは明示した包含または cross-reference 以外に残さない。排他的 disposition を `pending`、`integrated`、`merged`、`exercise-integrated`、`source-issue-resolved`、`excluded-by-agreement`、`blocking-open` で区別し、`expanded-gap` 等の変換種別と、意味照合、mapping 照合、independent review の disposition 別必須 flag、検証者、対象 revision を別 field で記録する。
 - `<project-id>/.workspace/records/reconstruction-plan.*`: 原書順から独立した概念 outline、想定読者、self-contained scope、章節の教育目的、採用する順序と統合・分割の理由、各章節が消費する Source Unit 群を記録する。
+- `<project-id>/.workspace/records/lecture-note-identity-review.*`: 成果物固有の学習目標、章節ごとの中心的な問い・前提・到達点・説明戦略、source structure との比較、source と同じ順序を採用した箇所の理由、逐次訳・一対一 paragraph 対応・source narrator の残存 finding、修正と独立再検証を記録する。
 - `<project-id>/.workspace/records/learning-objective-map.*`: 成果物冒頭および各章節の学習目標へ一意で安定した Objective ID を付け、各目標の前提、対応する Destination Unit、到達を支える定義・主張・証明・例・応用、最小読解経路、本文からの reverse mapping、対象 revision を記録する。成果物冒頭の目標を宣言だけで終わらせず、部分的に読む学習者が目標から該当箇所と必要な前提へ直接移動できる構造を持たせる。
 - `<project-id>/.workspace/records/dependency-graph.*` および必要な claim ledger: 用語・記号の定義と first use、定義文内部の技術語を含む推移的な定義依存、各 formal claim の truth status、原 container、検出 cue、仮定、直接依存、証明、外部依存、利用箇所、semantic environment への抽出先を追跡し、再構成後の順序と本文の参照を双方向に照合する。同時定義、帰納的定義、余帰納的定義等の正当な相互依存は一つの明示した dependency node とし、well-definedness または適切な基礎付けを検証する。その他の循環依存は禁止する。example、remark、caption、脚注、通常 prose を含む全 content-bearing container の assertion 候補を分類し、未分類候補と未抽出 formal assertion を 0 件にする。
 - `<project-id>/.workspace/records/exercise-ledger.*`: 原資料中の全演習について Source Unit ID、条件、意図、依存、完全解答、原問の不備、本文への統合先、統合後の semantic environment、`resolved`、`resolution-verified`、`content-integrated` の各状態を記録する。`resolution-verified` は完全解答、または不成立・解答不能であることの根拠を伴う分析の検証をいう。最終成果で `exercise_total = resolved = resolution-verified = content-integrated` を確認できるようにする。
@@ -94,19 +106,20 @@ repository mode は親の規則と `../.system/repository-mode` に従う。
 
 1. 安定した採用 snapshot ごとに、page を持つ形式は先頭 page から末尾 page まで、page を持たない形式は全 logical unit、rendered region または time range を始端から終端まで走査し、`content-inventory` に Source Unit を登録する。PDF text 抽出、OCR、原目次、原索引、見出し検出、数式・図表検出、transcript 等を併用してよいが、いずれか一つの抽出結果を正本にせず、原 render または原データと照合する。各 content-bearing span/region/range は少なくとも一つの leaf Source Unit に属し、leaf 間の重なりは明示した包含または cross-reference 以外に残さない。parent unit は全 child の disposition と検証 flag が解決するまで covered としない。処理済み範囲を記録し、未分類領域、空白、判読不能、欄外、脚注、継続図表等を未確認のまま飛ばさない。
 2. prose authoring 前に、全 Source Unit を概念別に分類した provisional concept index、用語・記号 registry、claim/dependency graph、exercise ledger を作る。複数資料間の同義、包含、一般化、矛盾、記法差、証明差を明示し、機械的な文字列一致だけで同一概念と判定しない。
-3. provisional concept index と dependency graph から `reconstruction-plan` を作り、各章節の目的、前提、到達点、Source Unit 群を決める。その後、全 Source Unit に予定統合先、合意済み除外判断への参照、または承認待ちの disposition を割り当てる。原書ごと・chapter ごとの逐次翻訳を既定の work order にしない。
-4. authoring 中は、Source Unit を統合するたびに forward mapping を、成果物へ実質的な記述を加えるたびに reverse mapping を更新する。後からまとめて記憶で対応表を作らない。分割は one-to-many、重複統合は many-to-one として表現し、変換によって保存した意味と追加した説明を区別する。
+3. provisional concept index と dependency graph から、source の見出しを写さず `reconstruction-plan` を作る。各章節の中心的な問い、目的、前提、到達点、最小読解経路、説明戦略、必要な concept cluster を先に決め、その後で Source Unit 群を割り当てる。全 Source Unit に予定統合先、合意済み除外判断への参照、または承認待ちの disposition を与えるが、source ごと・chapter ごと・page ごとの逐次翻訳を work order にしない。
+4. authoring は各 Destination Unit の問い、教育的役割、入力となる定義・結果、得る結論、隣接 unit との接続を記した brief から開始する。原文 passage を原稿欄へ置いて順に訳さず、concept/dependency records を根拠に成果物固有の説明を執筆してから、該当 source snapshot に戻って意味、modality、proof idea、例の役割、coverage を照合する。Source Unit を統合するたびに forward mapping を、成果物へ実質的な記述を加えるたびに reverse mapping を更新する。分割は one-to-many、重複統合は many-to-one として表現し、保存した意味と追加した説明を区別する。
 5. work unit の checkpoint ごとに、Source Unit 総数、各 disposition、意味照合 flag、合意除外、source issue、統合先不明、Destination Unit 総数、成果物側の未分類領域・出典不明要素、assertion 候補・分類済み・formal claim 抽出済み・未抽出、定義依存の未定義 node、未追跡依存、外部結果・本文内 proof・合意済み scope 除外、concept 総数と配置済み数、演習総数、解決済み、resolution 検証済み、本文統合済みの件数を snapshot と共に記録する。Source Unit の排他的 disposition は `pending`、`integrated`、`merged`、`exercise-integrated`、`source-issue-resolved`、`excluded-by-agreement`、`blocking-open` とし、意味照合、mapping 照合、independent review は disposition ごとに schema が定める別の必須 flag とする。`source_unit_total` が全 disposition の和に等しいこと、`destination_unit_total = source-mapped + identified-editorial-addition`、`exercise_total = resolved = resolution-verified = content-integrated` を検査する。不成立演習は、根拠を検証した分析と本文統合が済んだ場合だけ resolved に数える。集計値だけでなく該当 ID 一覧へ辿れるようにする。
 6. 各再構成章節について、成果物の各要素から原資料へ戻る destination-to-source audit と、収録対象の各 Source Unit から成果物へ進む source-to-destination audit の両方向を行う。合意除外した Source Unit は除外判断と影響評価を別に照合する。章節を跨ぐ仮定、例、図表、脚注、演習由来内容が脱落していないか、統合で意味が弱化・強化・重複していないかを原文と照合する。
 7. authoring の進行に合わせて provisional concept index を更新し、完成候補では final concept index として固定する。各 concept は定義または正式導入、成果物内 destination、glossary/正規索引項目、関連 Source Unit、dependency graph node を持つ。未配置 concept、索引未登録の正式用語、存在しない destination、相互に不一致な concept/glossary/index/dependency record を 0 件にする。
-8. 再構成で追加した全ての formal claim、補題、証明、説明、例について reverse mapping と種別を持たせる。出典由来でない formal claim は proof または正確な外部依存と truth status を必須とし、接続説明もどの gap または依存を埋めるか記録する。
-9. 完成候補では、`pending`、`blocking-open`、source と destination の未処理・未分類範囲、統合先不明 Source Unit、出典または補足種別が不明な Destination Unit、数学的意味・coverage・権利に影響する未解決 source issue、未定義語、未配置 concept、未追跡依存、未証明の要証明 claim、未解答演習、本文未統合演習、dangling ID、到達不能または broken mapping、stale snapshot/revision をすべて 0 件にする。`excluded-by-agreement` は 0 件条件の例外だが、ユーザー合意と影響評価が有効なものだけを別集計する。schema validator は、source/destination の全 content-bearing span/region の leaf unit 被覆、排他的 disposition、disposition 別必須 flag、総数等式、全 ID の参照整合、forward/reverse mapping の到達可能性、ledger・source・draft snapshot の一致に加え、anchor/link inventory の必須 edge と、目次・学習目標・本文内参照・索引から全 content-bearing node への到達可能性を検査し、必要 edge の欠落、broken link、誤った移動先、到達不能 node を 0 件にする。対象 snapshot、validator version、実行結果を記録し、該当 snapshot に対する validator 成功記録がなければ promotion しない。
+8. 再構成で追加した全ての formal claim、補題、証明、説明、例について reverse mapping と種別を持たせる。出典由来でない formal claim は proof または正確な外部依存と truth status を必須とし、接続説明もどの gap、依存または教育上の必要を満たすか記録する。
+9. checkpoint と完成候補で `lecture-note-identity-review` を行う。まず source を見ずに成果物だけを読み、学習目標、問い、前提、到達点、説明の連続性を確認する。次に各 source と比較し、連続 passage の逐次訳、原 paragraph・見出し・接続の一対一対応、source ごとの未統合 block、原著者の継続的 narrator を finding として記録する。数学的・教育的必然性のある一致を除き、これらが 0 件になるまで再構成済みとしない。
+10. 完成候補では、`pending`、`blocking-open`、source と destination の未処理・未分類範囲、統合先不明 Source Unit、出典または補足種別が不明な Destination Unit、数学的意味・coverage・権利に影響する未解決 source issue、未定義語、未配置 concept、未追跡依存、未証明の要証明 claim、未解答演習、本文未統合演習、dangling ID、到達不能または broken mapping、stale snapshot/revision をすべて 0 件にする。`excluded-by-agreement` は 0 件条件の例外だが、ユーザー合意と影響評価が有効なものだけを別集計する。schema validator は、source/destination の全 content-bearing span/region の leaf unit 被覆、排他的 disposition、disposition 別必須 flag、総数等式、全 ID の参照整合、forward/reverse mapping の到達可能性、ledger・source・draft snapshot の一致に加え、anchor/link inventory の必須 edge と、目次・学習目標・本文内参照・索引から全 content-bearing node への到達可能性を検査し、必要 edge の欠落、broken link、誤った移動先、到達不能 node を 0 件にする。対象 snapshot、validator version、実行結果を記録し、該当 snapshot に対する validator 成功記録がなければ promotion しない。
 
 台帳の形式は CSV、YAML、JSON、SQLite 等から案件に適したものを選べるが、安定 ID、双方向参照、差分、件数検査、snapshot 固定、review 記録を再現できなければならない。汎用化できる schema、validator、report generator、fixture は privacy review 後に repository root の shared system へ upstream し、案件固有 data は private area に残す。
 
 ## inbox 受け入れプロトコル
 
-ingestion と翻訳・執筆を分離し、受け入れが確定した snapshot だけを制作入力にする。
+ingestion と source analysis・destination authoring を分離し、受け入れが確定した snapshot だけを制作入力にする。
 
 1. 作業開始時、各処理 batch 開始時、PDF を `draft/` へ公開する直前、`out/` へ昇格する直前に、対象 project の `inbox/` を再走査する。
 2. 検出結果を `.workspace/records/source-ingestion-manifest.*` に追記する。各 revision について、少なくとも相対 path、byte size、更新時刻、強い content hash の方式と値、初回検出時刻、処理状態、採用・保留・除外理由を保持する。採用する revision は全内容を読み取った強い content hash を必須とする。
@@ -149,19 +162,20 @@ ingestion と翻訳・執筆を分離し、受け入れが確定した snapshot 
 2. 資料ごとに一意な Source ID を付け、書誌・版・権利・参照方式を rights ledger に登録する。版違いは別 revision/record とし、制作に使う安定 snapshot を固定する。
 3. prose authoring を始める前に、採用 snapshot の全 page、または page を持たない形式の全 logical unit、rendered region、time range を走査して `content-inventory` を作り、全 Source Unit の境界、種別、原位置、包含関係を原 render または原データと照合する。未処理範囲、未分類領域、判読不能領域、未登録図表・脚注・演習を 0 件にするまで inventory phase を完了扱いにしない。
 4. 全 Source Unit から provisional concept index、glossary、symbol registry、claim ledger、dependency graph、exercise ledger を作る。複数資料間の重複、包含、一般化、矛盾、記法差、証明差を分類し、解消方針を translation decisions に記録する。
-5. concept index と dependency graph に基づき、原書順から独立した `reconstruction-plan` を作る。章節ごとに目的、前提、到達点、Source Unit 群、統合・分割・順序変更の理由を定め、全 Source Unit に provisional destination、合意済み除外判断への参照、または承認待ちの disposition を割り当てる。成果物冒頭と各章節の学習目標に Objective ID を与えて `learning-objective-map` を作り、各目標を具体的な Destination Unit、必要な前提、最小読解経路へ対応付ける。
-6. 成果物側の concept cluster、定義と結果の cluster、一続きの導出等を追跡可能な work unit とする。原書 chapter または source batch をそのまま逐次翻訳する単位にはしない。各 unit の source snapshot、依存先、coverage 範囲、review 状態を記録する。
-7. 各 unit を、定義前使用と正当化されない循環依存がなく、動機、定義、主張、完全な証明・導出、例・反例、応用が教育的に接続する順序で執筆する。正当な相互・帰納・余帰納定義は一つの明示した dependency node として扱う。意味、論理関係、条件、否定、数量、modality、数式を原文に照合し、不確かな箇所は推測で確定せず検索可能な未確定表示と根拠を残す。
+5. concept index と dependency graph に基づき、source の目次や見出しを雛形にせず `reconstruction-plan` を作る。章節ごとに中心的な問い、目的、前提、到達点、最小読解経路、説明戦略を先に定めてから Source Unit 群、統合・分割・順序の理由を割り当てる。成果物冒頭と各章節の学習目標に Objective ID を与えて `learning-objective-map` を作り、各目標を具体的な Destination Unit、必要な前提、最小読解経路へ対応付ける。
+6. 成果物側の concept cluster、定義と結果の cluster、一続きの導出等を追跡可能な work unit とする。各 unit に source から独立した問い、教育的役割、入力、到達点、説明の流れを持つ authoring brief を作り、原書 chapter、source batch、連続 page をそのまま逐次翻訳する単位にはしない。各 unit の source snapshot、依存先、coverage 範囲、review 状態を記録する。
+7. 各 unit は authoring brief と concept/dependency records から講義ノート voice で執筆し、その後で原資料へ戻って意味、論理関係、条件、否定、数量、modality、数式、proof idea、例の役割を照合する。定義前使用と正当化されない循環依存をなくし、動機、見通し、定義、概念説明、主張、完全な証明・導出、例・反例、比較、応用、振り返りを教育的に接続する。正当な相互・帰納・余帰納定義は一つの明示した dependency node として扱い、不確かな箇所は推測で確定せず検索可能な未確定表示と根拠を残す。
 8. Source Unit を本文へ統合した時点で coverage matrix の forward mapping を、本文へ要素を追加した時点で reverse mapping と由来種別を更新する。配列変更、統合、分割、重複整理、行間補足を翻訳と区別し、採用元、意味保存の根拠、追加理由を記録する。
 9. 原資料中の全演習を実際に解き、問題文、依存、解答、source issue、本文統合先を exercise ledger に記録する。最終成果では未解答の exercise environment にせず、数学的内容と完全解答を本文、例、導出、命題・証明等へ統合する。
-10. checkpoint ごとに完全性会計、双方向 coverage audit、definition-before-use、claim/proof 対応、依存、用語・記号、原文対応、図表要素、演習統合を検査する。細かな編集は checkpoint まで batch し、semantic、structural、editorial の影響範囲は親 `AGENTS.md` の分類に従う。
-11. 数学を含む書籍では、各 affected work unit の完成時と semantic change 後の checkpoint で `../MATH_PROSE_REVIEW.md` に従う authoring から独立した review phase を実施し、private records に結果を保存する。reviewer は数学だけでなく、該当 Source Unit と再構成先の双方向照合、統合・分割による意味の保存、行間補完、演習統合を原資料に対して確認する。公開 draft 全体または `out/` 候補について、成果物全体と採用 source snapshot の独立した全件 coverage review も行う。
+10. checkpoint ごとに完全性会計、双方向 coverage audit、definition-before-use、claim/proof 対応、依存、用語・記号、原文対応、図表要素、演習統合に加え、lecture-note identity を検査する。source を見ない読解と source comparison の両方を行い、逐次訳・一対一 paragraph 対応・source narrator の残存を探す。細かな編集は checkpoint まで batch し、semantic、structural、editorial の影響範囲は親 `AGENTS.md` の分類に従う。
+11. 数学を含む書籍では、各 affected work unit の完成時と semantic change 後の checkpoint で `../MATH_PROSE_REVIEW.md` に従う authoring から独立した review phase を実施し、private records に結果を保存する。reviewer は数学だけでなく、該当 Source Unit と再構成先の双方向照合、統合・分割による意味の保存、行間補完、演習統合、および同規範 phase 1b の成果物 identity を確認する。公開 draft 全体または `out/` 候補について、成果物全体と採用 source snapshot の独立した全件 coverage・lecture-note identity review も行う。
 12. WIP 制作中は変更箇所を incremental build し、checkpoint で受け入れ snapshot とハーネス snapshot を再確認して必要範囲の build と render を検証する。読者へ共有する draft または `out/` 候補では log、全 page、全図表、目次、索引と内部リンクを検証し、work unit の review 状態と WIP 範囲を明示した readable/traceable な PDF を公開する。
-13. 権利、license、配布範囲、不要物混入、直前の inbox 状態、全 work unit の gate、完全性会計の全 0 件条件、全体 coverage review、対象 snapshot に対する schema validator 成功、WIP 0 件を確認し、承認後にだけ `out/` へ昇格する。
+13. 権利、license、配布範囲、不要物混入、直前の inbox 状態、全 work unit の gate、完全性会計の全 0 件条件、全体 coverage review、lecture-note identity review、対象 snapshot に対する schema validator 成功、WIP 0 件を確認し、承認後にだけ `out/` へ昇格する。
 
 ## 翻訳・再構成・出典規約
 
 - 翻訳、要約、再構成、直接引用、訳注、編者補足を識別可能にする。原文にない説明、例、接続、評価、推論は合意した表示で明示し、原著者の主張に見せない。
+- 翻訳は source analysis の手段であり、完成本文の既定形式ではない。正確な逐語寄りの working translation が必要な場合も private record または中間資料として扱い、それを paragraph 単位で磨いて最終本文にしない。最終本文は reconstruction plan と authoring brief から講義ノートとして書き、working translation との対応は coverage matrix で保持する。
 - 再構成は原書の章節順、説明順、演習配置を保存する作業ではなく、内容と出典対応を保存して教育的・依存的に最適な順序へ組み直す作業とする。順序変更で文脈、指示対象、仮定、modality、適用範囲が失われないよう、必要な接続と再導入を明示する。
 - 成果物全体と各章節について、想定読者、既知としてよい前提、本文内で定義・証明する範囲、許容する外部依存を読者向けに明示し、self-contained 性の境界を検証可能にする。合意した境界の内側では definition-before-use を定義文内部の技術語へ再帰的に適用し、定義依存 graph の推移閉包に未定義 node を残さない。例えば「弧状連結とは道でつながっていることである」とするなら、数学的な「道」を先に定義するか同じ箇所で定義し、日常語風の言い換えを定義の代用にしない。主張と証明の依存、記号、非自明な推論を本文または正確な参照で追跡可能にし、「前に述べた」等の曖昧な案内で済ませない。章節を途中から読む場合に必要な前提、定義、先行結果には、本文内の正確な名称とクリック可能なリンクを付ける。
 - self-contained scope 内で外部結果を使う場合、名称・出典・正確な statement と適用条件だけでなく、本文または付録へ完全な proof を追加する。「外部結果である」という断りだけで proof としない。原資料にない proof は訳注・編者補足として由来と導入理由を記録し、数学的内容を独立 review する。proof を収録できない結果は、ユーザーが既知の外部依存として scope から除くことに明示合意した場合だけ許容し、読者向け前提一覧、dependency graph、translation decisions に結果と影響範囲を記録する。
@@ -169,7 +183,7 @@ ingestion と翻訳・執筆を分離し、受け入れが確定した snapshot 
 - Source Unit を短い要約へ置き換えただけで covered と判定しない。定義の全条件、主張の全仮定と結論、証明の各実質的論法、説明の因果、例・反例の役割、図表の semantics が再構成先に保存されていることを要素単位で確認する。複数箇所への分散と複数資料からの統合は coverage matrix で明示する。
 - 直接引用は原文と照合して正確性を保ち、脱落・省略、原文にない強調、訳文の併記を明示する。引用と翻訳の表示・照合結果を source map または translation decisions に残す。
 - 欠落・判読不能箇所を推測で埋めない。原資料間の矛盾は安易に解消せず、版、定義、文脈を確認して両論と編集判断を記録する。
-- 翻訳では語順や構文の逐語的対応より、原文の意味、論理、modality、著者の声、および合意した self-contained 性を優先する。文脈上省略された主語・指示対象・接続関係や、原文から妥当に復元できる非自明な中間推論は、読者が追える自然な日本語として明示する。実質的な補足は訳注または translation decisions で追跡し、原著者の明示的な記述と混同させない。
+- source analysis 用の working translation では語順や構文の逐語的対応より、原文の意味、論理、modality、著者の声を正確に把握する。最終の再構成本文は、その分析を根拠として意味、条件、modality、出典上の帰属を保存しつつ、講義ノート自身の voice と教育構造で書く。原文の構文、paragraph、章節順、接続、継続的な著者 voice を fidelity の名の下に持ち込まない。文脈上省略された主語・指示対象・接続関係や、原文から妥当に復元できる非自明な中間推論は、読者が追える自然な日本語として明示し、実質的な補足は訳注または translation decisions で追跡する。
 - 原文に成立しない論証の gap、欠落、または誤りがあると判断した場合は、訳文で黙って補完・訂正したり、もっともらしい内容を創作したりしない。source issue として原文どおりの内容、疑義、影響、確認根拠、採用した扱いを translation decisions に記録し、本文では原文の問題と訳者注を識別可能に示す。訂正候補や補足を載せる場合も訳者によるものと明示する。`reviewed` と表示する draft の範囲に、無表示の gap や未記録の補完を残さない。
 - 意味を変える意訳、説明追加、節移動は追跡可能にする。AI 生成の補足、候補訳、要約は、原文・出典との照合なしに確定本文へ入れない。
 - 引用・翻訳・図表には可能な限り Source ID、章節、版、page または安定位置を付ける。統合先から原資料へ、原資料の使用範囲から統合先へ双方向に追跡できるようにする。
@@ -201,6 +215,9 @@ ingestion と翻訳・執筆を分離し、受け入れが確定した snapshot 
 
 - 権利未確認の書籍を翻訳対象または公開物へ加えること。public Git へは加えず、verified private mode の recovery snapshot に保存する場合も、保存先への複製自体が禁止されていない stable な inbox input を未採用の `pending` として記録する場合に限る。
 - 原書を先頭から chapter 順に翻訳して連結しただけのものを、再構成済み講義ノートとして扱うこと。
+- 原文の連続 passage を逐次翻訳し、後から見出し、順序、接続語、用語だけを変更したものを再構成済み講義ノートとして扱うこと。
+- 原 chapter・section・paragraph・example・exercise の境界と順序を、数学的・教育的理由の記録なしに Destination Unit へ一対一で移すこと、または source ごとの block を順に接続して一冊にすること。
+- 直接引用、歴史的帰属、source 間の相違等を除き、原著者を完成本文の継続的 narrator とし、source 固有の「次に見る」「前章で述べた」等を講義ノートの接続として残すこと。
 - `inbox/` で検出した file/revision を Candidate Source として登録せず、またはユーザー合意なしに不採用・無関係・重複として完全性会計から除くこと。
 - 採用資料の全 page、または page を持たない形式の全 logical unit、rendered region、time range に対する Source Unit inventory、provisional concept index、dependency graph、coverage matrix を作る前に、完成本文の大量 authoring を始めること。
 - 原目次、原索引、OCR、text 抽出、検索 hit、LLM の記憶のいずれか一つだけを根拠に、原資料の全内容を把握したとみなすこと。
@@ -217,6 +234,8 @@ ingestion と翻訳・執筆を分離し、受け入れが確定した snapshot 
 
 ## 完了条件
 
+- 表題、序文、目次、章節、本文 voice、まとめが、翻訳本または source 別合本ではなく、原書群を資料として用いた独立の再構成講義ノートとして一貫している。各章節に固有の中心的な問い、学習目標、前提、到達点、最小読解経路、説明戦略があり、source を知らない読者がその目的と論理的接続を理解できる。
+- `lecture-note-identity-review` が source を見ない読解と source comparison の両方で完了し、数学的・教育的必然性を記録した一致を除いて、連続 passage の逐次訳、原見出し・paragraph・接続の一対一対応、source ごとの未統合 block、原著者の継続的 narrator が 0 件である。語彙の言い換えだけではなく、concept cluster と dependency に基づく統合・分割・再配置、および成果物固有の説明が確認されている。
 - 合意範囲が、原書順の連結ではなく概念・依存・教育上の導線に基づいて再構成された単一 PDF に収録され、構成、本文、scope 内の目次・巻末用語索引、相互参照が整合している。目次または索引を scope から除外する場合は、対象、理由、読者と quality gate への影響、代替する案内手段、ユーザーの明示合意を private record に記録し、残る成果物について gate を再実行する。
 - `inbox/` で安定検出した全 Candidate Source revision が source-set ledger にあり、`detected = adopted + exact-duplicate-linked + superseded-by-agreement + excluded-by-agreement + pending + blocked` が成立し、未分類、`pending`、合意のない supersede/除外、`blocked`、manifest 不一致が 0 件である。exact duplicate は同一 hash と canonical target を持ち、supersede/除外は対象、理由、影響、ユーザー合意を持ち、採用した全 revision が固定 snapshot と一致する。
 - 採用 source snapshot の全 page または page を持たない形式の全 logical unit、rendered region、time range を照合した `content-inventory` が存在し、独立した実質要素が leaf Source Unit に分解されている。未処理範囲、未分類 content-bearing span/region/range、意図しない重複、未解決 child、位置不明 Source Unit、未登録の本文要素・脚注・図表・caption・演習が 0 件である。
@@ -233,7 +252,7 @@ ingestion と翻訳・執筆を分離し、受け入れが確定した snapshot 
 - 合意した手順で再生成でき、warning、参照、数式、font、全 page の layout 検証を通過し、参照成果物がある場合は house style を一組として actual-size と fit-width の両方で比較済みである。
 - 数学を含む場合は `../MATH_PROSE_REVIEW.md` の独立 review phase が完了し、open blocking が 0 件である。
 - 翻訳・収録範囲に含まれるすべての演習問題に、行間を残さず検証された解答、または問題が不成立・解答不能であることの根拠を伴う検証済み分析が対応し、その全内容が本文へ統合され、`exercise_total = resolved = resolution-verified = content-integrated` が成立している。未解答演習、本文未統合演習、読者へ解答を委ねる exercise/problem/task environment が 0 件である。
-- authoring と分けた reviewer が、採用 source snapshot と完成候補について収録対象の全 Source Unit の forward coverage、成果物全要素の reverse coverage、合意除外した Source Unit の除外記録・影響評価、統合・分割後の意味保存、行間補完、演習統合を全件再確認し、blocking finding が 0 件である。
+- authoring と分けた reviewer が、採用 source snapshot と完成候補について収録対象の全 Source Unit の forward coverage、成果物全要素の reverse coverage、合意除外した Source Unit の除外記録・影響評価、統合・分割後の意味保存、行間補完、演習統合、および source を見ない読解と source comparison による lecture-note identity を全件再確認し、blocking finding が 0 件である。
 - 対象 snapshot に対する schema validator が、source/destination の全 content-bearing span/region の leaf unit 被覆、排他的 disposition、disposition 別必須 verification flag、全総数等式、dangling ID 0 件、全 mapping の到達可能性、source・ledger・draft revision の一致を検証して成功し、その version と結果が記録されている。
 - PDF の全リンクが青字かつ下線付きで一貫して表示され、目次、学習目標、相互参照、引用、脚注、URL、索引のすべてのリンクが正しい移動先へ到達し、リンク範囲、contrast、改行、数式・日本語・欧文表示を実際の PDF で検証済みである。
 - 採用 inbox snapshot、source revision、work unit ごとの review 状態、quality gate、検証結果、承認が記録され、WIP が 0 件の最終成果だけが `out/` に明示的に昇格されている。

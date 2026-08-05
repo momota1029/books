@@ -15,7 +15,8 @@ LLM は意図と文脈の抽出に使うが、route、曖昧時の停止条件�
 | ユーザーの最終目的 | route | 開始または継続方法 |
 |---|---|---|
 | 新しい数学的結果を証明し、完全な研究論文として投稿したい | `papers/writing/<paper-id>/` | 既存の一致 project がなければ、エージェントが `.system/new-paper-project <paper-id>` を実行する |
-| 書籍を忠実に翻訳し、統合された翻訳成果物を作りたい | `book-translations/<project-id>/` | 既存の一致 project がなければ、エージェントが `.system/new-book-project <project-id>` を実行する |
+| 一冊以上の書籍を資料として精読・統合し、self-contained な再構成講義ノートを作りたい | `book-translations/<project-id>/` | 既存の一致 project がなければ、エージェントが `.system/new-book-project <project-id>` を実行する |
+| 書籍を原書順・原構成のまま忠実に全訳したい | 自動 route なし | `book-translations/` は再構成講義ノートを目的とするため誤配属せず、忠実翻訳専用 workflow を作るか、再構成講義ノートへ目的を変えるか確認する |
 | 既存論文を理解し、検証可能な解説・講義ノートを作りたい | `paper-lecture-notes/<project-id>/` | 一致 project がなければ、エージェントが `.system/new-paper-note-project <project-id>` を実行する |
 | 長編の self-contained な数学講義ノート・数学ノートを作りたい | `self-contained-math-notes/` | singleton workspace の既存状態を確認して開始または継続する |
 | `papers/` で執筆中の自分の日本語論文を英訳したい | 同じ `papers/writing/<paper-id>/` または `papers/submitted/<paper-id>/` | 新しい translation project を作らず、同一論文の英訳 phase と日英同期 gate を使う |
@@ -33,7 +34,8 @@ LLM は意図と文脈の抽出に使うが、route、曖昧時の停止条件�
 
 - 「A の論文を読んで、その手法を発展させた新しい論文を書きたい」は `papers/` に route する。A の論文は新規論文 project の `inbox/` に置く参考資料であり、最終成果物を `paper-lecture-notes/` へ変えない。
 - 「A の論文を読んで、内容を自分で説明できるノートを作りたい」は `paper-lecture-notes/` に route する。新規性や投稿の語が資料中にあるだけで `papers/` を選ばない。
-- 「現在の日本語論文を英語にして投稿したい」は既存 `papers/` project の英訳・投稿 phase に route する。書籍翻訳 project を作らない。
+- 「現在の日本語論文を英語にして投稿したい」は既存 `papers/` project の英訳・投稿 phase に route する。`book-translations/` の再構成講義ノート project を作らない。
+- 「この本を日本語で読みたい」が、原書順の忠実な全訳を意味するのか、書籍を資料にした self-contained な再構成講義ノートを意味するのかで route は変わる。後者だけを `book-translations/` へ route し、文脈から一意でなければ確認する。
 - 「この論文を日本語で読みたい」が、忠実な全訳を意味するのか、理解のための日本語解説を意味するのかで route は変わる。文脈から一意でなければ確認する。
 - 「この論文を読みたい」だけでは、会話内だけの読解支援、永続的な解説ノート、忠実な翻訳のどれかを確定できない。project を作る前に一問で確認する。
 - 「○○について書きたい」だけでは、投稿論文、講義ノート、解説、会話回答のいずれかを確定できない。永続 source を作る前に、最終成果物を一問で確認する。
@@ -44,18 +46,19 @@ LLM は意図と文脈の抽出に使うが、route、曖昧時の停止条件�
 route が変わる曖昧さだけを質問し、command 名や内部 directory の選択をユーザーへ委ねない。
 原則として次の一問で判定する。
 
-> 最終成果物は、投稿・改訂する研究論文、忠実な翻訳、永続的な解説ノート、self-contained な数学ノート、会話内だけの読解支援のどれですか？　翻訳なら source は書籍、他者の論文、自分の論文のどれですか？
+> 最終成果物は、投稿・改訂する研究論文、原書順の忠実翻訳、原書群を資料にした再構成講義ノート、永続的な解説ノート、self-contained な数学ノート、会話内だけの読解支援のどれですか？　翻訳または再構成なら source は書籍、他者の論文、自分の論文のどれですか？
 
 以下の場合は確認せず安全に進めてよい。
 
 - 「○○について新しい論文を書いて投稿したい」のように成果物が一意である。
-- 「この本を全訳したい」のように source 種別と忠実な翻訳が明示されている。
+- 「これらの本を統合し、概念順に再構成した self-contained な講義ノートにしたい」のように、書籍を source とする再構成成果物が明示されている。
 - 「この論文の証明を検証し、講義ノートにしたい」のように解説成果物が明示されている。
 - 既存 project 名または path が指定され、その project の継続であることが明らかである。
 
 以下は確認または停止が必要である。
 
 - 「翻訳を作りたい」だけで、書籍、他者論文、自分の論文のどれか不明である。
+- 「この本を日本語にしたい」だけで、原書順の忠実翻訳と再構成講義ノートのどちらか不明である。
 - 「この論文を読みたい」だけで、会話回答、永続的な解説、忠実な翻訳のどれか不明である。
 - 同じ題材について複数の既存 project があり、継続先を一意に決められない。
 - self-contained-math-notes の singleton workspace に別案件の active source、未完了 `STATUS`、未処理 `inbox` がある。
@@ -90,7 +93,8 @@ route が変わる曖昧さだけを質問し、command 名や内部 directory �
 - 「今書いている日本語論文を英訳したい」→ 該当する既存 `papers/` project。複数候補なら project を確認。
 - 「手元の原稿を雑誌投稿できる形に整えたい」→ 一致 project がなければ `papers/writing/` に取り込み、投稿準備 phase を開始。
 - 「投稿済み論文の査読コメントに対応したい」→ 同じ `papers/submitted/` project で送信版を保持して改訂。外部再投稿は別途承認。
-- 「この本を日本語に全訳したい」→ `book-translations/`。
+- 「これらの本を統合し、依存順に組み直した講義ノートを作りたい」→ `book-translations/`。
+- 「この本を日本語に全訳したい」→ 原書順の忠実翻訳であることを確認し、`book-translations/` へ自動配属しない。専用 workflow を作るか、再構成講義ノートへ目的を変えるかを確認。
 - 「この論文を読み、証明を補って解説 PDF にしたい」→ `paper-lecture-notes/<project-id>/` に新規または既存の講義ノート project。
 - 「この論文を一字一句に近い形で日本語化したい」→ 他者論文の忠実翻訳かを確認し、`paper-lecture-notes/` へ自動配属しない。
 - 「この論文を読みたい」→ 会話内の読解支援、永続的な解説 PDF、忠実翻訳のどれかを一問で確認。

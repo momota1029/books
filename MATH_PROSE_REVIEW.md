@@ -58,6 +58,17 @@ severity は次のように分類する。
 
 著者の主張、引用した結果、reviewer の訂正・解釈、編集上の補足を混同しない。
 
+## phase 1b: 成果物 identity と教育設計 audit
+
+原書、論文その他の source 群から再構成講義ノートを作る場合は、数学的 fidelity の検査とは別に、最終成果が独立した講義ノートとして設計されているかを検査する。source の順序や文章を保つことを fidelity と取り違えない。
+
+- まず source と照合せず成果物だけを読み、想定読者、学習目標、章節ごとの中心的な問い、必要な前提、到達点、最小読解経路が理解できるか確認する。source を知らなければ文章の目的や接続を理解できない unit は major とする。
+- 各 Destination Unit に、動機、見通し、定義、概念説明、主張、証明、例・反例、比較、応用、振り返り、navigation 等の教育的役割と、その位置に置く理由があるか確認する。原書の次の paragraph だから続く、という理由を認めない。
+- source と照合し、原 chapter、section、paragraph、example、exercise の境界・順序・接続表現が、教育上の検討なしに成果物へ一対一で残っていないか確認する。数学的依存により順序が一致する場合や、statement・定義・不可避な proof structure が対応する場合は、その必然性を記録すればよく、差を作るためだけの変形は求めない。
+- 原文の連続 passage を逐次訳した後で見出しや順序だけを変えたもの、単語を置換した paragraph、source ごとの塊を接続しただけの章を再構成済みと判定しない。概念 cluster と dependency graph を単位に統合・分割し、成果物固有の問い、説明、比較、接続、まとめを持たせる。
+- source-derived な意味、仮定、modality、proof idea、例の役割、出典上の帰属は保持する一方、直接引用、歴史的見解、著者間の相違を示す箇所等を除き、原著者を成果物の継続的な語り手にしない。本文の基本 voice が講義ノート自身の説明になっているか確認する。
+- 再構成の成否を語彙差、文の長短、原文との表面的な非類似度だけで判定しない。教育構造を変えずに言い換えただけのものは不合格とし、意味保存に必要な定型的表現の一致は問題としない。
+
 ## phase 2: definition-before-use audit
 
 記号、用語、略語ごとに first use と definition の索引を作る。
@@ -148,11 +159,12 @@ unit ごとに statement、proof、definition、label、ref の件数を集計�
 
 ## 文書種別ごとの追加検査
 
-### 書籍翻訳
+### 書籍翻訳・原書群に基づく再構成講義ノート
 
 - 数式、量化、否定、条件、modality、定義域、式番号を、記号・意味・論理単位で原文と厳密に照合する。日本語の語順や構文の逐語性より、意味、論理、合意した self-contained 性と文脈上の行間が正確に伝わることを優先する。
 - source error の疑いを黙って修正しない。原文、問題、採用判断、根拠を private review record に残し、必要に応じて訳注・正誤注として原著者の主張と区別する。
 - 記号統一や節の再構成が原文の依存順と意味を変えていないか確認する。
+- 再構成講義ノートでは phase 1b を適用し、source inventory の完全被覆と、成果物の章節・説明単位・voice の独立した教育設計が両立しているか確認する。source order、paragraph 対応、原著者の語りを保持しただけの成果を、正確な翻訳であっても完成した再構成講義ノートとは判定しない。
 
 ### 論文
 
@@ -173,6 +185,7 @@ finding を severity 順に修正し、修正が定義、依存、後続証明�
 
 draft に完成 unit を含める場合、各 unit は次の unit gate を満たさなければならない。
 
+- [ ] source 群から再構成する unit では、phase 1b の成果物 identity audit が完了し、固有の学習目標、中心的な問い、前提、到達点、教育的役割と説明戦略があり、連続 passage の逐次訳または原 paragraph の言い換えになっていない。
 - [ ] definition-before-use violation が 0 件である。
 - [ ] 定義依存 graph の推移閉包に、未定義の技術語、曖昧な同義語置換、正当化されない循環が 0 件であり、新出専門語の原語と glossary・索引が整合している。
 - [ ] unjustified step が 0 件である。
@@ -194,6 +207,7 @@ WIP を `reviewed` の本文に混ぜず、`out/` では WIP を 0 件にする�
 
 - [ ] blocking finding が 0 件である。
 - [ ] major finding が解消済み、または影響を理解した明示合意と理由が記録されている。
+- [ ] source 群から再構成した成果物では、phase 1b の全体 audit と source comparison が完了し、原書順・paragraph 対応・原著者の継続的 voice に依存しない講義ノート固有の教育構造が検証済みである。
 - [ ] definition-before-use violation が 0 件である。
 - [ ] 定義依存 graph の推移閉包、専門用語の初出原語、局所読解用の定義・前提リンクが検証済みである。
 - [ ] unjustified step と unlabeled formal claim が 0 件である。
