@@ -45,6 +45,17 @@ tool は検査の再現性と漏れの低減に使うが、数学的・翻訳上
 領域別の規約は本ファイルを上書きせず、親の公開境界、共有品質、日本語文章規範、数学文章レビュー、versioned tools の要件を継承する。
 project 名と案件内容は repository mode にかかわらず、外部共有の可否を個別に判定する。
 
+## draft のライブ同期と途中経過
+
+`draft/` は作業完了後に初めて成果物を置く場所ではなく、ユーザーが現在の途中経過を確認するための live view とする。人が編集する正本は各領域で定めた canonical source に保ち、`draft/` を正本にしない。
+
+- canonical source、図表、構成、または生成対象を作成、編集、改名、移動、削除したときは、work unit 全体の完成を待たず、意味のある小さな編集単位ごとに対応する `draft/` の可読成果物と `STATUS` または変更要約を追随させる。各 keystroke ごとの build は不要だが、source と draft が長時間または複数の作業をまたいで乖離した状態を放置しない。
+- 大幅な書き換えのため source を一旦空にする、骨組みだけにする、内容を退避する等、途中状態が大きく後退して見える操作も現在の作業状態である。操作前に直前の復旧可能な状態を commit・push し、操作後は `draft/STATUS.*` を先に更新して、空、再構成中、build 不可、未検証等の実態と対象範囲を明示する。build 可能なら、その不完全な状態も WIP と明記した可読成果物へ速やかに反映する。
+- source 変更後に新しい可読成果物をまだ生成できない場合、直前の成功 PDF 等を最新版に見せてはならない。`STATUS` を直ちに `building`、`stale`、`failed` または `WIP` にし、対応する source revision、最後に成功した revision、未反映範囲、次の更新条件を記録する。古い成果物を残す場合も historical/stale であることをファイル名または隣接する status から一目で判別可能にする。
+- draft 同期は少なくとも、別 task への切替前、担当または file ownership の移管前、長時間の build・test・調査前、ユーザーへの進捗報告前、および作業 turn・session の終了前に行う。同期できない blocker がある場合は、古い draft を無表示で残さず `STATUS` とユーザー報告の双方へ記録する。
+- 領域別規約が draft 再公開前の review を要求する場合、その要件は変更後 snapshot を `reviewed` と表示し続ける場合、または読者への共有・配布境界に適用する。現在状態を明示した `unreviewed internal WIP` の live 同期は独立 review の完了まで延期せず、変更前 revision の review 結果を変更後 revision に流用しない。
+- `draft/` の更新は完成、review 済み、配布可能を意味しない。途中成果物には親規約と領域別規約に従って WIP、未通過 gate、未完了範囲、blocking finding を表示し、`out/` への promotion と明確に分離する。
+
 ## 共通 TeX toolchain
 
 TeX PDF を採用する全制作領域では、検証済みの同種成果物または既存 project の house style があればそれを優先する。新規の長編日本語数学書で別の案件要件またはユーザーの明示合意がない場合は、`bxjsbook`、upLaTeX + dvipdfmx、A4、11pt、`openany`、`oneside`、本文 1 行 40zw 前後、class 既定の見出し階層と柱（running head）を基準とし、latexmk を利用してよい。別の toolchain または版面は、案件要件が必要とする場合、またはユーザーが明示的に決定した場合に採用する。
@@ -136,7 +147,7 @@ RISKS: 残る懸念、判断待ち、または none
 - 編集担当は大きな追加探索へ移る前に checkpoint を返し、変更 file、実施した検証、残作業、現在の workspace 状態を示す。
 - timeout、切断、停止、応答不明の後は同じ編集を重複実行しない。親または別の read-only 担当が `git status`、`git diff`、必要に応じて hash と mtime を確認し、workspace が安定してから継続方法を決める。
 - 同じ実装の修正や追加検証は、担当が継続可能なら元の sub-agent へ follow-up する。担当の状態が不明、権限変更が必要、または独立性が必要な場合は、workspace を audit してから新しい担当を割り当てる。
-- commit と push は、実装、検証、必要な review が済んだ後の別 phase とし、親が対象差分と repository mode を確認する。
+- recovery commit・push は、対象差分、短時間の検査、scope、repository mode を確認したうえで WIP 制作中にも行う。quality checkpoint または完成を示す commit・push は、必要な検証と review が済んだ後の別 phase とする。いずれも親が対象差分、staged index、repository mode を確認する。
 - checkpoint と最終報告には、上記の「実行担当への報告形式」を維持する。
 
 ## 品質管理
@@ -149,10 +160,11 @@ RISKS: 残る懸念、判断待ち、または none
 
 ### 制作ループと品質ゲート
 
-検査の厳格さは制作中の各編集ではなく、成果物を確定・共有する境界で最大化する。領域別規約と `MATH_PROSE_REVIEW.md` は内容固有の検査項目を追加できるが、ユーザーが案件固有の高頻度 review を明示しない限り、検査の実行時期と変更分類は本節を継承する。
+検査の厳格さは制作中の各編集ではなく、成果物を確定・共有する境界で最大化する。頻繁な draft 同期と recovery checkpoint は、各回に完全な品質 gate を要求することを意味しない。領域別規約と `MATH_PROSE_REVIEW.md` は内容固有の検査項目を追加できるが、ユーザーが案件固有の高頻度 review を明示しない限り、検査の実行時期と変更分類は本節を継承する。
 
-- **WIP 制作中**: incremental build、構文、変更箇所の未解決参照、変更ページ・変更図の render 等、短時間で失敗を検出できる検査を行う。独立 review、全 phase、全ページ・全図、全索引 fixture の検査を各編集のたびに要求しない。既知の blocking finding を隠したり、WIP を `reviewed` または `out` として扱ったりしてはならない。
-- **checkpoint**: 一つの work unit、意味のまとまり、または作業 session の終端で変更をまとめ、affected scope と依存範囲を確定して必要な review と build を行う。細かな変更はこの境界まで batch してよく、各 keystroke、save、commit の前に同じ検査を反復しない。
+- **WIP 制作中**: 意味のある小さな編集単位で canonical source を保存し、上記の live view 規則に従って draft と status を更新する。incremental build、構文、変更箇所の未解決参照、変更ページ・変更図の render 等、短時間で失敗を検出できる検査を行う。独立 review、全 phase、全ページ・全図、全索引 fixture の検査を各編集のたびに要求しない。既知の blocking finding を隠したり、WIP を `reviewed` または `out` として扱ったりしてはならない。
+- **recovery checkpoint**: 作業消失時にそこから再開でき、canonical source、draft/status、必要な永続台帳の関係を説明できる小さな状態を指す。work unit の完成を待たず頻繁に作り、対象差分と短時間の検査を確認して commit・push する。未完成または一時的に build 不可でも、状態と既知の問題が明示され、秘密情報・権利違反・無関係な変更を含まなければ WIP checkpoint としてよい。
+- **quality checkpoint**: 一つの work unit または意味のまとまりの終端で affected scope と依存範囲を確定し、必要な review と build を行う。細かな変更はこの境界まで batch してよいが、recovery checkpoint と draft 同期まで延期しない。各 keystroke や save の前に同じ検査を反復しない。
 - **配布・promotion 前**: 読者への共有、公開、または `out/` への promotion に使う input snapshot を固定し、要求される独立 review、全体 build、全ページ・全図、目次、索引、参照、権利、privacy の gate を完全に実施する。checkpoint の部分検査だけでこの gate を代替しない。
 
 反復検査には risk と作業規模に応じた時間予算を置き、時間のかかる全体 build、全 fixture、全ページ検査は入力または依存が変わった必要範囲だけ実行し、その他は checkpoint または配布・promotion 前へ繰り越す。入力 snapshot と tool version が同じ検査結果および安全な build cache は再利用してよい。時間予算の超過を gate 通過とは扱わず、配布・promotion に必須の未完検査は最終的に完了させる。`.system/bootstrap` と `.system/doctor` は clone 後の必須実行に加え、shared tool・環境の変更時または異常の診断時に再実行し、変更のない通常の制作 cycle ごとには反復しない。
@@ -190,8 +202,14 @@ private な内部確認用 preview は、`unreviewed internal WIP` と input sna
 
 - ユーザーの既存変更を保持し、無関係な変更を混ぜない。
 - 削除、上書き、外部公開、送信、deploy など、重大または不可逆な操作は、親 Codex がユーザーの依頼範囲と対象を確認してから自ら実行するか、明示的に委譲する。
-- 一つの work unit、関連する修正群、または作業 session の checkpoint が完了し、妥当な検証を通過した時点でコミットする。細かな編集中は変更を意味のある checkpoint までまとめてよく、各 file 保存または一行の修正ごとに commit・push しない。未完成、未検証、秘密情報、無関係なユーザー変更を含めない。
-- checkpoint のコミット後は、原則として速やかに現在の追跡ブランチへ通常の push を行う。同一 session 内で依存する複数 checkpoint を安全にまとめられる場合、またはユーザーが別の頻度を指定した場合はその境界まで push をまとめてよい。
+- 編集開始前に branch、upstream、repository mode、`git status --short`、担当 task の対象 path を確認し、開始時点の既存変更を把握する。作業中に別担当またはユーザーの変更を検出した場合は自分の変更と仮定せず、ownership と差分を再確認する。
+- commit は巨大な work unit の完成時だけでなく、上記の recovery checkpoint ごとに小さく作る。少なくとも別 task への切替、担当・file ownership の移管、長時間処理、破壊的または大規模な書き換え、ユーザーへの進捗報告、turn・session 終了の前に、現在の復旧可能な状態を commit する。各 keystroke や一行ごとの commit は不要だが、session 終了まで未コミットのまま溜めない。
+- 未完成状態も、`draft/STATUS.*` 等に WIP、未検証範囲、既知の失敗が明記され、再開可能であれば recovery commit に含めてよい。commit したことを品質 gate 通過と扱わず、完成を装う message を付けない。秘密情報、権利上保存できない data、無関係な変更は WIP commit にも含めない。
+- 大幅な書き換え、削除、一時的な全消去の前には直前の利用可能な状態を先に commit・push する。操作後の途中状態で一旦作業を離れる場合も、source と draft/status を整合させた別の recovery checkpoint を commit・push する。
+- recovery commit 後は、原則として直ちに現在の追跡ブランチへ通常の push を行い、task 完了や quality checkpoint までローカルだけに保持しない。連続したごく短い編集で複数 commit をまとめて push する場合も、別 task への切替、長時間処理、ownership 移管、進捗報告、turn・session 終了より前に push する。push の失敗は放置せず、原因と未送信 commit をユーザーへ報告する。
+- 並行作業では task ごとに file ownership と commit 対象 path を分け、commit も task ごとに分離する。同じ file、Git index、生成先を複数担当が同時に変更しない。Git index の操作と commit は一時点で一担当だけが行い、他担当の編集が進行中でも対象 path の ownership が明確な場合に限って直列に stage する。
+- stage には `git add .`、`git add -A`、repository 全体を対象にした `git add -u` を使わず、確認済みの明示 path だけを `git add -- <paths>` で指定する。stage 前に `git status --short`、`git diff -- <paths>`、path 限定なしの `git diff --cached --name-status` と `git diff --cached` で index 全体を確認する。task 外の staged change が一つでもある場合は、それを unstage せず、新たな stage と commit を停止して ownership を調整する。commit 前にも staged path 一覧と staged diff 全体を再確認し、index 全体がその task の所有対象だけである場合に限って commit する。commit 後は commit 内容と残存変更を確認する。
+- 一つの file にユーザーまたは別 task の変更が混在し、安全に分離できない場合は、その file を丸ごと stage したり他者の差分を消したりしない。ownership を調整して直列化するか、対象をユーザーへ示して判断を求める。無関係な変更を一時退避するための広範な stash、reset、checkout、clean を行わない。
 - force-push、履歴改変、amend は、ユーザーから明示的な依頼がない限り行わない。
 - ユーザーがコミットや push の停止、まとめてのコミット、ローカルのみなどを指定した場合は、その指示を優先する。
 - PR 作成はユーザーが明示的に求めた場合にだけ行う。
@@ -209,6 +227,7 @@ mode の切り替え、pre-commit、pre-push の各時点で `.system/repository
 - 原資料、購入書籍、論文・研究内容、原稿、翻訳、ノート、台帳、manifest（ファイル名と hash を含む）、OCR・抽出結果、画像、ログ、PDF、project 名、案件固有の設定・script・metadata は commit・push しない。
 - 任意の階層にある `inbox/`、`draft/`、`out/`、`.workspace/` と案件 directory は public mode では commit しない。`.workspace/` に永続データがあっても同じである。
 - `.gitignore` を過信せず、stage 前、commit 前、push 前に追跡対象と履歴を `.public-files` に照合する。
+- public mode の禁止対象を扱う task では、頻繁な commit・push 規則を理由に private data を stage してはならない。一方で、長時間の案件作業を未保存のまま黙って進めてもならない。実作業開始前に、verified private mode への切替または権利・privacy を満たす別の承認済み復旧経路が必要であることをユーザーへ説明し、方針が確定するまで保護できない制作を進めない。
 
 ### private mode
 
