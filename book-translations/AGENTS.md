@@ -140,6 +140,7 @@ ingestion と翻訳・執筆を分離し、受け入れが確定した snapshot 
 - 数学上の formal claim は、内容に合う theorem、lemma、proposition、corollary 等の番号付き semantic environment に置き、自動生成番号と一意で安定した label を付ける。正式な主張を通常の prose だけで済ませない。
 - 直前の theorem-like statement を証明する通常の proof は、見出しを原則として「証明」とする bare な無番号 proof environment に置き、proof 番号、proof 自体の label、証明対象への明示的な cross-reference を付けない。statement から離れた証明・解答には証明対象を label で示す無番号の説明見出しを用いてよい。番号付き proof は、複数の証明・別証明を区別する場合、または proof 自体を他所から参照する場合に限り、一意で安定した label と証明対象への cross-reference を持たせる。必要な statement、番号付き proof、definition、equation 間の参照は、手入力番号ではなく label による cross-reference とする。
 - proof に非自明な gap を残さない。十分性は任意の語数や page 数ではなく、主張に必要な依存関係と推論が明示され、読者が各段階を追跡できる長さと内容を備えるかで判定する。原文由来の gap は創作して埋めず、source issue と訳者注として扱う。
+- 翻訳・収録範囲に含まれる演習問題は、原著に解答が掲載されているか否かを問わず、すべて解く。これは proof と本文に非自明な gap を残さず、読者が必要な推論を追跡できるようにする規則の一部である。解答は問題ごとに対応を明示し、必要な中間推論を省略しない。原問が不成立、不足条件を含む、または解答不能であると判断した場合も未解答のまま残さず、その事実と根拠を示し、原文の問題と訳者・編者による分析または補足を識別可能にして translation decisions に記録する。
 - 数学を含む場合、work unit 完成時と semantic change 後の checkpoint で `../MATH_PROSE_REVIEW.md` の該当 phase と unit gate を affected scope に適用する。structural change と editorial change は親 `AGENTS.md` の分類に従い、変更のない unit の review を機械的にやり直さない。必要な review は原則として authoring 担当とは別の read-only phase とし、記録を private records に保存する。さらに promotion 対象全体に同文書の全 phase と promotion 条件を適用し、blocking finding の解消または scope 除外へのユーザー合意を記録して open blocking を 0 件にするまで `out/` へ promotion しない。
 - 図表ごとに出典、版、元番号、page、権利、引用・翻訳・改変・新規作成の別を図表台帳へ記録する。改変範囲を明示し、番号、caption、凡例、単位、本文参照、白黒・縮小時の可読性、accessibility、画像解像度を確認する。
 - build 成功だけで完成としない。self-contained な書籍には、明示的な scope 除外がない限り、収録章節を案内する目次と巻末の用語索引を設ける。error、warning、未解決参照、重複 label、欠落引用、式番号、図表位置に加え、目次と索引の生成成功、採用した目次処理系の artifact（LaTeX なら `.toc`）と索引処理系の入力・出力・ログ（makeidx/upmendex なら `idx`/`ind`/`ilg`）の存在と非空性、索引処理の warning/error、索引の目次掲載、ページ参照、PDF bookmark を確認する。
@@ -163,5 +164,6 @@ ingestion と翻訳・執筆を分離し、受け入れが確定した snapshot 
 - 原文照合、用語統一、重複・矛盾・原文の誤りの処理、引用・権利確認が完了し、未確定事項は残件として明示されている。
 - 合意した手順で再生成でき、warning、参照、数式、font、全 page の layout 検証を通過し、参照成果物がある場合は house style を一組として actual-size と fit-width の両方で比較済みである。
 - 数学を含む場合は `../MATH_PROSE_REVIEW.md` の独立 review phase が完了し、open blocking が 0 件である。
+- 翻訳・収録範囲に含まれるすべての演習問題に、行間を残さず検証された解答、または問題が不成立・解答不能であることの根拠を伴う分析が対応している。
 - 採用 inbox snapshot、source revision、work unit ごとの review 状態、quality gate、検証結果、承認が記録され、WIP が 0 件の最終成果だけが `out/` に明示的に昇格されている。
 - 配布対象に原資料、中間物、秘密情報、権利不明素材が混在せず、公開・配布条件が確認済みである。
