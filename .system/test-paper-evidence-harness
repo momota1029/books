@@ -87,20 +87,34 @@ record_all_na_visual_review() {
 }
 
 write_pdf() {
-  python3 - "$1" "${2:-}" <<'PY'
+  python3 - "$1" "${2:-}" "${3:-}" <<'PY'
 import json
 import pathlib
 import sys
 
 registry_path = pathlib.Path(sys.argv[2]) if sys.argv[2] else None
+placement_backing = sys.argv[3]
 ids = []
+visual_placements = []
+code_placements = []
 if registry_path:
     registry = json.loads(registry_path.read_text())
     for section in ("assets", "visuals", "resources", "software", "runs"):
         ids.extend(sorted(key for key, value in registry[section].items() if value.get("state", "current") == "current"))
+    if placement_backing:
+        for reference in registry.get("note_references", []):
+            if reference.get("kind") == "visual-placement":
+                backing = reference.get("backing_id") if placement_backing == "source" else placement_backing
+                visual_placements.append((reference["id"], backing))
+            elif reference.get("kind") == "code-placement":
+                code_placements.append(reference["id"])
 commands = ["BT", "/F1 8 Tf", "10 185 Td", "(EVIDENCE INDEX) Tj"]
 for entry_id in ids:
     commands.extend(["0 -12 Td", f"({entry_id}) Tj"])
+for visual_id, backing_id in visual_placements:
+    commands.extend(["0 -12 Td", f"(placed visual: {visual_id} via {backing_id}) Tj"])
+for asset_id in code_placements:
+    commands.extend(["0 -12 Td", f"(placed code: {asset_id}) Tj"])
 commands.append("ET")
 stream = "\n".join(commands).encode()
 objects = [
@@ -335,10 +349,53 @@ printf '%s\n' \
   'Project data: https://example.org/data.csv' \
   'Official code: https://github.com/example/tool' \
   >"$project/inbox/README.md"
+python3 - "$project/.workspace/source/figures/concept.png" <<'PY'
+import pathlib
+import struct
+import sys
+import zlib
+
+
+def chunk(kind, data):
+    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+
+
+width = height = 24
+rows = []
+for y in range(height):
+    row = bytearray([0])
+    for x in range(width):
+        distance = (x - 12) ** 2 + (y - 12) ** 2
+        value = 20 if 45 <= distance <= 80 else 245
+        row.extend((value, value, value))
+    rows.append(bytes(row))
+payload = b"\x89PNG\r\n\x1a\n"
+payload += chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+payload += chunk(b"IDAT", zlib.compress(b"".join(rows)))
+payload += chunk(b"IEND", b"")
+pathlib.Path(sys.argv[1]).write_bytes(payload)
+PY
+read -r fake_visual_id fake_visual_asset_id < <(python3 - "$project/.workspace/source/figures/concept.png" <<'PY'
+import hashlib
+import pathlib
+import sys
+
+
+def short_id(prefix, material):
+    digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:16].upper()
+    return f"{prefix}-{digest}"
+
+
+digest = hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest()
+asset_id = short_id("ASSET", f"note-visual:{digest}")
+print(short_id("VIS", asset_id), asset_id)
+PY
+)
 printf '%s\n' \
-  '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">' \
-  '<circle cx="5" cy="5" r="4"/></svg>' \
-  >"$project/.workspace/source/figures/concept.svg"
+  "FAKE_PLACEMENT = r'\\EvidenceVisualPlacement{$fake_visual_id}{$fake_visual_asset_id}'" \
+  'def doubled(value):' \
+  '    return 2 * value' \
+  >"$project/.workspace/source/assets/example.py"
 printf '%s\n' \
   '\input{.workspace/source/generated/evidence-macros.tex}' \
   '\begin{document}' \
@@ -375,10 +432,12 @@ registry = json.loads(pathlib.Path(sys.argv[1]).read_text())
 csv_asset = next(value["id"] for value in registry["assets"].values() if "inbox/supplement.csv" in value.get("locations", []))
 readme_asset = next(value["id"] for value in registry["assets"].values() if "inbox/README.md" in value.get("locations", []))
 note_asset = next(value["id"] for value in registry["assets"].values() if value.get("kind") == "note-visual")
+code_asset = next(value["id"] for value in registry["assets"].values() if "source/assets/example.py" in value.get("locations", [""])[0])
 visual = next(value["id"] for value in registry["visuals"].values() if value.get("source_asset") == note_asset)
 print(csv_asset)
 print(readme_asset)
 print(note_asset)
+print(code_asset)
 print(visual)
 for value in registry["resources"].values():
     print(value["id"])
@@ -390,10 +449,11 @@ PY
 csv_asset=${ids[0]}
 readme_asset=${ids[1]}
 note_asset=${ids[2]}
-visual_id=${ids[3]}
-resource_one=${ids[4]}
-resource_two=${ids[5]}
-software_id=${ids[6]}
+code_asset=${ids[3]}
+visual_id=${ids[4]}
+resource_one=${ids[5]}
+resource_two=${ids[6]}
+software_id=${ids[7]}
 
 git_sentinel=$test_root/git-env-injection-ran
 git_helper=$test_root/git-env-helper
@@ -548,6 +608,10 @@ fi
   --disposition include --rights-status cleared --license CC0-1.0 \
   --visibility reader --privacy-review complete --public-summary 'テスト用の円を示す独自図' \
   --origin note-original --creator tester --alt-text 'A test circle.' >/dev/null
+"$repo_dir/.system/paper-evidence-harness" annotate "$project" "$code_asset" \
+  --disposition explain --rights-status cleared --license CC0-1.0 \
+  --visibility reader --privacy-review complete \
+  --public-summary '説明に必要なテスト用コード' >/dev/null
 review_preparation=$("$repo_dir/.system/paper-evidence-harness" prepare-visual-review \
   "$project" "$visual_id" | head -n 1)
 if expect_failure record_all_na_visual_review "$visual_id" VREV-FIXTURE-ALL-NA; then
@@ -652,10 +716,90 @@ else
 fi
 
 printf '%s\n' \
+  "\\EvidenceVisualPlacement{$visual_id}{$note_asset}" \
+  "\\EvidenceCodePlacement{$code_asset}" \
+  >"$project/.workspace/source/unbuilt-notes.md"
+printf '%s\n' \
   '\input{.workspace/source/generated/evidence-macros.tex}' \
   '\begin{document}' \
   "\\EvidenceVisual{$visual_id}" \
   "\\begin{figure}\\EvidenceOriginalCaption{$visual_id}{A test circle.}\\end{figure}" \
+  "\\EvidenceAsset{$code_asset}" \
+  '\begin{lstlisting}' \
+  "\\EvidenceVisualPlacement{$visual_id}{$note_asset}" \
+  "\\EvidenceCodePlacement{$code_asset}" \
+  '\end{lstlisting}' \
+  '\input{.workspace/source/generated/evidence-index.tex}' \
+  '\end{document}' \
+  >"$project/.workspace/source/main.tex"
+"$repo_dir/.system/paper-evidence-harness" scan "$project" >/dev/null
+if "$repo_dir/.system/paper-evidence-harness" gate "$project" --phase internal-wip \
+    >"$test_root/missing-placement.log" 2>&1; then
+  fail placement-marker 'metadata references without rendered visual/code placements passed the gate'
+elif grep -Fq 'included visual lacks a rendered body placement' "$test_root/missing-placement.log" &&
+  grep -Fq 'explained code lacks a rendered body placement' "$test_root/missing-placement.log"; then
+  pass placement-marker 'included figures and explanatory code require rendered body placements, ignoring unbuilt markup and code literals'
+else
+  fail placement-marker 'missing placements were rejected for an unrelated reason'
+fi
+
+printf '%s\n' \
+  '\input{.workspace/source/generated/evidence-macros.tex}' \
+  '\begin{document}' \
+  "\\includegraphics{.workspace/source/figures/concept.png}\\EvidenceVisualPlacement{$visual_id}{$code_asset}" \
+  "\\EvidenceOriginalCaption{$visual_id}{A test circle.}" \
+  "\\lstinputlisting{.workspace/source/assets/example.py}\\EvidenceCodePlacement{$code_asset}" \
+  '\input{.workspace/source/generated/evidence-index.tex}' \
+  '\end{document}' \
+  >"$project/.workspace/source/main.tex"
+"$repo_dir/.system/paper-evidence-harness" scan "$project" >/dev/null
+if "$repo_dir/.system/paper-evidence-harness" gate "$project" --phase internal-wip \
+    >"$test_root/placement-lineage.log" 2>&1; then
+  fail placement-lineage 'a visual placement accepted an unrelated backing asset'
+elif grep -Fq 'visual placement backing asset lacks lineage' \
+    "$test_root/placement-lineage.log"; then
+  pass placement-lineage 'visual placement binds the rendered asset to the catalog visual lineage'
+else
+  fail placement-lineage 'the unrelated visual backing asset was rejected for another reason'
+fi
+
+"$repo_dir/.system/paper-evidence-harness" annotate "$project" "$note_asset" \
+  --disposition exclude --exclusion-reason 'publication-clearance negative fixture' \
+  --visibility internal --privacy-review not-applicable >/dev/null
+printf '%s\n' \
+  '\input{.workspace/source/generated/evidence-macros.tex}' \
+  '\begin{document}' \
+  "\\includegraphics{.workspace/source/figures/concept.png}\\EvidenceVisualPlacement{$visual_id}{$note_asset}" \
+  "\\EvidenceOriginalCaption{$visual_id}{A test circle.}" \
+  "\\lstinputlisting{.workspace/source/assets/example.py}\\EvidenceCodePlacement{$code_asset}" \
+  '\input{.workspace/source/generated/evidence-index.tex}' \
+  '\end{document}' \
+  >"$project/.workspace/source/main.tex"
+"$repo_dir/.system/paper-evidence-harness" scan "$project" >/dev/null
+if "$repo_dir/.system/paper-evidence-harness" gate "$project" --phase internal-wip \
+    >"$test_root/placement-publication.log" 2>&1; then
+  fail placement-publication 'an excluded/internal asset was accepted as rendered visual backing'
+elif grep -Fq 'visual placement backing asset is not included or explained' \
+    "$test_root/placement-publication.log"; then
+  pass placement-publication 'rendered visual backing must itself be publication-cleared evidence'
+else
+  fail placement-publication 'the unpublished visual backing was rejected for another reason'
+fi
+"$repo_dir/.system/paper-evidence-harness" annotate "$project" "$note_asset" \
+  --disposition include --rights-status cleared --license CC0-1.0 \
+  --visibility reader --privacy-review complete \
+  --public-summary '講義ノート独自の概念図ファイル' \
+  --origin note-original --creator tester >/dev/null
+
+printf '%s\n' \
+  '\documentclass{ltjsarticle}' \
+  '\usepackage{graphicx}' \
+  '\usepackage{hyperref}' \
+  '\usepackage{listings}' \
+  '\input{.workspace/source/generated/evidence-macros.tex}' \
+  '\begin{document}' \
+  "\\begin{figure}\\includegraphics[width=24mm]{.workspace/source/figures/concept.png}\\EvidenceVisualPlacement{$visual_id}{$note_asset}\\EvidenceOriginalCaption{$visual_id}{A test circle.}\\end{figure}" \
+  "\\lstinputlisting{.workspace/source/assets/example.py}\\EvidenceCodePlacement{$code_asset}" \
   '\input{.workspace/source/generated/evidence-index.tex}' \
   '\end{document}' \
   >"$project/.workspace/source/main.tex"
@@ -673,6 +817,12 @@ printf '%s\n' \
   "INPUT $project/.workspace/source/generated/evidence-macros.tex" \
   "INPUT $project/.workspace/source/generated/evidence-index.tex" \
   >"$project/.workspace/build/document.fls"
+cp -- "$project/.workspace/build/document.fls" \
+  "$project/.workspace/build/sentinel-mismatch.fls"
+printf '%s\n' \
+  "INPUT $project/.workspace/source/figures/concept.png" \
+  "INPUT $project/.workspace/source/assets/example.py" \
+  >>"$project/.workspace/build/sentinel-mismatch.fls"
 write_pdf "$project/.workspace/build/document.pdf"
 if ! expect_failure "$repo_dir/.system/paper-evidence-harness" record-build "$project" \
   --fls .workspace/build/document.fls \
@@ -681,6 +831,83 @@ if ! expect_failure "$repo_dir/.system/paper-evidence-harness" record-build "$pr
   fail 4 'blank PDF was accepted as a rendered evidence index'
 fi
 write_pdf "$project/.workspace/build/document.pdf" "$project/.workspace/records/evidence/registry.json"
+if "$repo_dir/.system/paper-evidence-harness" record-build "$project" \
+    --fls .workspace/build/document.fls \
+    --pdf .workspace/build/document.pdf \
+    --offline yes --source-revision missing-rendered-placements \
+    >"$test_root/missing-rendered-placements.log" 2>&1; then
+  fail placement-render 'an ID-only PDF was accepted without rendered placement sentinels'
+elif grep -Fq 'rendered PDF is missing visual placement sentinels' \
+    "$test_root/missing-rendered-placements.log"; then
+  pass placement-render 'the build receipt requires placement-specific output in the rendered PDF'
+else
+  fail placement-render 'the ID-only PDF was rejected for an unrelated reason'
+fi
+write_pdf "$project/.workspace/build/document.pdf" \
+  "$project/.workspace/records/evidence/registry.json" "$code_asset"
+if "$repo_dir/.system/paper-evidence-harness" record-build "$project" \
+    --fls .workspace/build/sentinel-mismatch.fls \
+    --pdf .workspace/build/document.pdf \
+    --offline yes --source-revision wrong-sentinel-backing \
+    >"$test_root/wrong-sentinel-backing.log" 2>&1; then
+  fail placement-sentinel-pair 'PDF sentinel with the wrong visual backing asset was accepted'
+elif grep -Fq "$visual_id via $note_asset" \
+    "$test_root/wrong-sentinel-backing.log"; then
+  pass placement-sentinel-pair 'rendered PDF sentinel must match the source visual/backing pair'
+else
+  fail placement-sentinel-pair 'the wrong visual/backing sentinel was rejected for another reason'
+fi
+if ! (
+  cd "$project"
+  lualatex -interaction=nonstopmode -halt-on-error -recorder \
+    -jobname=document -output-directory=.workspace/build \
+    .workspace/source/main.tex >"$test_root/lualatex.log" 2>&1
+); then
+  sed -n '1,160p' "$test_root/lualatex.log" >&2
+  fail placement-render 'the real TeX figure/listing fixture did not compile'
+fi
+pdftotext -layout "$project/.workspace/build/document.pdf" \
+  "$test_root/rendered-placement.txt"
+if ! grep -Fq 'placed visual:' "$test_root/rendered-placement.txt" ||
+  ! grep -Fq 'placed code:' "$test_root/rendered-placement.txt" ||
+  ! grep -Fq 'doubled' "$test_root/rendered-placement.txt" ||
+  ! pdfimages -list "$project/.workspace/build/document.pdf" |
+    awk 'NR > 2 && $1 ~ /^[0-9]+$/ { found = 1 } END { exit !found }'; then
+  fail placement-render 'the real TeX PDF lacks the figure, code listing, or placement sentinel'
+fi
+pass placement-render-real 'the real TeX PDF contains an image, code listing, and placement sentinels'
+printf '%s\n' \
+  "PWD $project" \
+  "INPUT $project/.workspace/source/main.tex" \
+  "INPUT $project/.workspace/source/generated/evidence-macros.tex" \
+  "INPUT $project/.workspace/source/generated/evidence-index.tex" \
+  >"$project/.workspace/build/missing-placement-inputs.fls"
+if "$repo_dir/.system/paper-evidence-harness" record-build "$project" \
+    --fls .workspace/build/missing-placement-inputs.fls \
+    --pdf .workspace/build/document.pdf \
+    --offline yes --source-revision missing-placement-inputs \
+    >"$test_root/missing-placement-inputs.log" 2>&1; then
+  fail placement-inputs 'build receipt accepted placements whose backing files were not read'
+elif grep -Fq 'visual placement backing asset was not read by build' \
+    "$test_root/missing-placement-inputs.log"; then
+  pass placement-inputs 'build receipt requires the placed visual backing file in the recorder input list'
+else
+  fail placement-inputs 'missing visual/code build inputs were rejected for an unrelated reason'
+fi
+printf '%s\n' "INPUT $project/.workspace/source/figures/concept.png" \
+  >>"$project/.workspace/build/missing-placement-inputs.fls"
+if "$repo_dir/.system/paper-evidence-harness" record-build "$project" \
+    --fls .workspace/build/missing-placement-inputs.fls \
+    --pdf .workspace/build/document.pdf \
+    --offline yes --source-revision missing-code-input \
+    >"$test_root/missing-code-input.log" 2>&1; then
+  fail code-input 'build receipt accepted explanatory code whose backing file was not read'
+elif grep -Fq 'code placement backing asset was not read by build' \
+    "$test_root/missing-code-input.log"; then
+  pass code-input 'build receipt requires the explanatory code file in the recorder input list'
+else
+  fail code-input 'missing explanatory code input was rejected for an unrelated reason'
+fi
 "$repo_dir/.system/paper-evidence-harness" record-build "$project" \
   --fls .workspace/build/document.fls \
   --pdf .workspace/build/document.pdf \
@@ -720,7 +947,16 @@ printf '%s\n' \
   "- evidence_pdf_sha256: \`${fingerprints[3]}\`" \
   >"$project/draft/STATUS.md"
 
-if grep -Fq '\nolinkurl{https://example.org/data.csv}' "$project/.workspace/source/generated/evidence-index.tex" &&
+if python3 - "$project/.workspace/records/evidence/registry.json" "$visual_id" "$code_asset" <<'PY' &&
+import json
+import pathlib
+import sys
+registry = json.loads(pathlib.Path(sys.argv[1]).read_text())
+bindings = registry["receipts"]["builds"][-1]["placement_bindings"]
+assert sys.argv[2] in bindings["visuals"]
+assert sys.argv[3] in bindings["code"]
+PY
+  grep -Fq '\nolinkurl{https://example.org/data.csv}' "$project/.workspace/source/generated/evidence-index.tex" &&
   grep -Fq "$readme_asset" "$project/.workspace/source/generated/evidence-index.tex" &&
   ! grep -Fq 'inbox/README.md' "$project/.workspace/source/generated/evidence-index.tex" &&
   ! grep -Fq 'tool --plot' "$project/.workspace/source/generated/evidence-index.tex" &&
@@ -738,6 +974,30 @@ if grep -Fq '\nolinkurl{https://example.org/data.csv}' "$project/.workspace/sour
 else
   fail 4 'completed evidence gate'
 fi
+
+cp -- "$project/.workspace/records/evidence/registry.json" \
+  "$test_root/registry-with-placement-receipt.json"
+python3 - "$project/.workspace/records/evidence/registry.json" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+registry = json.loads(path.read_text())
+registry["receipts"]["builds"][-1].pop("placement_bindings", None)
+path.write_text(json.dumps(registry, indent=2, sort_keys=True) + "\n")
+PY
+if "$repo_dir/.system/paper-evidence-harness" gate "$project" --phase promotion \
+    >"$test_root/old-placement-receipt.log" 2>&1; then
+  fail placement-receipt 'a pre-placement receipt remained valid for required placements'
+elif grep -Fq 'no build receipt matches the current catalog' \
+    "$test_root/old-placement-receipt.log"; then
+  pass placement-receipt 'old receipts are invalidated when current evidence requires placements'
+else
+  fail placement-receipt 'the old placement receipt was rejected for an unrelated reason'
+fi
+mv -- "$test_root/registry-with-placement-receipt.json" \
+  "$project/.workspace/records/evidence/registry.json"
 
 review_frame=$(python3 - "$project/.workspace/records/evidence/registry.json" "$visual_id" <<'PY'
 import json

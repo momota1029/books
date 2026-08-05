@@ -38,6 +38,7 @@ TEXT_SUFFIXES = {
     ".py", ".r", ".rst", ".sty", ".tex", ".toml", ".tsv", ".txt",
     ".yaml", ".yml",
 }
+NOTE_MARKUP_SUFFIXES = {".md", ".rst", ".tex"}
 IMAGE_SUFFIXES = {
     ".avif", ".bmp", ".eps", ".gif", ".heic", ".jpeg", ".jpg",
     ".pdf", ".png", ".svg", ".tif", ".tiff", ".webp",
@@ -53,7 +54,7 @@ MAGIC_REQUIRED_SUFFIXES = {
 }
 CODE_SUFFIXES = {
     ".c", ".cc", ".cpp", ".f", ".f90", ".go", ".h", ".hpp", ".java",
-    ".jl", ".js", ".m", ".py", ".r", ".rb", ".rs", ".sh", ".swift",
+    ".ipynb", ".jl", ".js", ".m", ".py", ".r", ".rb", ".rs", ".sh", ".swift",
 }
 DATA_SUFFIXES = {
     ".csv", ".dta", ".feather", ".h5", ".hdf5", ".json", ".mat",
@@ -93,6 +94,13 @@ NOTE_REF_RE = re.compile(
 )
 ORIGINAL_CAPTION_RE = re.compile(
     r"\\EvidenceOriginalCaption\{([A-Z][A-Z0-9-]{2,63})\}"
+)
+VISUAL_PLACEMENT_RE = re.compile(
+    r"\\EvidenceVisualPlacement\{([A-Z][A-Z0-9-]{2,63})\}"
+    r"\{([A-Z][A-Z0-9-]{2,63})\}"
+)
+CODE_PLACEMENT_RE = re.compile(
+    r"\\EvidenceCodePlacement\{([A-Z][A-Z0-9-]{2,63})\}"
 )
 INPUT_INDEX_RE = re.compile(r"evidence-index\.tex")
 INPUT_MACROS_RE = re.compile(r"evidence-macros\.tex")
@@ -138,6 +146,7 @@ RASTER_CODERS = {
 }
 REFERENCE_SECTIONS = {
     "asset": "assets", "visual": "visuals", "original-caption": "visuals",
+    "visual-placement": "visuals", "code-placement": "assets",
     "resource": "resources", "software": "software",
 }
 
@@ -1635,12 +1644,19 @@ def strip_tex_comments(content: str) -> str:
                 break
             index = percent + 1
         clean_lines.append(line)
-    return "\n".join(clean_lines)
+    without_comments = "\n".join(clean_lines)
+    literal_environment = re.compile(
+        r"\\begin\{(verbatim\*?|Verbatim|lstlisting|minted)\}.*?"
+        r"\\end\{\1\}",
+        re.DOTALL,
+    )
+    return literal_environment.sub("", without_comments)
 
 
 def collect_note_references(project: pathlib.Path, config: dict) -> tuple[list[dict], set[str], set[str], list[dict]]:
     references: list[dict] = []
     all_text: list[str] = []
+    tex_text: list[str] = []
     source_files: list[dict] = []
     for path, content, snapshot in note_source_texts(project, config):
         relative = path.relative_to(project).as_posix()
@@ -1650,9 +1666,14 @@ def collect_note_references(project: pathlib.Path, config: dict) -> tuple[list[d
             "path": relative, "size": snapshot["size"],
             "mtime_ns": snapshot["mtime_ns"], "sha256": snapshot["sha256"],
         })
-        if path.suffix.lower() == ".tex":
+        suffix = path.suffix.lower()
+        if suffix == ".tex":
             content = strip_tex_comments(content)
         all_text.append(content)
+        if suffix == ".tex":
+            tex_text.append(content)
+        if suffix not in NOTE_MARKUP_SUFFIXES:
+            continue
         for line_number, line in enumerate(content.splitlines(), 1):
             for match in NOTE_REF_RE.finditer(line):
                 references.append({
@@ -1668,9 +1689,24 @@ def collect_note_references(project: pathlib.Path, config: dict) -> tuple[list[d
                     "kind": "visual", "id": match.group(1),
                     "path": relative, "line": line_number,
                 })
+            if suffix == ".tex":
+                for match in VISUAL_PLACEMENT_RE.finditer(line):
+                    references.append({
+                        "kind": "visual-placement", "id": match.group(1),
+                        "backing_id": match.group(2),
+                        "path": relative, "line": line_number,
+                    })
+                for match in CODE_PLACEMENT_RE.finditer(line):
+                    references.append({
+                        "kind": "code-placement", "id": match.group(1),
+                        "path": relative, "line": line_number,
+                    })
     joined = "\n".join(all_text)
     input_pattern = re.compile(r"\\(?:input|include)\s*\{([^}]*)\}")
-    inputs = [match.group(1).strip() for match in input_pattern.finditer(joined)]
+    inputs = [
+        match.group(1).strip()
+        for match in input_pattern.finditer("\n".join(tex_text))
+    ]
     integrations = {
         "index" if any(pathlib.PurePosixPath(value).name == "evidence-index.tex" for value in inputs) else "",
         "macros" if any(pathlib.PurePosixPath(value).name == "evidence-macros.tex" for value in inputs) else "",
@@ -2117,6 +2153,8 @@ def render(project: pathlib.Path, registry: dict) -> None:
 \providecommand{{\EvidenceVisual}}[1]{{\hyperlink{{evidence:#1}}{{\textsuperscript{{[visual: \texttt{{#1}}]}}}}}}
 \providecommand{{\EvidenceResource}}[1]{{\hyperlink{{evidence:#1}}{{\textsuperscript{{[resource: \texttt{{#1}}]}}}}}}
 \providecommand{{\EvidenceSoftware}}[1]{{\hyperlink{{evidence:#1}}{{\textsuperscript{{[software: \texttt{{#1}}]}}}}}}
+\providecommand{{\EvidenceVisualPlacement}}[2]{{\hyperlink{{evidence:#1}}{{\textsuperscript{{[placed visual: \texttt{{#1}} via \texttt{{#2}}]}}}}}}
+\providecommand{{\EvidenceCodePlacement}}[1]{{\hyperlink{{evidence:#1}}{{\textsuperscript{{[placed code: \texttt{{#1}}]}}}}}}
 \providecommand{{\EvidenceOriginalCaption}}[2]{{\caption{{【本ノート独自図】#2}}\label{{fig:#1}}}}
 """
     lines = [
@@ -2355,6 +2393,165 @@ def reference_ids(registry: dict, kind: str | None = None) -> set[str]:
     }
 
 
+def is_code_asset(asset: dict) -> bool:
+    if asset.get("kind") == "source-code":
+        return True
+    return any(
+        pathlib.PurePosixPath(str(location)).suffix.lower() in CODE_SUFFIXES
+        for location in asset.get("locations", [])
+    )
+
+
+def required_placement_ids(registry: dict) -> tuple[set[str], set[str]]:
+    required_visuals = {
+        visual_id for visual_id, visual in registry.get("visuals", {}).items()
+        if visual.get("state", "current") == "current"
+        and visual.get("annotations", {}).get("disposition") in {"include", "explain"}
+    }
+    required_code = {
+        asset_id for asset_id, asset in registry.get("assets", {}).items()
+        if asset.get("state", "current") == "current"
+        and asset.get("annotations", {}).get("disposition") == "explain"
+        and is_code_asset(asset)
+    }
+    return required_visuals, required_code
+
+
+def backing_input_path(
+    project: pathlib.Path, asset: dict, input_paths: set[pathlib.Path],
+) -> str:
+    for relative in asset.get("locations", []):
+        try:
+            candidate = ensure_within(project / str(relative), project)
+        except (HarnessError, OSError):
+            continue
+        if candidate in input_paths:
+            return candidate.relative_to(project).as_posix()
+    return ""
+
+
+def visual_backing_visual_ids(registry: dict, visual_id: str, backing_id: str) -> set[str]:
+    visual = registry.get("visuals", {}).get(visual_id, {})
+    if visual.get("source_asset") == backing_id:
+        return {visual_id}
+    backing_visuals = {
+        candidate_id for candidate_id, candidate in registry.get("visuals", {}).items()
+        if candidate.get("state", "current") == "current"
+        and candidate.get("source_asset") == backing_id
+    }
+    if len(backing_visuals) != 1:
+        return set()
+    return {
+        relation.get("from") for relation in registry.get("relations", [])
+        if relation.get("from") in backing_visuals
+        and relation.get("kind") == "derived-from"
+        and relation.get("to") == visual_id
+    }
+
+
+def visual_backing_matches_lineage(registry: dict, visual_id: str, backing_id: str) -> bool:
+    if visual_backing_visual_ids(registry, visual_id, backing_id):
+        return True
+    has_backing_visual = any(
+        candidate.get("state", "current") == "current"
+        and candidate.get("source_asset") == backing_id
+        for candidate in registry.get("visuals", {}).values()
+    )
+    return not has_backing_visual and any(
+        relation.get("from") == backing_id
+        and relation.get("kind") == "derived-from"
+        and relation.get("to") == visual_id
+        for relation in registry.get("relations", [])
+    )
+
+
+def visual_backing_publication_error(asset: dict) -> str:
+    annotation = asset.get("annotations", {})
+    if annotation.get("disposition") not in {"include", "explain"}:
+        return "backing asset is not included or explained"
+    if annotation.get("visibility") != "reader":
+        return "backing asset is not reader-visible"
+    if annotation.get("privacy_review_status") != "complete":
+        return "backing asset privacy review is incomplete"
+    if not str(annotation.get("public_summary", "") or "").strip():
+        return "backing asset lacks a public summary"
+    if annotation.get("rights_status") not in {"cleared", "not-applicable"}:
+        return "backing asset rights are unresolved"
+    return ""
+
+
+def required_rendered_placements(registry: dict) -> tuple[set[tuple[str, str]], set[str]]:
+    required_visuals, required_code = required_placement_ids(registry)
+    visual_pairs = {
+        (reference.get("id", ""), reference.get("backing_id", ""))
+        for reference in registry.get("note_references", [])
+        if reference.get("kind") == "visual-placement"
+        and reference.get("id") in required_visuals
+    }
+    code_ids = reference_ids(registry, "code-placement") & required_code
+    return visual_pairs, code_ids
+
+
+def build_placement_bindings(
+    project: pathlib.Path, registry: dict, input_paths: set[pathlib.Path],
+) -> dict[str, dict[str, object]]:
+    required_visuals, required_code = required_placement_ids(registry)
+    visual_records: dict[str, list[dict]] = {}
+    for reference in registry.get("note_references", []):
+        if reference.get("kind") == "visual-placement":
+            visual_records.setdefault(reference.get("id", ""), []).append(reference)
+    visual_markers = set(visual_records)
+    code_markers = reference_ids(registry, "code-placement")
+    missing_visual_markers = sorted(required_visuals - visual_markers)
+    missing_code_markers = sorted(required_code - code_markers)
+    if missing_visual_markers:
+        raise HarnessError(
+            "included visual lacks EvidenceVisualPlacement: "
+            + ", ".join(missing_visual_markers)
+        )
+    if missing_code_markers:
+        raise HarnessError(
+            "included code lacks EvidenceCodePlacement: "
+            + ", ".join(missing_code_markers)
+        )
+
+    bindings: dict[str, dict[str, object]] = {"visuals": {}, "code": {}}
+    for visual_id in sorted(required_visuals):
+        bound_assets: list[str] = []
+        for reference in visual_records.get(visual_id, []):
+            backing_id = reference.get("backing_id", "")
+            asset = registry.get("assets", {}).get(backing_id, {})
+            if asset.get("state", "current") != "current":
+                raise HarnessError(
+                    f"visual placement backing asset is missing: {visual_id} -> {backing_id}"
+                )
+            publication_error = visual_backing_publication_error(asset)
+            if publication_error:
+                raise HarnessError(
+                    f"visual placement {publication_error}: {visual_id} -> {backing_id}"
+                )
+            if not visual_backing_matches_lineage(registry, visual_id, backing_id):
+                raise HarnessError(
+                    f"visual placement backing asset lacks lineage: {visual_id} -> {backing_id}"
+                )
+            path = backing_input_path(project, asset, input_paths)
+            if not path:
+                raise HarnessError(
+                    f"visual placement backing asset was not read by build: {visual_id} -> {backing_id}"
+                )
+            bound_assets.append(f"{backing_id}:{path}")
+        bindings["visuals"][visual_id] = sorted(set(bound_assets))
+    for asset_id in sorted(required_code):
+        asset = registry.get("assets", {}).get(asset_id, {})
+        path = backing_input_path(project, asset, input_paths)
+        if not path:
+            raise HarnessError(
+                f"code placement backing asset was not read by build: {asset_id}"
+            )
+        bindings["code"][asset_id] = path
+    return bindings
+
+
 def inspect_reader_visibility(entry: dict, strict: bool, errors: list[str], warnings: list[str]) -> None:
     if entry.get("state", "current") != "current":
         return
@@ -2463,6 +2660,8 @@ def inspect_gate(project: pathlib.Path, config: dict, registry: dict, phase: str
     promotion = phase == "promotion"
     note_refs = reference_ids(registry)
     original_caption_refs = reference_ids(registry, "original-caption")
+    visual_placement_refs = reference_ids(registry, "visual-placement")
+    code_placement_refs = reference_ids(registry, "code-placement")
     integrations = set(registry.get("scan", {}).get("integrations", []))
     for _, entry in entries.values():
         inspect_reader_visibility(entry, strict, errors, warnings)
@@ -2559,6 +2758,40 @@ def inspect_gate(project: pathlib.Path, config: dict, registry: dict, phase: str
             errors.append(f"unknown note reference: {reference['id']}")
         elif entries[reference["id"]][0] != REFERENCE_SECTIONS.get(reference.get("kind")):
             errors.append(f"note reference kind does not match registry section: {reference.get('kind')} {reference['id']}")
+        elif reference.get("kind") == "code-placement" and not is_code_asset(entries[reference["id"]][1]):
+            errors.append(f"code placement does not reference a code asset: {reference['id']}")
+        elif reference.get("kind") == "visual-placement":
+            backing_id = reference.get("backing_id", "")
+            if (
+                backing_id not in entries
+                or entries[backing_id][0] != "assets"
+                or entries[backing_id][1].get("state", "current") != "current"
+            ):
+                errors.append(
+                    f"visual placement backing asset is missing: {reference['id']} -> {backing_id}"
+                )
+            else:
+                backing_asset = entries[backing_id][1]
+                publication_error = visual_backing_publication_error(backing_asset)
+                if publication_error:
+                    errors.append(
+                        f"visual placement {publication_error}: {reference['id']} -> {backing_id}"
+                    )
+                if not visual_backing_matches_lineage(registry, reference["id"], backing_id):
+                    errors.append(
+                        f"visual placement backing asset lacks lineage: {reference['id']} -> {backing_id}"
+                    )
+                for backing_visual_id in visual_backing_visual_ids(
+                    registry, reference["id"], backing_id,
+                ):
+                    if backing_visual_id == reference["id"]:
+                        continue
+                    backing_visual = registry.get("visuals", {}).get(backing_visual_id, {})
+                    if backing_visual.get("annotations", {}).get("disposition") not in {"include", "explain"}:
+                        errors.append(
+                            "visual placement backing visual is not included or explained: "
+                            f"{reference['id']} -> {backing_visual_id}"
+                        )
     for relation in registry.get("relations", []):
         relation_error = relation_type_error(relation, entries)
         if relation_error:
@@ -2597,6 +2830,8 @@ def inspect_gate(project: pathlib.Path, config: dict, registry: dict, phase: str
             errors.append(f"included asset rights are unresolved: {asset['id']}")
         if disposition == "explain" and asset["id"] not in note_refs:
             errors.append(f"explained asset lacks a body reference: {asset['id']}")
+        if disposition == "explain" and is_code_asset(asset) and asset["id"] not in code_placement_refs:
+            errors.append(f"explained code lacks a rendered body placement: {asset['id']}")
         if asset.get("kind") in {"source-document", "source-supplement", "source-archive"} and strict and disposition in {"include", "explain"}:
             for field in ("visual_review_status", "link_review_status", "attachment_review_status"):
                 if annotation.get(field) not in {"complete", "not-applicable"}:
@@ -2701,6 +2936,8 @@ def inspect_gate(project: pathlib.Path, config: dict, registry: dict, phase: str
                 errors.append(f"visual alt text is missing: {visual['id']}")
             if visual["id"] not in note_refs:
                 errors.append(f"visual lacks a body reference: {visual['id']}")
+            if visual["id"] not in visual_placement_refs:
+                errors.append(f"included visual lacks a rendered body placement: {visual['id']}")
             origin = annotation.get("origin", "pending")
             if origin == "pending":
                 errors.append(f"visual origin is pending: {visual['id']}")
@@ -2943,8 +3180,21 @@ def inspect_gate(project: pathlib.Path, config: dict, registry: dict, phase: str
                         entry_id for entry_id, (_, entry) in entries.items()
                         if entry.get("state", "current") == "current"
                     }
-                    pages, _ = validate_pdf_file(pdf, expected_ids)
-                    valid = pages == build.get("pdf_pages") and sorted(expected_ids) == build.get("evidence_ids")
+                    rendered_visuals, rendered_code = required_rendered_placements(registry)
+                    pages, _ = validate_pdf_file(
+                        pdf, expected_ids, rendered_visuals, rendered_code,
+                    )
+                    expected_bindings = build_placement_bindings(
+                        project, registry,
+                        fls_input_paths(project, fls.read_text(encoding="utf-8", errors="replace")),
+                    )
+                    valid = (
+                        pages == build.get("pdf_pages")
+                        and sorted(expected_ids) == build.get("evidence_ids")
+                        and expected_bindings == build.get(
+                            "placement_bindings", {"visuals": {}, "code": {}}
+                        )
+                    )
             except (HarnessError, OSError):
                 valid = False
             if valid:
@@ -4314,7 +4564,11 @@ def record_run(project: pathlib.Path, registry: dict, args: argparse.Namespace) 
         registry["relations"].append(uses_relation)
 
 
-def validate_pdf_file(path: pathlib.Path, evidence_ids: set[str] | None = None) -> tuple[int, str]:
+def validate_pdf_file(
+    path: pathlib.Path, evidence_ids: set[str] | None = None,
+    visual_placements: set[tuple[str, str]] | None = None,
+    code_placements: set[str] | None = None,
+) -> tuple[int, str]:
     if sniff_type(path) != "application/pdf":
         raise HarnessError("build receipt PDF does not have a PDF signature")
     if not shutil.which("pdfinfo"):
@@ -4337,6 +4591,25 @@ def validate_pdf_file(path: pathlib.Path, evidence_ids: set[str] | None = None) 
     missing_ids = sorted((evidence_ids or set()) - set(re.findall(r"(?:ASSET|VIS|RES|SW|RUN)-[A-Z0-9-]+", pdf_text)))
     if missing_ids:
         raise HarnessError(f"rendered evidence index is missing IDs: {', '.join(missing_ids)}")
+    rendered_visuals = set(re.findall(
+        r"placed\s+visual\s*:\s*(VIS-[A-Z0-9-]+)\s+via\s+(ASSET-[A-Z0-9-]+)",
+        pdf_text, re.IGNORECASE,
+    ))
+    rendered_code = set(re.findall(
+        r"placed\s+code\s*:\s*(ASSET-[A-Z0-9-]+)", pdf_text, re.IGNORECASE,
+    ))
+    missing_visuals = sorted((visual_placements or set()) - rendered_visuals)
+    missing_code = sorted((code_placements or set()) - rendered_code)
+    if missing_visuals:
+        raise HarnessError(
+            "rendered PDF is missing visual placement sentinels: "
+            + ", ".join(f"{visual_id} via {backing_id}" for visual_id, backing_id in missing_visuals)
+        )
+    if missing_code:
+        raise HarnessError(
+            "rendered PDF is missing code placement sentinels: "
+            + ", ".join(missing_code)
+        )
     return int(pages_match.group(1)), encrypted
 
 
@@ -4368,7 +4641,10 @@ def record_build(project: pathlib.Path, config: dict, registry: dict, args: argp
         entry_id for entry_id, (_, entry) in all_entries(registry).items()
         if entry.get("state", "current") == "current"
     }
-    pages, encrypted = validate_pdf_file(pdf, current_evidence_ids)
+    rendered_visuals, rendered_code = required_rendered_placements(registry)
+    pages, encrypted = validate_pdf_file(
+        pdf, current_evidence_ids, rendered_visuals, rendered_code,
+    )
     _, _, _, live_source_files = collect_note_references(project, config)
     source_fingerprint = manifest_fingerprint(live_source_files)
     if source_fingerprint != registry.get("scan", {}).get("source_fingerprint"):
@@ -4390,6 +4666,7 @@ def record_build(project: pathlib.Path, config: dict, registry: dict, args: argp
                 missing_source.append(item["path"])
     if missing_source:
         raise HarnessError(f"build recorder did not find canonical TeX input in .fls: {', '.join(missing_source)}")
+    placement_bindings = build_placement_bindings(project, registry, input_paths)
     newest_source_mtime = max((item["mtime_ns"] for item in live_source_files), default=0)
     if fls.stat().st_mtime_ns < newest_source_mtime or pdf.stat().st_mtime_ns < newest_source_mtime:
         raise HarnessError("build files predate the current canonical source")
@@ -4401,6 +4678,7 @@ def record_build(project: pathlib.Path, config: dict, registry: dict, args: argp
         "pdf": pdf.relative_to(project).as_posix(), "pdf_sha256": sha256_file(pdf),
         "pdf_pages": pages, "pdf_encrypted": encrypted,
         "evidence_ids": sorted(current_evidence_ids),
+        "placement_bindings": placement_bindings,
         "offline": args.offline == "yes", "source_revision_label": args.source_revision or "",
     })
 
