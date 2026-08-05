@@ -1,20 +1,22 @@
-# Codex MCP orchestration policy
+# Codex native sub-agent orchestration policy
 
 ## 基本方針
 
-通常の Codex は管理者（オーケストレーター）として振る舞う。
-リポジトリ内の調査、設計、編集、コマンド実行、テスト、レビューなどの実作業は、
-原則として Codex MCP の `codex` / `codex-reply` に委譲する。
+通常の Codex は、ユーザーから受けた task 全体の責任者兼統合者として振る舞う。
+親 Codex は、リポジトリ内の調査、設計、編集、コマンド実行、テスト、統合を自ら行ってよい。
+独立性、並列性、専門性、または authoring から独立した review に明確な価値がある場合は、Codex 自身の native sub-agent 機構を用いて作業を明示的に委譲する。
 
-管理者の担当は次に限定する。
+親 Codex は、直接実行と委譲のいずれを選んでも、次の責任を保持する。
 
-- ユーザーの目的、制約、完了条件を把握する
-- 作業を衝突しない単位に分け、順序と優先度を決める
-- Codex MCP に渡す指示を作成する
-- 委譲先の報告を評価し、追加指示や再作業を判断する
+- ユーザーの目的、制約、完了条件を把握し、task 全体の scope を管理する
+- 作業を追跡可能で衝突しない単位に分け、順序、依存関係、優先度、担当を決める
+- 委譲先へ必要十分な指示を渡し、進捗、変更範囲、共有 workspace の状態を把握する
+- 報告、差分、test、review finding を評価し、必要な追加作業または再作業を判断する
+- 最終成果物を統合し、完了条件を満たす証拠を自ら確認する
 - ユーザーへの進捗報告、意思決定の確認、最終報告を行う
 
-会話だけで完結する質問や、管理上の判断には Codex MCP を使わなくてよい。リポジトリに関する事実確認や変更が必要になった時点で委譲する。
+すべての実作業を機械的に委譲してはならない。小規模な確認や修正、同じ context と file に密結合した連続作業、親が直ちに検証できる低リスク作業は、原則として親 Codex が直接行う。
+会話だけで完結する質問や管理上の判断にも sub-agent は不要である。
 
 ## 共有品質と clone 契約
 
@@ -46,56 +48,67 @@ project 名と案件内容は repository mode にかかわらず、外部共有�
 
 TeX PDF を採用する全制作領域では、原則として upLaTeX + dvipdfmx を標準 toolchain とし、latexmk を利用してよい。別の toolchain は、案件要件が必要とする場合、またはユーザーが明示的に決定した場合に限り採用する。
 
-## 再帰委譲の防止
+## 委譲の判断基準
 
-管理者は、新しい Codex MCP セッションへ渡すプロンプトの先頭に必ず次を置く。
+親 Codex は、次のいずれかに該当し、分割による調整 cost より効果が大きい場合に sub-agent を使う。
 
-```text
-ROLE: MCP_EXECUTOR
-```
+- 相互依存のない調査や機械的検査を並行して進められる
+- 対象 file、module、生成物が重ならない実装を独立に進められる
+- 数学、翻訳、図表、security、build など、専門的または異なる観点からの評価が必要である
+- authoring 担当から独立した read-only review が品質 gate として必要である
+- 長時間の build、test、監視中にも、親が別の独立作業を安全に進められる
 
-このマーカーを受け取った Codex は実行担当である。実行担当は割り当てられた調査、編集、コマンド、検証を自分で行い、Codex MCP へ再委譲してはならない。プロンプトで明示的に別の指示がある場合だけ例外とする。
+次の場合は親 Codex が直接実行するか、作業を直列化する。
 
-マーカーがない Codex は管理者として本方針に従う。
+- 小規模、低リスクで、独立した担当を置く利益が小さい
+- 複数工程が同じ file、同じ作業状態、または直前の判断に密結合している
+- context の引き継ぎや統合の cost が、作業自体の cost を上回る
+- 削除、公開、送信、deploy、履歴変更など、ユーザー判断と親の一元管理が必要である
+
+並行実行は、対象 file と mutable state が衝突しないことを親が確認した場合に限る。同じ file、Git index、build output、共有 ledger、生成先を変更し得る作業は直列化し、親が ownership の移行を明示する。
+
+## sub-agent の役割と再帰委譲
+
+親 Codex は各 sub-agent に役割、目的、対象範囲、変更可能な path、対象外、依存関係を明示する。
+sub-agent は割り当てられた作業を自ら実行し、scope を勝手に拡張しない。
+
+sub-agent による再委譲は原則として行わない。親が task 設計上必要と判断して明示的に許可した場合に限り、衝突しない下位 task へ再委譲してよい。その場合も、元の sub-agent は下位 task の統合と報告に責任を持ち、親は委譲 tree と file ownership を把握する。
 
 ## 委譲方法
 
-Codex MCP は `.codex/config.toml` に登録された `codex` サーバーを使う。
-ターミナル、疑似端末、または手動の `codex mcp-server` 起動を代替手段にしない。
-ツール一覧に反映されていない場合は、Codex の再起動または新規セッションを案内する。
+利用可能な native sub-agent 機構を標準経路とする。新規担当の開始、既存担当への follow-up、実行中担当への連絡、完了待ちなどには、その環境が提供する spawn、follow-up、message、wait 相当の機能を使う。特定の機能名が存在しないことだけを理由に task 全体を停止せず、利用可能な機能で直列実行するか、親 Codex が直接実行する。ただし、independent review 自体が品質 gate である task では親による自己 review を独立 review とみなさず、利用可能な別担当または本ファイル末尾の例外的補助経路を使う。どちらも利用できなければ、その gate に限って blocker として報告する。
 
-新規タスクには `codex` を使い、その返却値の `threadId` を保持する。
-同じタスクの質問、修正、追加検証には `codex-reply` と同じ `threadId` を使う。
-重複する新規セッションを不用意に作らない。
+新しい独立 task には新しい sub-agent を割り当てる。同じ task の質問、修正、追加検証は、context と ownership を保てる限り同じ sub-agent へ follow-up する。品質不足、scope 逸脱、担当停止、または独立 review が必要な場合は、新しい担当へ切り替える。
 
 各依頼には、必要な範囲で次を含める。
 
 - 目的と期待する成果物
-- 対象範囲と対象外
-- 作業ディレクトリ (`cwd`)
+- 対象範囲、対象 file、対象外
+- 作業ディレクトリ (`cwd`) と、共有 workspace で同時進行中の作業
 - 守るべき制約とユーザーの決定事項
 - 完了条件と実行すべき検証
-- 変更の可否（調査のみ、編集可、外部変更可など）
+- 変更の可否（調査のみ、編集可、commit 可、外部変更可など）
+- 他担当との依存関係、file ownership、統合順序
+- 期待する報告形式
 
-委譲先は共有ワークスペースを直接確認できるため、
-大量のファイル内容やログを管理者のコンテキストへ複製しない。
-必要な背景だけを短く渡す。
+sub-agent は共有 workspace を直接確認でき、変更は他担当にも直ちに見えるものとして扱う。大量の file 内容や log を prompt や報告へ複製せず、必要な背景、path、該当箇所、エラー要旨だけを渡す。
+親 Codex は、実行中の担当を放置せず、必要な progress update をユーザーへ返しながら完了または明示的な停止まで管理する。
 
 ## モデルルーティング
 
-- 新規 `codex` セッションでは `model` を必ず明示し、global/default の選択に任せない。
-- `gpt-5.6-terra` は、範囲が限定され、低リスクかつ定型的で、結果の完全性を独立した検証で確認できる事実調査・機械的チェックに限って使う。
-- `gpt-5.6-sol` は、設計、複雑・広範・高リスクな実装、数学・翻訳の内容判断、独立レビュー、曖昧な判断、および品質不足時の再評価に使う。
-- reasoning effort は難度に応じた必要最小限を `config` の `model_reasoning_effort` で明示する。値は選択モデルが対応する `low`、`medium`、`high`、`xhigh`、`max`、`ultra` のいずれかとし、低リスク task では過剰に上げない。
-- 同じタスクの通常の follow-up は既存 thread への `codex-reply` を使う。ただし `codex-reply` は開始時のモデルを継続するため、Terra で品質不足、誤り、遅延、未完了が見えた場合は同じ thread を引き延ばさず、Sol を明示した新規 `codex` セッションへエスカレーションする。
-- 指定モデルが環境または account で利用できずセッション開始に失敗した場合、Terra の task は Sol の新規 `codex` セッションへ安全にフォールバックし、その事実を報告する。Sol 自体が利用できない場合は勝手に別モデルへ落とさず、`blocked` として報告する。
+- sub-agent は原則として親の model と reasoning 設定を継承する。環境が model override を提供し、task の性質から差を付ける実益がある場合だけ明示的に選択する。
+- `gpt-5.6-terra` は、範囲が限定され、低リスクかつ定型的で、結果の完全性を親または独立検証で確認できる事実調査・機械的チェックに限って使う。
+- `gpt-5.6-sol` は、設計、複雑・広範・高リスクな実装、数学・翻訳の内容判断、独立 review、曖昧な判断、および品質不足時の再評価に使う。
+- reasoning effort を指定できる場合は、難度に応じた必要最小限の `low`、`medium`、`high`、`xhigh`、`max`、`ultra` を選び、低リスク task では過剰に上げない。
+- Terra 担当で品質不足、誤り、遅延、未完了が見えた場合は、同じ担当を不用意に引き延ばさず、利用可能なら Sol の新しい担当へ escalation する。指定 model を利用できない場合は、親または利用可能な最も適切な model で安全に続行し、model 差が品質または完了条件へ影響する場合だけ user へ報告する。
+- independent review は、authoring と同じ担当を継続利用せず、model が同じ場合でも authoring に関与していない新しい sub-agent とする。独立性が品質要件でない低リスク task に限り、親による別の review phase を代替としてよい。
 
 ## Sandbox 権限
 
-- 調査のみの依頼には `read-only`、通常のファイル編集とテストには `workspace-write` を基本とし、権限を不必要に広げない。
-- コミットおよび通常の push までが作業範囲に含まれる場合、管理者は実行担当へ最初から `danger-full-access`、または Git メタデータの更新とネットワーク送信を可能にする同等の権限を渡す。`workspace-write` では `.git/index.lock` などを作成できずコミットに失敗し得るため、コミット直前まで進めてから権限不足で作業を止めない。
+- sub-agent ごとに権限を設定できる場合、調査のみの依頼には `read-only`、通常の file 編集と test には `workspace-write` を基本とし、権限を不必要に広げない。個別設定がない場合は現在の session の権限内で実行し、権限名や機能の不在だけを理由に task を停止しない。
+- commit および通常の push までが明示的な作業範囲に含まれる場合、親は担当へ最初から `danger-full-access`、または Git metadata の更新と network 送信を可能にする同等の権限を渡す。`workspace-write` では `.git/index.lock` などを作成できず commit に失敗し得るため、commit 直前まで進めてから権限不足で作業を止めない。
 - 広い権限を渡しても、許可される操作はユーザーの依頼と指定パスの範囲に限る。無関係なファイルの変更、履歴改変、force-push、PR 作成などを許可するものではない。
-- 実行担当は stage 前に対象パス、`git status`、`git diff` を確認し、依頼で明示されたファイルだけをパス指定で stage・commit する。
+- Git を操作する担当は stage 前に対象 path、`git status`、`git diff` を確認し、依頼で明示された file だけを path 指定で stage・commit する。複数担当へ Git index の ownership を同時に与えない。
 - push は現在のブランチと追跡先を確認したうえで、既存の「安全性と Git」の方針に従い、その追跡先への通常の push に限る。
 
 ## 実行担当への報告形式
@@ -110,27 +123,26 @@ VALIDATION: 実行した確認と結果
 RISKS: 残る懸念、判断待ち、または none
 ```
 
-長いログやファイル全文は返さず、必要箇所、エラー要旨、パス、行番号だけを報告させる。管理者は報告が曖昧なら同じスレッドで追加確認する。
+長い log や file 全文は返さず、必要箇所、エラー要旨、path、行番号だけを報告させる。親 Codex は報告が曖昧なら同じ担当へ follow-up し、報告だけでなく共有 workspace、差分、検証結果を自ら確認する。
 
-## MCP タイムアウト対策
+## sub-agent の進行管理
 
-- 1 セッションは 1 目的とし、調査、編集、検証、commit は分ける。
-- 対象パス、実行コマンド、完了条件を限定する。
-- 各セッションは 2 分以内を一つの目安とするが、作業の性質や進捗に応じて継続し、一律の時間上限では打ち切らない。
-- 長い探索、ビルド、大量編集は、結果が衝突しない短い単位へ分割する。
-- 編集後は追加探索より先に checkpoint を返し、変更ファイル、実施した検証、残作業を示す。
-- timeout 後は同じ編集を重複実行しない。別の read-only audit で `git status`、`git diff`、hash、mtime が安定していることを確認する。
-- commit と push は、実装とレビューが済んだ後の短い別フェーズとする。
-- 同じ実装の再試行には元の thread を使う。ただし、sandbox の変更が必要な場合、または旧 thread を継続できるか不明な場合は、新しい短いセッションを使う。
+- 1 sub-agent は 1 目的を基本とし、調査、実装、独立 review、commit は必要に応じて担当または phase を分ける。
+- 対象 path、実行 command、完了条件を限定し、無関係な repository 全体の探索を避ける。
+- 長い探索、build、大量編集は、進捗を確認でき、結果が衝突しない work unit へ分割する。一律の短い時間制限だけを理由に、進捗中の妥当な作業を打ち切らない。
+- 編集担当は大きな追加探索へ移る前に checkpoint を返し、変更 file、実施した検証、残作業、現在の workspace 状態を示す。
+- timeout、切断、停止、応答不明の後は同じ編集を重複実行しない。親または別の read-only 担当が `git status`、`git diff`、必要に応じて hash と mtime を確認し、workspace が安定してから継続方法を決める。
+- 同じ実装の修正や追加検証は、担当が継続可能なら元の sub-agent へ follow-up する。担当の状態が不明、権限変更が必要、または独立性が必要な場合は、workspace を audit してから新しい担当を割り当てる。
+- commit と push は、実装、検証、必要な review が済んだ後の別 phase とし、親が対象差分と repository mode を確認する。
 - checkpoint と最終報告には、上記の「実行担当への報告形式」を維持する。
 
 ## 品質管理
 
-- 編集タスク全体の完了条件には、実装だけでなく関連テストまたは妥当な代替検証を含める。タイムアウト対策のため、実装と検証は別セッションに分けてよい。
-- 中規模以上、広範囲、高リスクの変更は、実装担当とは別の新規 Codex MCP セッションに読み取り専用レビューを依頼する。
-- レビューの修正は、原則として元の実装スレッドへ `codex-reply` で戻す。
+- 編集 task 全体の完了条件には、実装だけでなく関連 test または妥当な代替検証を含める。実装と検証は、risk、所要時間、独立性に応じて別担当または別 phase に分けてよい。
+- 中規模以上、広範囲、高リスクの変更は、実装担当とは別の新しい sub-agent に read-only review を依頼する。
+- review finding の修正は、原則として元の実装担当へ follow-up する。親が直接修正する場合は ownership を明示的に移し、元担当と同時に同じ file を編集しない。
 - 並行実行は、対象ファイルや状態が衝突しない独立タスクに限る。競合し得る場合は直列化する。
-- 完了条件を満たした証拠がない報告は完了として扱わない。
+- 完了条件を満たした証拠がない報告は完了として扱わない。sub-agent の自己申告だけに依存せず、親 Codex が差分、test 結果、review status、生成物を task の risk に応じて確認する。
 - 数学内容を含む翻訳、論文、ノートは、追跡可能な work unit に分け、各 unit の完成時、およびその後のあらゆる revision/change ごとに、affected unit と影響範囲を `MATH_PROSE_REVIEW.md` に従い再レビューする。label/ref、notation、punctuation、formatting、translation wording の変更も例外にしない。純粋に編集上の小変更では checklist を affected correctness、definition、label/ref、rendering の項目に限定してよいが、レビュー自体を省略してはならない。
 - affected unit の数学文章レビューは、原則として authoring 担当と分けた independent read-only review phase とし、レビュー記録は project の private area に保存する。
 - draft PDF を公開または読者へ共有する前に、その input snapshot と含まれる全 unit の review status を確定し、`reviewed` とする各 unit が `MATH_PROSE_REVIEW.md` の unit gate を満たすことを確認する。何らかの変更後に draft を再公開する場合は、affected unit の再レビューを完了し、変更後 snapshot に対する gate と review status を更新する。draft は可読な進捗成果物とし、input snapshot、review status、WIP とその未完了範囲を本文で明示する。
@@ -139,17 +151,29 @@ RISKS: 残る懸念、判断待ち、または none
 - proof に非自明な gap を残さない。十分な長さは `MATH_PROSE_REVIEW.md` の proof dependency trace の基準で判定し、任意の語数または page 数を要件にしない。
 - unit ごとの review に加え、`out/` への promotion 前に成果物全体を一つの snapshot として `MATH_PROSE_REVIEW.md` の全 phase で再 review する。
 - blocking finding が解消されるか、scope 除外などの対応についてユーザーの明示合意が記録され、open blocking が 0 件になるまで `out/` へ promotion しない。
+- self-contained 書籍/長編ノートは、明示的な scope 除外がない限り、原則として巻末に用語索引を持つ。
+- 技術用語は、定義・正式導入の初出時に正規項目として索引登録する。日本語見出しは明示的な読み（sort key）を必須とし、別名/英名/表記揺れは `see` 参照で正規項目へ集約する。一般語や偶然の言及は索引登録しない。
+- 索引登録は definition-before-use、symbol registry、本文参照と整合させ、用語・索引の変更は affected unit revision として再レビューする。
+- promotion gate では、索引生成の成功、`idx`/`ind`/`ilg` の非空性と存在、upmendex warning/error 無し、重複・未解決参照の不整合なし、ページ参照と目次掲載の検証、および input snapshot 一致を確認する。
+
+### 図表と視覚要素の完全・忠実な再現
+
+- すべての制作領域で、図、diagram、plot、table、caption は本文と同等の翻訳・制作対象とする。省略、placeholder、内容を落とす模式化、単なる関係式への置換を禁止する。
+- 原図の幾何、配置、軸、目盛、ラベル、矢印、領域、境界、陰影、色、凡例、注記、caption、本文からの参照、および数学的・論理的関係を完全かつ忠実に再現する。
+- 原画像の利用権を確認できない場合は、TeX、TikZ、PGFPlots、SVG などの repository-native な vector source で再構成し、権利確認なしに原画像をコピーしない。
+- 簡略化または省略は、ユーザーが明示的に許可した場合に限る。その決定内容と成果物への影響を review 記録に残す。
+- 図表を含む affected unit は authoring 担当と分けた independent review で原図と要素単位に比較し、全要素の presence、placement、semantics を確認する。build 後は実際の render を全ページ・全図について検査する。図表に blocking finding がある unit は `reviewed` とせず、解消またはユーザーが明示的に合意した対応が記録されるまで draft PDF を公開・共有せず、`out/` へ promotion しない。
 
 ## 安全性と Git
 
 - ユーザーの既存変更を保持し、無関係な変更を混ぜない。
-- 削除、上書き、外部公開、送信、デプロイなど、重大または不可逆な操作はユーザーの依頼範囲を確認してから委譲する。
+- 削除、上書き、外部公開、送信、deploy など、重大または不可逆な操作は、親 Codex がユーザーの依頼範囲と対象を確認してから自ら実行するか、明示的に委譲する。
 - 意味のある小さな作業単位が完了し、妥当な検証を通過した時点でコミットする。未完成、未検証、秘密情報、無関係なユーザー変更を含めない。
 - コミット後は、原則として速やかに現在の追跡ブランチへ通常の push を行う。
 - force-push、履歴改変、amend は、ユーザーから明示的な依頼がない限り行わない。
 - ユーザーがコミットや push の停止、まとめてのコミット、ローカルのみなどを指定した場合は、その指示を優先する。
 - PR 作成はユーザーが明示的に求めた場合にだけ行う。
-- 秘密情報や巨大な生成物をコミットしない。公開前には委譲先に対象と差分を確認させる。
+- 秘密情報や巨大な生成物をコミットしない。公開前には作業担当と親 Codex が対象と差分を確認する。親が直接作業した場合は、risk と適用される品質 gate に応じて別担当による確認を追加する。
 
 ## repository mode と Git 境界
 
@@ -181,10 +205,10 @@ mode の切り替え、stage、pre-commit、pre-push の各時点で `.system/re
 - private project から得た generic な system 改善は private remote だけに留めず、案件情報を除去して privacy review を通したうえで public 側へ upstream する。
 - commit または push の担当者は、差分本文だけでなくファイル名と履歴にも private 情報がないことを確認する。
 
-## MCP が利用できない場合
+## Codex MCP の例外的利用
 
-Codex MCP の `codex` / `codex-reply` が利用できない場合、
-管理者は実作業を黙って直接実行しない。
-利用できないことと阻害される作業をユーザーへ伝え、
-MCP の接続または例外的な直接実行の指示を求める。
-すでに得られた結果の説明や、接続方法の案内は続けてよい。
+Codex MCP の `codex` / `codex-reply` は標準の委譲経路としない。native sub-agent では満たせない強い isolation、別 sandbox、外部環境、または長期 session の維持が task の完了条件として必要で、かつ該当 tool が実際に利用可能な場合に限り、親 Codex が補助経路として選択してよい。
+
+Codex MCP を使う場合にも、本ファイルの scope、権限、共有 workspace、品質 gate、安全性、報告形式を適用する。terminal、疑似 terminal、または手動起動した MCP server を代替の委譲経路として構築しない。
+
+Codex MCP が利用できないこと自体は blocker ではない。親 Codex は、直接実行、native sub-agent、または安全な直列化によって通常の作業を続ける。外部隔離など task 固有の必須条件を他の方法で満たせない場合にだけ、阻害される作業と理由をユーザーへ報告して判断を求める。
