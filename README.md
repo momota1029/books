@@ -176,7 +176,17 @@ private 作業から得た generic な system 改善は、clean な public clone
 - [日本語文章規範](JAPANESE_WRITING.md)
 - [数学文章レビュー規範](MATH_PROSE_REVIEW.md)
 
-## 10. 論文 project の作成
+## 10. 論文講義ノート project の作成
+
+既存論文を理解・検証する講義ノートは、手作業で singleton workspace に混在させず、repository root から次の command で `paper-lecture-notes/` の直接の子として作成します。
+
+```sh
+.system/new-paper-note-project <project-id>
+```
+
+一つの project は一つの講義ノート成果物と lifecycle を表します。複数の原論文を同じ読者・scope の一つの統合 PDF にまとめる場合は同じ project で管理し、独立 PDF や独立した公開判断を持つ案件は別 project に分離します。既存の collection-root 直下の private data は一つの legacy project として保持し、新規案件を追加しません。詳しい project 選択、Paper ID、evidence、review、promotion の条件は、[論文理解・講義ノート PDF 制作ガイド](paper-lecture-notes/AGENTS.md)に従います。
+
+## 11. 論文 project の作成
 
 数学論文の新規 project は、手作業で構造を複製せず、repository root から次の command で `papers/writing/` の直接の子として作成します。
 

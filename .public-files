@@ -15,11 +15,13 @@ WORKFLOW_ROUTING.md
 .system/instruction-refresh
 .system/new-book-project
 .system/new-paper-project
+.system/new-paper-note-project
 .system/paper-evidence-harness
 .system/repository-mode
 .system/sync-mode-excludes
 .system/test-instruction-refresh
 .system/test-new-paper-project
+.system/test-new-paper-note-project
 .system/test-paper-evidence-harness
 .system/test-repository-mode
 .system/verify-private-remote

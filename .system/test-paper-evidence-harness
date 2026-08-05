@@ -185,6 +185,14 @@ expect_failure() {
   fi
 }
 
+make_isolated_project() {
+  local target=$1
+  local project_id=${target##*/}
+  mkdir -p "$target/inbox" "$target/draft" "$target/out" \
+    "$target/.workspace/source"
+  printf '%s\n' "$project_id" >"$target/.workspace/project-id"
+}
+
 repo_dir=$test_root/repository
 mkdir -p "$repo_dir/.system"
 cp -- "$source_root/.system/paper-evidence-harness" "$repo_dir/.system/"
@@ -202,6 +210,124 @@ if "$repo_dir/.system/paper-evidence-harness" init "$project" >/dev/null &&
   pass 1 'atomic project initialization'
 else
   fail 1 'atomic project initialization'
+fi
+
+outside_project=$repo_dir/book-translations/wrong-notes
+make_isolated_project "$outside_project"
+wrong_identity_project=$project/wrong-identity
+make_isolated_project "$wrong_identity_project"
+printf '%s\n' 'different-project' >"$wrong_identity_project/.workspace/project-id"
+if expect_failure "$repo_dir/.system/paper-evidence-harness" init "$outside_project" &&
+  expect_failure "$repo_dir/.system/paper-evidence-harness" init "$wrong_identity_project"; then
+  pass project-boundary 'outside and mismatched-identity project roots are rejected'
+else
+  fail project-boundary 'project root boundary or identity check'
+fi
+
+alpha_project=$project/alpha-notes
+beta_project=$project/beta-notes
+make_isolated_project "$alpha_project"
+make_isolated_project "$beta_project"
+"$repo_dir/.system/paper-evidence-harness" init "$alpha_project" >/dev/null
+"$repo_dir/.system/paper-evidence-harness" init "$beta_project" >/dev/null
+cp -- "$alpha_project/.workspace/tools/evidence-harness.json" "$test_root/alpha-config.json"
+cp -- "$alpha_project/.workspace/records/evidence/registry.json" "$test_root/alpha-registry.json"
+cp -- "$beta_project/.workspace/tools/evidence-harness.json" \
+  "$alpha_project/.workspace/tools/evidence-harness.json"
+config_identity_rejected=false
+if expect_failure "$repo_dir/.system/paper-evidence-harness" status "$alpha_project"; then
+  config_identity_rejected=true
+fi
+cp -- "$test_root/alpha-config.json" "$alpha_project/.workspace/tools/evidence-harness.json"
+cp -- "$beta_project/.workspace/records/evidence/registry.json" \
+  "$alpha_project/.workspace/records/evidence/registry.json"
+registry_identity_rejected=false
+if expect_failure "$repo_dir/.system/paper-evidence-harness" status "$alpha_project"; then
+  registry_identity_rejected=true
+fi
+cp -- "$test_root/alpha-registry.json" "$alpha_project/.workspace/records/evidence/registry.json"
+if $config_identity_rejected && $registry_identity_rejected; then
+  pass project-ledger 'config and registry cannot be copied across projects'
+else
+  fail project-ledger 'cross-project config or registry was accepted'
+fi
+
+paper_metadata_project=$project/paper-metadata-notes
+make_isolated_project "$paper_metadata_project"
+"$repo_dir/.system/paper-evidence-harness" init "$paper_metadata_project" >/dev/null
+rewrite_with_sed 's/"min_stability_interval_seconds": 1.0/"min_stability_interval_seconds": 0.0/' \
+  "$paper_metadata_project/.workspace/tools/evidence-harness.json"
+write_pdf "$paper_metadata_project/inbox/main-paper.pdf"
+"$repo_dir/.system/paper-evidence-harness" scan "$paper_metadata_project" >/dev/null
+"$repo_dir/.system/paper-evidence-harness" scan "$paper_metadata_project" >/dev/null
+paper_asset=$(python3 - "$paper_metadata_project/.workspace/records/evidence/registry.json" <<'PY'
+import json
+import pathlib
+import sys
+registry = json.loads(pathlib.Path(sys.argv[1]).read_text())
+print(next(value["id"] for value in registry["assets"].values() if value["locations"][0] == "inbox/main-paper.pdf"))
+PY
+)
+if expect_failure "$repo_dir/.system/paper-evidence-harness" record-ingestion \
+    "$paper_metadata_project" "$paper_asset" --revision-id V1 --status adopted --reason fixture &&
+  "$repo_dir/.system/paper-evidence-harness" record-ingestion \
+    "$paper_metadata_project" "$paper_asset" --revision-id V1 --status adopted --reason fixture \
+    --source-kind paper --paper-id PAPER-MAIN --paper-role primary \
+    --paper-scope 'Sections 1--3' >/dev/null &&
+  expect_failure "$repo_dir/.system/paper-evidence-harness" record-ingestion \
+    "$paper_metadata_project" "$paper_asset" --revision-id V2 --status adopted --reason fixture \
+    --source-kind paper --paper-id PAPER-OTHER --paper-role primary \
+    --paper-scope 'Sections 1--3'; then
+  pass paper-metadata 'adopted papers require stable Paper ID, role, and scope'
+else
+  fail paper-metadata 'Paper ID metadata acceptance and immutability'
+fi
+
+cp -- "$paper_metadata_project/.workspace/records/paper-ingestion-manifest.json" \
+  "$alpha_project/.workspace/records/paper-ingestion-manifest.json"
+if "$repo_dir/.system/paper-evidence-harness" status "$alpha_project" \
+    >"$test_root/manifest-identity.log" 2>&1; then
+  fail manifest-identity 'cross-project ingestion manifest was accepted by common initialization'
+elif grep -Fq 'ingestion manifest project identity does not match' \
+    "$test_root/manifest-identity.log"; then
+  pass manifest-identity 'all commands reject a cross-project ingestion manifest'
+else
+  fail manifest-identity 'cross-project ingestion manifest failed for the wrong reason'
+fi
+
+rm -- "$alpha_project/.workspace/records/paper-ingestion-manifest.json"
+write_two_page_pdf "$paper_metadata_project/inbox/main-paper-v2.pdf"
+"$repo_dir/.system/paper-evidence-harness" scan "$paper_metadata_project" >/dev/null
+"$repo_dir/.system/paper-evidence-harness" scan "$paper_metadata_project" >/dev/null
+paper_v2_asset=$(python3 - "$paper_metadata_project/.workspace/records/evidence/registry.json" <<'PY'
+import json
+import pathlib
+import sys
+registry = json.loads(pathlib.Path(sys.argv[1]).read_text())
+print(next(value["id"] for value in registry["assets"].values() if value["locations"][0] == "inbox/main-paper-v2.pdf"))
+PY
+)
+if "$repo_dir/.system/paper-evidence-harness" record-ingestion \
+    "$paper_metadata_project" "$paper_asset" --revision-id V1 --status excluded --reason superseded \
+    --source-kind paper --paper-id PAPER-MAIN --paper-role primary \
+    --paper-scope 'Sections 1--3' >/dev/null &&
+  "$repo_dir/.system/paper-evidence-harness" record-ingestion \
+    "$paper_metadata_project" "$paper_v2_asset" --revision-id V2 --status adopted --reason current \
+    --source-kind paper --paper-id PAPER-MAIN --paper-role primary \
+    --paper-scope 'Sections 1--3' >/dev/null; then
+  pass paper-revision 'a superseded source path can hand the same Paper ID to its new revision'
+else
+  fail paper-revision 'same-paper revision could not retain its Paper ID across paths'
+fi
+
+rewrite_with_sed 's/"paper_scope": "Sections 1--3"/"paper_scope": ""/' \
+  "$paper_metadata_project/.workspace/records/paper-ingestion-manifest.json"
+"$repo_dir/.system/paper-evidence-harness" gate "$paper_metadata_project" --phase internal-wip \
+  >"$test_root/paper-scope.log" 2>&1 || true
+if grep -Fq 'adopted paper lacks a scope' "$test_root/paper-scope.log"; then
+  pass paper-gate 'gate rejects an adopted paper with incomplete attribution'
+else
+  fail paper-gate 'gate accepted incomplete adopted-paper attribution'
 fi
 
 printf '%s\n' 'x,y' '1,2' >"$project/inbox/supplement.csv"
@@ -828,9 +954,8 @@ else
   fail reset 'changed revision inherited old observations'
 fi
 
-unsafe_project=$repo_dir/unsafe-notes
-mkdir -p "$unsafe_project/inbox" "$unsafe_project/draft" "$unsafe_project/out" \
-  "$unsafe_project/.workspace/source"
+unsafe_project=$project/unsafe-notes
+make_isolated_project "$unsafe_project"
 "$repo_dir/.system/paper-evidence-harness" init "$unsafe_project" >/dev/null
 python3 - "$unsafe_project/inbox/unsafe.zip" <<'PY'
 import sys
@@ -862,9 +987,8 @@ else
   fail 8 'archive quarantine gate'
 fi
 
-magic_project=$repo_dir/magic-notes
-mkdir -p "$magic_project/inbox" "$magic_project/draft" "$magic_project/out" \
-  "$magic_project/.workspace/source"
+magic_project=$project/magic-notes
+make_isolated_project "$magic_project"
 "$repo_dir/.system/paper-evidence-harness" init "$magic_project" >/dev/null
 printf '%s\n' 'not a PNG image' >"$magic_project/inbox/forged.png"
 printf '%s\n' 'not an SVG image' >"$magic_project/inbox/forged.svg"
@@ -952,9 +1076,8 @@ else
   fail svg-data 'safe embedded raster SVG could not produce review frames'
 fi
 
-review_format_project=$repo_dir/review-format-notes
-mkdir -p "$review_format_project/inbox" "$review_format_project/draft" \
-  "$review_format_project/out" "$review_format_project/.workspace/source"
+review_format_project=$project/review-format-notes
+make_isolated_project "$review_format_project"
 "$repo_dir/.system/paper-evidence-harness" init "$review_format_project" >/dev/null
 write_png "$review_format_project/inbox/valid.png"
 write_pdf "$review_format_project/inbox/valid.pdf"
@@ -1181,9 +1304,8 @@ else
   fail visual-publish 'visual review package publication race protection'
 fi
 
-secret_project=$repo_dir/secret-notes
-mkdir -p "$secret_project/inbox" "$secret_project/draft" "$secret_project/out" \
-  "$secret_project/.workspace/source"
+secret_project=$project/secret-notes
+make_isolated_project "$secret_project"
 "$repo_dir/.system/paper-evidence-harness" init "$secret_project" >/dev/null
 printf '%s\n' 'https://example.org/file?token=do-not-copy' >"$secret_project/inbox/link.txt"
 printf '%s\n' 'https://user:raw-userinfo-secret@example.org/private' >>"$secret_project/inbox/link.txt"
@@ -1199,9 +1321,8 @@ else
   fail 9 'secret URL handling'
 fi
 
-cache_project=$repo_dir/cache-notes
-mkdir -p "$cache_project/inbox" "$cache_project/draft" "$cache_project/out" \
-  "$cache_project/.workspace/source"
+cache_project=$project/cache-notes
+make_isolated_project "$cache_project"
 "$repo_dir/.system/paper-evidence-harness" init "$cache_project" >/dev/null
 cache_resource=$("$repo_dir/.system/paper-evidence-harness" add-resource "$cache_project" \
   --url https://example.org/data.bin | head -n 1)
@@ -1298,9 +1419,8 @@ else
   fail archive-output 'archive worker output bound'
 fi
 
-compression_project=$repo_dir/compression-notes
-mkdir -p "$compression_project/inbox" "$compression_project/draft" "$compression_project/out" \
-  "$compression_project/.workspace/source"
+compression_project=$project/compression-notes
+make_isolated_project "$compression_project"
 "$repo_dir/.system/paper-evidence-harness" init "$compression_project" >/dev/null
 python3 - "$compression_project/inbox/table.csv.gz" <<'PY'
 import gzip
@@ -1419,8 +1539,8 @@ else
   fail compression 'bounded compression and large-data scanning'
 fi
 
-url_project=$repo_dir/url-notes
-mkdir -p "$url_project/inbox" "$url_project/draft" "$url_project/out" "$url_project/.workspace/source"
+url_project=$project/url-notes
+make_isolated_project "$url_project"
 "$repo_dir/.system/paper-evidence-harness" init "$url_project" >/dev/null
 encoded_id=$("$repo_dir/.system/paper-evidence-harness" add-resource "$url_project" \
   --url 'https://example.org/a%2fb' | head -n 1)
@@ -1440,9 +1560,8 @@ else
   fail url-path 'encoded URL path canonicalization'
 fi
 
-github_project=$repo_dir/github-url-notes
-mkdir -p "$github_project/inbox" "$github_project/draft" "$github_project/out" \
-  "$github_project/.workspace/source"
+github_project=$project/github-url-notes
+make_isolated_project "$github_project"
 "$repo_dir/.system/paper-evidence-harness" init "$github_project" >/dev/null
 printf '%s\n' \
   'https://github.com/acme/release-repo/releases/tag/v1.2.3' \

@@ -4,13 +4,27 @@
 
 この `AGENTS.md` は `paper-lecture-notes/` とその配下だけに適用する。書籍翻訳や体系的数学教科書へ固有規則を持ち込まない。上位の指示と衝突する場合は上位を優先し、判断できなければ作業を止めて確認する。
 
-本 project は親の `../AGENTS.md`、`../JAPANESE_WRITING.md`、`../MATH_PROSE_REVIEW.md` と、repository root で version 管理された `../.system/` tools を shared versioned 正本として直接使う。private copy を正本にせず、案件固有の adapter が必要なら差分と理由だけを private area に記録する。日本語の原稿・訳注・講義ノートは `../JAPANESE_WRITING.md` に従う。ただし、論文理解では原論文の主張と自分の解釈を明確に区別することを共通規範より優先する。
+各 project は repository root の `AGENTS.md`、`JAPANESE_WRITING.md`、`MATH_PROSE_REVIEW.md` と、repository root で version 管理された `.system/` tools を shared versioned 正本として直接使う。private copy を正本にせず、project-local `AGENTS.md` を作らない。案件固有の adapter が必要なら差分と理由だけを project の private area に記録する。日本語の原稿・訳注・講義ノートは repository root の `JAPANESE_WRITING.md` に従う。ただし、論文理解では原論文の主張と自分の解釈を明確に区別することを共通規範より優先する。
 
 ## 目的
 
 論文を自分で説明・検証できる水準まで咀嚼し、主張、仮定、定義、手法、証明・導出、実験、限界、関連研究を教育的な順序に再構成した講義ノート PDF を作る。対象分野を数学に限定せず、統計、生命科学、計算科学、実験科学等では、図の各 panel、データ、統計解析、実験条件、supplement、外部 software まで説明対象に含める。原論文、執筆者の解釈、外部知識、未解決の疑問を区別し、各説明を原論文または追加出典まで追跡可能にする。
 
 想定成果物は、学習目標を備え、合意した前提知識と範囲に対して自己完結し、必要な推論・導出・計算・図解・再現条件を本文中で完結させた講義ノート PDF、再現可能な編集ソース、書誌・権利台帳、主張・式・図表・外部資源・software・実行結果の追跡表、解釈・疑問・再計算の記録である。原論文の単なる和訳や節順の写しではなく理解のための再構成物とするが、原論文の主張範囲を変えない。
+
+## project 分離の不変条件
+
+`paper-lecture-notes/` は project の collection root であり、新規案件の project root ではない。新しい案件は repository root から `.system/new-paper-note-project <project-id>` を実行し、必ず `paper-lecture-notes/<project-id>/` に作る。`project-id` は成果物の scope を表す短い lowercase ASCII の `kebab-case` とし、原論文の一時的なファイル名や処理順を ID にしない。project の direct child 以外に案件 directory を作らず、project-local `AGENTS.md` も作らない。
+
+project の単位は原論文一件ではなく、一つの講義ノート成果物と一つの lifecycle である。複数の原論文を同じ project に置けるのは、同じ読者、学習目標、scope、canonical source、`STATUS`、review gate、配布判断を共有し、一つの統合 PDF に収束する場合だけとする。原論文ごとに独立 PDF を作る、進捗・公開判断を独立させる、または一方だけを完了・再開できるなら、題材や著者が近くても project を分ける。逆に、一つの統合ノートの primary paper と supporting paper を、入力が複数という理由だけで別 project に分割しない。
+
+書き込み、ingestion、harness 操作、build、review、draft 同期、promotion、委譲の前に、担当 Codex は current project root を一つだけ確定する。direct-child project では、real path が `paper-lecture-notes/` の直下にあり symlink でなく、`.workspace/project-id` の一行が directory basename と一致することを確認する。この確認に失敗した project、または候補が複数あり records と `STATUS` でも同一性を決められない状態では、read-only の候補確認を超えて進まず、成果物名または題材を用いた一問でユーザーに継続先を確認する。内部 command や directory の選択をユーザーへ委ねない。
+
+全 mutable state は選択した project root の `inbox/`、`draft/`、`out/`、`.workspace/` の内側に閉じる。collection root や別 project の catalog、ingestion manifest、source、generated index、review receipt、lock、build、cache、`STATUS`、draft、out を読み書き先として再利用しない。project 間の symlink、hardlink、`\input`、相対 path 参照、共通 mutable build directory も禁止する。資料や generic code を再利用する場合は、権利を確認した別 asset または repository 共通 tool として各 project から追跡し、source project の private path に依存させない。
+
+複数 project を一つの依頼で扱う場合は、開始前に project ID、成果物、current input snapshot、変更対象、担当、状態を project ごとに分けて記録し、各操作へ project root を明示する。project 切替前には現在 project の canonical source と `draft/STATUS` を同期し、harness transaction と build が終了し、lock と一時生成物の状態が説明可能であることを確認する。別 project の review、gate、fingerprint、ID、承認を流用せず、Git index の操作も親規約どおり直列化する。
+
+collection root 直下にこの規約導入前から存在する `inbox/`、`draft/`、`out/`、`.workspace/` は、全体で一つの `legacy-singleton` project とみなす。既存案件と同一の場合に限り `<project-root>=paper-lecture-notes` として継続できるが、別の原論文や成果物を追加して複数案件化してはならない。direct-child project への移行は、ユーザーが移行対象と project ID を明示的に承認し、canonical source、台帳、draft/out、履歴の移行表を記録した場合だけ行う。自動で移動、複製、改名、archive、削除せず、移行後は二つの active canonical copy を残さない。
 
 ## evidence harness と発見範囲
 
@@ -31,15 +45,16 @@ catalog の ID と relation は少なくとも次の対象を結ぶ。
 
 ## ワークスペースの契約
 
-ユーザーから見える作業領域は次の4つに固定する。管理用の本 `AGENTS.md` だけはトップに置く。案件固有の必要が生じても、トップ階層を増やさず、まず `.workspace/` 内の既存区分へ配置する。
+各 direct-child project の作業領域は次の4つに固定する。共有 `AGENTS.md` は collection root に一つだけ置く。案件固有の必要が生じても project のトップ階層を増やさず、まず `.workspace/` 内の既存区分へ配置する。
 
 ```text
 paper-lecture-notes/
   AGENTS.md
-  inbox/
-  draft/
-  out/
-  .workspace/
+  <project-id>/
+    inbox/
+    draft/
+    out/
+    .workspace/
 ```
 
 - `inbox/`: ユーザーが原論文、追加指示、画像、データ、コード等を置く受け入れ口。原則 read-only とし、エージェントは中身を編集、改名、移動、削除、上書きしない。権利不明、秘密、巨大なファイルを自動で Git に追加しない。
@@ -53,18 +68,19 @@ paper-lecture-notes/
 
 ## プライバシーと Git 境界
 
-repository mode は親の規則と `../.system/repository-mode` に従う。
+repository mode は親の規則と repository root の `.system/repository-mode` に従う。
 
-- public mode では、`inbox/`、`draft/`、`out/`、`.workspace/` の4 private 領域とその全内容、project 名、manifest のファイル名・hash、PDF、原稿、講義ノート、台帳、案件固有の data・config・tool を stage、commit、push しない。この project 内で Git 対象にできるのは privacy review 済みの `AGENTS.md` だけである。
-- verified private mode では、configured remote の同一性と GitHub visibility が `PRIVATE` と検証できる場合に限り、4 private 領域を含む processing document を通常の `git add` で stage、commit できる。互換用の `../.system/repository-mode add -- <paths>` も利用できるが、`git add -f` は使わない。
+- public mode では、各 project directory、その `inbox/`、`draft/`、`out/`、`.workspace/` と全内容、project 名、manifest のファイル名・hash、PDF、原稿、講義ノート、台帳、案件固有の data・config・tool を stage、commit、push しない。この collection 内で Git 対象にできるのは privacy review 済みの共有 `AGENTS.md` と既存の公開 skeleton だけである。
+- verified private mode では、configured remote の同一性と GitHub visibility が `PRIVATE` と検証できる場合に限り、project directory と4 private 領域を含む processing document を通常の `git add` で stage、commit できる。互換用の repository root の `.system/repository-mode add -- <paths>` も利用できるが、`git add -f` は使わない。
 - private mode でも credential、secret、token、鍵、契約・ライセンス上保存できない data、権利上 commit できない原資料は commit しない。private remote の存在は取得、保存、利用、配布の権限を与えない。
 - `out/` の配布承認と GitHub repository の visibility・commit 可否は別に判定する。配布承認済みでも GitHub に置けるとは限らず、private GitHub に置けても配布できるとは限らない。
 
-`.gitignore`、`../.system/repository-mode`、hook を回避せず、`git add -f` や `--no-verify` を使わない。status、diff、作業報告にも、私的な原文、タイトル、著者、研究内容、ファイル一覧、hash を必要なく転記しない。この構造と ignore 規則は defense in depth にすぎず、secret store、暗号化、アクセス制御の境界ではない。
+`.gitignore`、repository root の `.system/repository-mode`、hook を回避せず、`git add -f` や `--no-verify` を使わない。status、diff、作業報告にも、私的な原文、タイトル、著者、研究内容、ファイル一覧、hash を必要なく転記しない。この構造と ignore 規則は defense in depth にすぎず、secret store、暗号化、アクセス制御の境界ではない。
 
 ## 永続データの配置
 
 - `.workspace/source/`: 講義ノート本文、成果用に作成した図表、再現可能な計算コード等の canonical source。
+- `.workspace/project-id`: initializer が作る project identity。direct-child project では directory basename と完全一致させ、人手で別 project の ID に変更しない。
 - `.workspace/records/bibliography.*`: Paper ID、著者、題名、掲載先、年、DOI/URL、版・改訂、参照日、ライセンス・利用条件、権利、追加出典。
 - `.workspace/records/claim-trace.*`: 主張、仮定、適用範囲、根拠、限界と、原論文の節・ページの対応。
 - `.workspace/records/equation-trace.*`: 式、定理、導出、変形、仮定、再計算と元番号の対応。
@@ -96,12 +112,14 @@ ingestion と読解・執筆を分離し、受け入れが確定したスナッ�
 10. `out/` 昇格直前の再走査で、未評価の安定ファイル、変更 revision、`pending`、新規 `missing`、採用 revision の欠落、読み取り失敗、hash の計算または再検証そのものの失敗、または記録済み hash との不一致があれば停止して報告する。例外進行は、影響評価とユーザー合意を manifest に記録した場合だけ認める。
 11. manifest の走査と同じ accepted snapshot に対して evidence harness の `scan` を行う。manifest と catalog の asset ID、hash、採用状態に差があれば、どちらかを黙って正本扱いせず不整合を解消する。
 
+複数の原論文を採用する project では、原論文ごとに project 内で一意かつ安定した Paper ID を与える。Paper ID は `PAPER-` で始まり、大文字 ASCII 英数字を hyphen で区切る形式（例: `PAPER-MAIN`、`PAPER-SUPPORT-2`）に固定する。`primary`、`co-primary`、`supporting`、`background` の役割、採用 revision、成果物内の担当 scope を bibliography と ingestion manifest に記録する。同一論文の版・改訂は別 Paper ID に黙って分割せず同一 Paper ID の revision として差分を評価し、別論文を同一 Paper ID に畳み込まない。claim、equation、figure、quotation の各 trace は Paper ID を省略せず、複数論文を合成した説明は各根拠と執筆者の統合判断を分離して追跡する。
+
 ## draft と out
 
 - `draft/` の PDF は途中成果であり final と呼ばない。`out/` への移動・複製は、完了条件を確認した明示的な promotion とする。
 - 公開済み draft を何らかの変更後に再公開する場合は、affected work unit の再 review を完了し、変更後 snapshot に対する gate と `draft/STATUS.*` の review 状態を更新する。
 - 各制作・レビュー cycle の終了時に、その時点の完成 unit と WIP を含む通読可能な draft PDF を作る。WIP は本文中で開始・終了と未完了範囲を明示し、欠落した証明や未検証の主張を完成済みに見せない。
-- 公開状態を `draft/STATUS.*` 等へ記録し、少なくともビルド日時、成功・失敗・陳腐化、source revision または commit、採用した inbox snapshot、work unit ごとの `reviewed` / `WIP` / `blocked`、検証状態、残件、対応する PDF 名を含める。harness 用に `evidence_catalog_fingerprint`、`evidence_source_fingerprint`、`evidence_ingestion_fingerprint`、`evidence_pdf`、`evidence_pdf_sha256` を一行一 field で併記する。`reviewed` は該当 unit の必須 review gate を満たした場合だけ付与する。
+- 公開状態を project 固有の `draft/STATUS.*` へ記録し、少なくとも project ID、ビルド日時、成功・失敗・陳腐化、source revision または commit、採用した inbox snapshot、採用 Paper ID と revision、work unit ごとの `reviewed` / `WIP` / `blocked`、検証状態、残件、対応する PDF 名を含める。direct-child project の PDF 名は project ID から始め、別 project の PDF と同名にしない。harness 用に `evidence_catalog_fingerprint`、`evidence_source_fingerprint`、`evidence_ingestion_fingerprint`、`evidence_pdf`、`evidence_pdf_sha256` を一行一 field で併記する。`reviewed` は該当 unit の必須 review gate を満たした場合だけ付与する。
 - 新しいビルドを開始した時、inbox revision や canonical source が変わった時、またはビルドが失敗した時は、残っている古い成功 PDF を最新版と誤認しないよう `STATUS` を先に `building`、`failed` または `stale` に更新する。
 - `out/` の既存成果を直接上書きする前に、対象名、版、検証結果、承認を確認する。可能なら成果物と共にビルド日時、source revision/commit、採用 inbox snapshot、検証状態を記録する。`out/` に含める work unit の WIP は 0 件でなければならず、WIP 表示を外すだけで promotion gate を通過したことにはしない。
 - ビルド失敗時は `out/` を変更しない。`draft/` と `out/` の公開物を clean 対象にしない。
@@ -120,20 +138,20 @@ ingestion と読解・執筆を分離し、受け入れが確定したスナッ�
 
 ## paper evidence harness の運用契約
 
-project root から相対 path を渡して、agent が次の command を実行する。ユーザーに内部 command の暗記や JSON の手編集を要求しない。
+repository root から、事前に確定した current project root を第一引数として agent が次の command を実行する。`<project-root>` は通常 `paper-lecture-notes/<project-id>` であり、legacy singleton を同一案件として継続するときだけ `paper-lecture-notes` を許す。shell の current directory、直前に扱った project、既定値から推測せず、各 command に同じ project root を明示する。ユーザーに内部 command の暗記や JSON の手編集を要求しない。
 
 ```sh
-.system/paper-evidence-harness init paper-lecture-notes
-.system/paper-evidence-harness scan paper-lecture-notes
-.system/paper-evidence-harness prepare-visual-review paper-lecture-notes ASSET-...
-.system/paper-evidence-harness record-visual-review paper-lecture-notes VREV-... --target ASSET-... --role primary ...
-.system/paper-evidence-harness status paper-lecture-notes
-.system/paper-evidence-harness gate paper-lecture-notes --phase internal-wip
+.system/paper-evidence-harness init <project-root>
+.system/paper-evidence-harness scan <project-root>
+.system/paper-evidence-harness prepare-visual-review <project-root> ASSET-...
+.system/paper-evidence-harness record-visual-review <project-root> VREV-... --target ASSET-... --role primary ...
+.system/paper-evidence-harness status <project-root>
+.system/paper-evidence-harness gate <project-root> --phase internal-wip
 ```
 
 - `init`: private な catalog、config、asset/figure/software-output 用 canonical directory、quarantine cache、生成 index を初期化する。既存 source や input を上書きしない。
 - `scan`: `inbox/` と canonical source を content hash で再走査する。通常の大容量 dataset は一回の bounded streaming hash だけで inventory し、text は上限以下だけを memory capture する。走査開始時 size を read loop の hard limit とし、走査中の増大・短縮を不安定状態として拒否する。PDF と複数 member archive だけを設定上限・空き容量確認後の private immutable parse snapshot に掛け、解析前後の SHA-256 を一致させ、外部 parser 自体にも memory、CPU、file size、stdout/stderr capture の上限を課す。既知の binary 画像、PDF、圧縮形式は拡張子だけでなく magic を照合し、SVG は外部 entity を取得・展開しない bounded XML parse で文書全体と root 要素を検査する。単一 stream の gzip/bzip2/xz は magic header を検証してから、展開せず一 member として header-only index する。7z/rar 等の未対応形式は自動展開せず、採用するなら対応可能な安全な形式へ別 asset として固定し、除外するなら理由を記録する。PDF metadata、caption 候補、raster object、annotation URL、添付名、archive member、source URL、repository 候補、本文の evidence macro を catalog に統合する。同一 size・mtime を同一 revision と仮定しない。
-- `record-ingestion`: current inbox asset の ID、revision ID、採用・除外・保留と理由を、走査済み size、mtime、SHA-256 に結合して機械可読 manifest に記録する。採用には、config の最小間隔以上離れた別 scan による同一 hash の安定観測を二回以上要求する。JSON を手編集しない。
+- `record-ingestion`: current inbox asset の ID、revision ID、採用・除外・保留と理由を、走査済み size、mtime、SHA-256 に結合して機械可読 manifest に記録する。direct-child project で採用する入力は `--source-kind` を必須とし、原論文には `--source-kind paper --paper-id PAPER-... --paper-role primary|co-primary|supporting|background --paper-scope <担当範囲>` を全て指定する。補助資料を原論文へ結び付ける場合は `--parent-paper-id PAPER-...` を使う。採用には、config の最小間隔以上離れた別 scan による同一 hash の安定観測を二回以上要求する。JSON を手編集しない。
 - `annotate` / `add-visual` / `add-resource` / `add-software` / `relate`: 採否、rights、reader/internal visibility、privacy review、読者向け要約、由来、alt text、完全性確認、手動発見項目、lineage を型付き field と edge で記録する。PDF 添付と通常 archive member は private ledger に名称・sizeを全件残し、個別に `adopted` / `excluded` / `deferred` と理由を解決する。XLSX、NPZ、DOCX 等の署名検証済み container は一つの asset として完全性 review し、内部 member は全件を private ledger に索引するが、個別解決を強制せず名称も reader index に出さない。採用した通常 member は別の current inbox asset、ingestion decision、`supplements` edgeへ結ぶ。完全性 review を `complete` にするときは reviewer を記録する。caption のない図や landing page から手動発見した公式資源を catalog 外に残さない。
 - `prepare-visual-review`: PDF は MuPDF で全対象ページ、raster/SVG は形式を明示した ImageMagick decoder で全 frame を private PNG に decode/render する。decoder には live path や書込み可能な一時 path を直接渡さず、走査済み SHA-256 と照合してから unlink した read-only FD だけを選択した子processへ継承し、decode 前後に bytes、hash、size、inode を再照合する。PDF page 数と raster frame inventory を先に固定し、期待数と出力数の完全一致、連番、frame directory の全 file を receipt と再照合する。外部参照、CSS data URL、入れ子の data SVG を持つ SVG を拒否し、埋め込みを許すのは size 制限内の base64 raster で MIME と実 bytes の magic が一致するものだけとする。拡張子・magic の不一致、symlink を含む review package も拒否し、package 公開と再検証は no-follow directory descriptor に固定する。process、時間、memory、入力・出力 byte、frame 数、寸法を制限する。package は source bytes だけでなく対象注釈、caption、locator、関係 edge、対象を参照する canonical source file の hash に結合するため、図の説明・由来・本文対応を変えたら古い review は失効する。decoder は科学的 verdict を自動生成しない。
 - `record-visual-review`: review package の全 frame を Codex が useful zoom で読み、decode/render、crop・欠落、source completeness、panel と読み順、軸・単位・scale、凡例・色・記号、統計表現、生命科学 context、caption と本文、geometry と semantics、科学的解釈、accessibility の全項目を `complete` / `not-applicable` / `blocked` で記録する。decode/render、crop・欠落、source completeness の3項目は `pass` なら必ず `complete` とし、`not-applicable` にできない。primary と、それに依存する別 identity の independent review を immutable receipt として保存し、厳格 gate を満たす pair は双方 `reviewer-kind=codex` とする。human/domain-expert receipt は判断不能事項の補助・escalation 記録には使えるが、Codex pair の代替にはしない。同じ reviewer の二重確認、未記入 checklist、改変 frame、stale source/caption/provenance、open finding を持つ `pass` は拒否する。
@@ -150,7 +168,7 @@ project root から相対 path を渡して、agent が次の command を実行�
 ## 標準ワークフロー
 
 1. `inbox/` を受け入れプロトコルどおり走査し、対象論文と版、目的、読者、前提知識、範囲、深さ、公開範囲、既存ツールチェーンを確認する。
-2. 原論文に Paper ID を付け、書誌、版・改訂、ページ方式、権利を bibliography と各 trace に登録する。補助資料は別 ID とする。
+2. 各原論文に project 内で一意な Paper ID と役割を付け、書誌、版・改訂、ページ方式、権利を bibliography と各 trace に登録する。補助資料は親 Paper ID との関係を持つ別 asset ID とする。
 3. evidence harness を `init`、`scan` し、原論文、supplement、全 local file、図表候補、直接 URL、repository/software 候補を ID 化する。`prepare-visual-review` で全ページ・全 frame を render し、primary Codex と別 identity の independent Codex が完全性と科学的意味を review して自動抽出漏れを補い、採否と権利を記録する。
 4. 問題設定、主要主張、前提、定義、手法、証明・導出、実験、限界、関連研究、著者の未解決点を分解する。
 5. ノートの項目を原論文の節、ページ、式・定理・図表番号、付録、asset、resource、software、run ID へ対応させる。
@@ -158,7 +176,7 @@ project root から相対 path を渡して、agent が次の command を実行�
 7. 学習目標と前提知識を示し、動機、直観、定義、主張、導出、図解、例、限界、節末要約の順に教育的に再構成する。
 8. 原論文、解釈、外部知識、未解決の疑問を識別し、不確かな点を推測で埋めない。
 9. 引用精度、主張の強さ、仮定、式・図表対応、理解検証、および途中の推論・導出・計算・図の読み方・software 再現条件に欠落がないことをレビューする。
-10. 数学を含む範囲では、work unit 完成時と semantic change 後の checkpoint で `../MATH_PROSE_REVIEW.md` の affected phase を authoring 担当とは分けた read-only review phase として実施し、finding と再検証結果を private records に保存する。structural change と editorial change は親 `AGENTS.md` の分類に従って検査範囲を絞る。
+10. 数学を含む範囲では、work unit 完成時と semantic change 後の checkpoint で repository root の `MATH_PROSE_REVIEW.md` の affected phase を authoring 担当とは分けた read-only review phase として実施し、finding と再検証結果を private records に保存する。structural change と editorial change は親 `AGENTS.md` の分類に従って検査範囲を絞る。
 11. WIP 制作中は変更箇所を incremental build し、checkpoint で受け入れ snapshot、catalog fingerprint、影響範囲を再確認する。読者へ共有する draft または `out/` 候補ではログ、evidence build receipt、全ページ表示を検証して公開する。
 12. 権利、ライセンス、配布範囲、不要物混入、直前の inbox と catalog 状態を確認し、承認後にだけ `out/` へ昇格する。
 
@@ -166,9 +184,9 @@ project root から相対 path を渡して、agent が次の command を実行�
 
 - 制作物を追跡可能な work unit に分ける。work unit は、少なくとも claim、definition、method、proof、derivation、experiment の各 subsection、または同程度に独立して authoring・review・status 判定できる範囲とする。各 unit に安定した一意の ID、対象 source revision、依存 unit、対応する trace 項目を与える。
 - 細かな編集は checkpoint まで batch する。unit 完成時と semantic change 後の checkpoint で affected-unit review を行い、影響範囲、finding、対応、再検証、review status を private records に記録する。structural change は対象を絞った検査、editorial change は差分確認、incremental build、必要な変更ページの render を行い、意味・定義・参照・依存・文書構造へ影響しない unit の独立 review を再度開かなくてよい。
-- 数学を含む semantic change と、意味・定義順序・依存・読者解釈へ波及する structural change の affected unit は、authoring 担当とは別の担当による独立 read-only review として `../MATH_PROSE_REVIEW.md` の unit gate を適用する。blocking gap、unlabeled formal claim、broken reference、definition-before-use violation、未追跡依存のいずれかがあれば `reviewed` にしない。
+- 数学を含む semantic change と、意味・定義順序・依存・読者解釈へ波及する structural change の affected unit は、authoring 担当とは別の担当による独立 read-only review として repository root の `MATH_PROSE_REVIEW.md` の unit gate を適用する。blocking gap、unlabeled formal claim、broken reference、definition-before-use violation、未追跡依存のいずれかがあれば `reviewed` にしない。
 - cycle ごとに、採用した input snapshot、cycle 対象 unit、各 unit の `reviewed` / `WIP` / `blocked`、open finding、次の作業を draft 本文または `draft/STATUS.*` から確認できるようにする。draft 本文は WIP を隔離・表示しつつ通読可能に保ち、reviewed 部分と混同させない。
-- unit review は成果物全体の review を代替しない。`out/` への promotion 前に、採用 input snapshot と含まれる全 unit を固定し、`../MATH_PROSE_REVIEW.md` の全 phase と本ガイドの全体 gate を再実行する。
+- unit review は成果物全体の review を代替しない。`out/` への promotion 前に、採用 input snapshot と含まれる全 unit を固定し、repository root の `MATH_PROSE_REVIEW.md` の全 phase と本ガイドの全体 gate を再実行する。
 
 ## 論文の分解・記述規約
 
@@ -198,7 +216,7 @@ project root から相対 path を渡して、agent が次の command を実行�
 
 ## 数式・図表・PDF 品質
 
-- 数学を含む成果物は `../MATH_PROSE_REVIEW.md` の独立 read-only review と再レビューを完了する。definition-before-use violation、未追跡の仮定・依存、open blocking finding がいずれも 0 件になるまで `out/` へ promotion しない。scope 除外で対応する場合も、影響とユーザーの明示合意を private record に残して gate を再実行する。
+- 数学を含む成果物は repository root の `MATH_PROSE_REVIEW.md` の独立 read-only review と再レビューを完了する。definition-before-use violation、未追跡の仮定・依存、open blocking finding がいずれも 0 件になるまで `out/` へ promotion しない。scope 除外で対応する場合も、影響とユーザーの明示合意を private record に残して gate を再実行する。
 - formal claim は、意味に応じた番号付き semantic environment（`theorem`、`lemma`、`proposition`、`corollary`、`definition` 等）に置き、自動生成番号と一意で安定した `label` を付ける。形式的主張を無番号の強調文や通常 prose だけで提示しない。
 - 各 formal proof は明示的な proof environment に置く。直前の theorem-like statement を証明する通常の proof は、見出しを原則として「証明」とする bare な無番号 proof とし、proof 番号、proof 自体の `label`、対象 statement への明示的な cross-reference を付けない。statement から離れた証明には対象 statement を `label` で示す無番号の説明見出しを用いてよい。番号付き proof は、複数の証明・別証明を区別する場合、または proof 自体を他所から参照する場合に限り、一意で安定した `label` と対象 statement への cross-reference を持たせる。必要な statement、番号付き proof、definition、equation 間の参照は番号の直書きではなく `label` による cross-reference とし、prose だけの形式的証明を作らない。
 - proof と derivation は、前提、依存結果、各変形の根拠、場合分け、境界条件から結論までを明示して完結させる。「明らか」「同様」「容易に分かる」等で非自明な段階を省略しない。derivation の主要な段階は番号付き・ラベル付きの式または適切な semantic environment に置き、本文から参照できるようにする。
@@ -214,6 +232,8 @@ project root から相対 path を渡して、agent が次の command を実行�
 
 ## 禁止事項
 
+- collection root または別 project を current project root と誤認して harness、build、review、draft 同期、promotion を実行すること。
+- 独立成果物の原論文、canonical source、台帳、ID、fingerprint、receipt、`STATUS`、draft、out、承認を同一 project に混在させ、または project 間で流用すること。
 - 論文にない主張を論文の結論として書き、条件、不確実性、限界を落とすこと。
 - 原論文、解釈、外部知識、疑問、AI 生成補足を無表示で混ぜること。
 - 式、図表、実験値、引用を版・ページ・番号へ追跡できないまま転載・変形すること。
@@ -230,7 +250,9 @@ project root から相対 path を渡して、agent が次の command を実行�
 - 原論文、解釈、外部知識、未解決の疑問が区別され、主要内容をページ・式・図表番号まで追跡できる。
 - 専門用語・記号の索引が本文と一致し、すべてのページ参照が正しい参照先への PDF 内リンクになっている。
 - 引用精度と理解検証が確認済みで、未解決事項と再現上の制約が明示されている。
-- 全 work unit について作成・最終修正後の affected-unit review が記録され、成果物に含まれる unit がすべて `reviewed` で WIP が 0 件である。数学を含む場合は `../MATH_PROSE_REVIEW.md` の独立 read-only review が完了し、definition-before-use violation、unlabeled formal claim、broken reference、未追跡依存、open blocking finding が 0 件である。
+- direct-child project の project root と `.workspace/project-id` が一致し、canonical source、台帳、build、review、`STATUS`、draft、out が当該 project の内側だけにあり、別 project への mutable path 依存と流用された gate/receipt が 0 件である。
+- 複数の原論文を含む場合、全 Paper ID の役割、revision、担当 scope、相互関係が確定し、各 claim、式、図表、引用が正しい Paper ID へ追跡できる。
+- 全 work unit について作成・最終修正後の affected-unit review が記録され、成果物に含まれる unit がすべて `reviewed` で WIP が 0 件である。数学を含む場合は repository root の `MATH_PROSE_REVIEW.md` の独立 read-only review が完了し、definition-before-use violation、unlabeled formal claim、broken reference、未追跡依存、open blocking finding が 0 件である。
 - 全 current asset、visual、resource、software が講義ノートの evidence index に載り、採否が確定している。説明対象は本文の evidence reference を持ち、全 source document と全 included/explained visual に current preparation と primary/independent Codex review pair があり、全 source visual の完全性確認、全 note visual の origin・rights・alt text、全 software の exact revision・license・環境・利用法・出力 lineage が確定している。
 - evidence catalog、生成 index、source revision、software/run receipt、PDF build receipt、`draft/STATUS` が同じ fingerprint/snapshot を指し、`shared-draft` または `promotion` の該当 gate を通過している。`out/` は pending 0 かつ offline build receipt を持つ promotion gate の pass を必須とする。
 - 合意した手順で再生成でき、警告、参照、目次、数式、フォント、全ページのレイアウト検証を通過し、参照成果物がある場合は house style を一組として actual-size と fit-width の両方で比較済みである。

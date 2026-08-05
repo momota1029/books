@@ -16,7 +16,7 @@ LLM は意図と文脈の抽出に使うが、route、曖昧時の停止条件�
 |---|---|---|
 | 新しい数学的結果を証明し、完全な研究論文として投稿したい | `papers/writing/<paper-id>/` | 既存の一致 project がなければ、エージェントが `.system/new-paper-project <paper-id>` を実行する |
 | 書籍を忠実に翻訳し、統合された翻訳成果物を作りたい | `book-translations/<project-id>/` | 既存の一致 project がなければ、エージェントが `.system/new-book-project <project-id>` を実行する |
-| 既存論文を理解し、検証可能な解説・講義ノートを作りたい | `paper-lecture-notes/` | singleton workspace の既存状態を確認して開始または継続する |
+| 既存論文を理解し、検証可能な解説・講義ノートを作りたい | `paper-lecture-notes/<project-id>/` | 一致 project がなければ、エージェントが `.system/new-paper-note-project <project-id>` を実行する |
 | 長編の self-contained な数学講義ノート・数学ノートを作りたい | `self-contained-math-notes/` | singleton workspace の既存状態を確認して開始または継続する |
 | `papers/` で執筆中の自分の日本語論文を英訳したい | 同じ `papers/writing/<paper-id>/` または `papers/submitted/<paper-id>/` | 新しい translation project を作らず、同一論文の英訳 phase と日英同期 gate を使う |
 | repository 外にある自分の既存原稿を取り込み、投稿準備・英訳・改訂を始めたい | `papers/writing/<paper-id>/` | 一致 project がなければ新規 paper project を作り、原稿を採用 input として履歴を保って取り込む |
@@ -58,7 +58,8 @@ route が変わる曖昧さだけを質問し、command 名や内部 directory �
 - 「翻訳を作りたい」だけで、書籍、他者論文、自分の論文のどれか不明である。
 - 「この論文を読みたい」だけで、会話回答、永続的な解説、忠実な翻訳のどれか不明である。
 - 同じ題材について複数の既存 project があり、継続先を一意に決められない。
-- singleton workspace に別案件の active source、未完了 `STATUS`、未処理 `inbox` がある。
+- self-contained-math-notes の singleton workspace に別案件の active source、未完了 `STATUS`、未処理 `inbox` がある。
+- 論文講義ノートの既存 project が複数あり、題材だけでは継続先を一意に決められない、または複数の原論文を一つの統合ノートにするのか独立成果物にするのかで project 境界が変わる。
 - 忠実な他者論文翻訳のように、現在の共有制作領域に適合する route がない。
 - project 作成が既存 path の上書き、既存入力の移動、repository mode の変更、権利・privacy 境界の変更を必要とする。
 
@@ -74,10 +75,13 @@ route が変わる曖昧さだけを質問し、command 名や内部 directory �
 
 ## 既存 project と singleton workspace
 
-- `papers/writing/`、`papers/submitted/`、`book-translations/` は direct child を調べ、題材、records、status から同一性を確認する。名前が似ているだけで既存 project と断定しない。
+- `papers/writing/`、`papers/submitted/`、`book-translations/` は direct child を調べる。`paper-lecture-notes/` では共有 `AGENTS.md` と legacy 用の `inbox/`、`draft/`、`out/`、`.workspace/` を候補から除外し、`.workspace/project-id` を持つ direct child だけを通常 project 候補として調べる。題材、records、status から同一性を確認し、名前が似ているだけで既存 project と断定しない。
 - 一致する active project が一つなら新規作成せず継続する。submitted 論文の改訂や英訳も同じ project で行う。
 - repository 外の自著原稿を初めて取り込む場合は `papers/writing/` に project を作り、原稿を上書き可能な working copy として直接扱わず、採用 input revision と canonical source の起点を記録する。すでに外部投稿済みなら送信 snapshot と識別番号を記録したうえで `submitted/` lifecycle に置く。
-- `paper-lecture-notes/` と `self-contained-math-notes/` は現在 singleton workspace である。別案件の active data がある場合は混在させず、既存案件を継続するか、ユーザー承認後に project-isolated 構造を追加するかを確認する。既存 data を自動で archive、移動、削除しない。
+- `paper-lecture-notes/<project-id>/` は一つの講義ノート成果物と、そのために共同で読む一つ以上の原論文を管理する。複数の原論文が同じ読者、学習目標、scope、canonical source、review/promotion gate を共有して一つの統合 PDF になる場合だけ同一 project に置く。独立した PDF、独立した進捗・公開判断、または独立に再開・完了させる案件は、題材が近くても別 project にする。
+- 新しい論文講義ノートは collection root に `inbox/` 等を増設せず、必ず `.system/new-paper-note-project <project-id>` で direct child を作る。project ID は成果物の scope から短い lowercase ASCII の `kebab-case` で定める。ユーザーに command や directory 選択を求めない。
+- `paper-lecture-notes/` 直下に以前から存在する `inbox/`、`draft/`、`out/`、`.workspace/` は一つの legacy singleton project としてのみ扱う。そこへ別案件を追加せず、既存案件と同一の場合だけ継続する。direct-child project への移行は、移行対象、project ID、canonical source、台帳、draft/out の正本をユーザーと確定してから行い、既存 data を自動で archive、移動、複製、削除しない。
+- `self-contained-math-notes/` は現在 singleton workspace である。別案件の active data がある場合は混在させず、既存案件を継続するか、ユーザー承認後に project-isolated 構造を追加するかを確認する。既存 data を自動で archive、移動、削除しない。
 - 入力資料がまだない場合でも、題材と成果物が一意で、repository mode と recovery 条件を満たすなら project の空構造と status を開始してよい。public mode で保護経路が未確定なら private な status は作らず、ignored skeleton に留める。資料がなければ検証できない作業を推測で埋めず、次に必要な input を具体的に伝える。
 
 ## routing acceptance examples
@@ -87,7 +91,7 @@ route が変わる曖昧さだけを質問し、command 名や内部 directory �
 - 「手元の原稿を雑誌投稿できる形に整えたい」→ 一致 project がなければ `papers/writing/` に取り込み、投稿準備 phase を開始。
 - 「投稿済み論文の査読コメントに対応したい」→ 同じ `papers/submitted/` project で送信版を保持して改訂。外部再投稿は別途承認。
 - 「この本を日本語に全訳したい」→ `book-translations/`。
-- 「この論文を読み、証明を補って解説 PDF にしたい」→ `paper-lecture-notes/`。
+- 「この論文を読み、証明を補って解説 PDF にしたい」→ `paper-lecture-notes/<project-id>/` に新規または既存の講義ノート project。
 - 「この論文を一字一句に近い形で日本語化したい」→ 他者論文の忠実翻訳かを確認し、`paper-lecture-notes/` へ自動配属しない。
 - 「この論文を読みたい」→ 会話内の読解支援、永続的な解説 PDF、忠実翻訳のどれかを一問で確認。
 - 「測度論を前提から説明する長いノートを作りたい」→ `self-contained-math-notes/`。

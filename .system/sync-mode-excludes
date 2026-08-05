@@ -101,6 +101,16 @@ if [[ $mode == public ]]; then
       '**/.workspace/**' \
       '/book-translations/*' \
       '!/book-translations/AGENTS.md' \
+      '/paper-lecture-notes/*' \
+      '!/paper-lecture-notes/AGENTS.md' \
+      '!/paper-lecture-notes/inbox/' \
+      '!/paper-lecture-notes/inbox/.gitignore' \
+      '!/paper-lecture-notes/draft/' \
+      '!/paper-lecture-notes/draft/.gitignore' \
+      '!/paper-lecture-notes/out/' \
+      '!/paper-lecture-notes/out/.gitignore' \
+      '!/paper-lecture-notes/.workspace/' \
+      '!/paper-lecture-notes/.workspace/.gitignore' \
       '/papers/writing/*' \
       '!/papers/writing/.gitignore' \
       '/papers/submitted/*' \

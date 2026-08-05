@@ -57,7 +57,8 @@ tool は検査の再現性と漏れの低減に使うが、数学的・翻訳上
 制作領域は、その領域に置かれた共有 `AGENTS.md` と本ファイルを継承し、案件ごとの private copy を正本にしない。
 新しい書籍翻訳 project は `.system/new-book-project <project-id>` で `book-translations/<project-id>` に作成する。`book-translations/AGENTS.md` が各 project に適用され、project-local `AGENTS.md` は生成しない。
 新しい論文執筆 project は `.system/new-paper-project <paper-id>` で `papers/writing/<paper-id>` に作成する。論文 project は執筆・投稿準備中は `papers/writing/`、外部投稿の成功を記録した後は `papers/submitted/` の直下に置き、`papers/AGENTS.md` を継承する。project-local `AGENTS.md` は生成しない。
-論文講義ノートや self-contained 数学講義ノートを含むその他の制作領域は、それぞれの現行構造と領域直下の `AGENTS.md` に従う。`inbox/`、`draft/`、`out/`、`.workspace/` の役割、受け入れ、build、promotion、権利管理の詳細は、最も近い適用対象の `AGENTS.md` に従う。
+新しい論文講義ノート project は `.system/new-paper-note-project <project-id>` で `paper-lecture-notes/<project-id>` に作成し、collection root 自体を新規案件の project root として再利用しない。`paper-lecture-notes/AGENTS.md` が各 project に適用され、project-local `AGENTS.md` は生成しない。既存の collection-root 直下にある legacy singleton data の扱いと移行条件は同ガイドに従う。
+self-contained 数学講義ノートを含むその他の制作領域は、それぞれの現行構造と領域直下の `AGENTS.md` に従う。`inbox/`、`draft/`、`out/`、`.workspace/` の役割、受け入れ、build、promotion、権利管理の詳細は、最も近い適用対象の `AGENTS.md` に従う。
 領域別の規約は本ファイルを上書きせず、親の公開境界、共有品質、日本語文章規範、数学文章レビュー、versioned tools の要件を継承する。
 project 名と案件内容は repository mode にかかわらず、外部共有の可否を個別に判定する。
 

@@ -77,6 +77,10 @@ SECRET_QUERY_NAMES = {
 }
 SUPPORTED_GIT_HOSTS = {"github.com", "gitlab.com", "bitbucket.org"}
 ENTRY_ID = re.compile(r"^[A-Z][A-Z0-9-]{2,63}$")
+PROJECT_ID = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+PAPER_ID = re.compile(r"^PAPER-[A-Z0-9]+(?:-[A-Z0-9]+)*$")
+PAPER_ROLES = {"primary", "co-primary", "supporting", "background"}
+SOURCE_KINDS = {"paper", "supplement", "dataset", "code", "image", "other"}
 URL_RE = re.compile(r"https?://[^\s<>\"'{}\\]+", re.IGNORECASE)
 DOI_RE = re.compile(r"(?<![\w/])10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.IGNORECASE)
 CAPTION_RE = re.compile(
@@ -170,13 +174,41 @@ def ensure_within(path: pathlib.Path, parent: pathlib.Path) -> pathlib.Path:
 def project_path(value: str) -> pathlib.Path:
     root = repo_root()
     raw = pathlib.Path(value)
-    project = ensure_within(raw if raw.is_absolute() else root / raw, root)
-    if not project.is_dir() or project.is_symlink():
+    candidate = raw if raw.is_absolute() else root / raw
+    if candidate.is_symlink():
         raise HarnessError("project directory check failed")
+    project = ensure_within(candidate, root)
+    if not project.is_dir():
+        raise HarnessError("project directory check failed")
+    collection = root / "paper-lecture-notes"
+    if not collection.is_dir() or collection.is_symlink():
+        raise HarnessError("paper-lecture-notes collection root is invalid")
     for name in ("inbox", "draft", "out", ".workspace"):
-        candidate = project / name
-        if not candidate.is_dir() or candidate.is_symlink():
+        required = project / name
+        if not required.is_dir() or required.is_symlink():
             raise HarnessError(f"required project directory is invalid: {name}")
+    if project == collection.resolve():
+        legacy_state = any(
+            child.name != ".gitignore"
+            for name in ("inbox", "draft", "out", ".workspace")
+            for child in (project / name).iterdir()
+        )
+        if not legacy_state:
+            raise HarnessError("collection root is not a project; initialize a named child project")
+    elif project.parent == collection.resolve():
+        if not PROJECT_ID.fullmatch(project.name):
+            raise HarnessError("project directory name is not a valid project ID")
+        identity = project / ".workspace" / "project-id"
+        if identity.is_symlink() or not identity.is_file():
+            raise HarnessError("project identity file is missing or invalid")
+        try:
+            recorded_identity = identity.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise HarnessError("project identity file could not be read") from exc
+        if recorded_identity != project.name + "\n":
+            raise HarnessError("project identity does not match its directory")
+    else:
+        raise HarnessError("project must be the legacy collection root or one direct child")
     return project
 
 
@@ -388,26 +420,34 @@ def validate_registry_shape(registry: dict) -> None:
 
 def initialize(project: pathlib.Path) -> tuple[dict, dict]:
     paths = managed_paths(project)
-    for key in (
-        "generated", "figures", "assets", "outputs", "external_cache", "software_cache",
-        "scan_tmp", "visual_reviews", "visual_review_tmp",
-    ):
-        secure_directory(paths[key], project)
     for key in ("config", "registry", "audit", "ingestion", "transaction"):
         reject_symlink_chain(paths[key], project)
     if paths["config"].exists():
         config = read_json(paths["config"])
     else:
         config = default_config(project)
-        write_json(paths["config"], config)
     if config.get("schema_version") != SCHEMA_VERSION:
         raise HarnessError("unsupported config schema version")
+    if config.get("project") != project.name:
+        raise HarnessError("config project identity does not match the selected project")
     if paths["registry"].exists():
         registry = read_json(paths["registry"])
     else:
         registry = default_registry(project, config)
-        write_json(paths["registry"], registry)
     validate_registry_shape(registry)
+    if registry.get("project") != project.name:
+        raise HarnessError("registry project identity does not match the selected project")
+    if paths["ingestion"].exists():
+        load_ingestion_manifest(project)
+    for key in (
+        "generated", "figures", "assets", "outputs", "external_cache", "software_cache",
+        "scan_tmp", "visual_reviews", "visual_review_tmp",
+    ):
+        secure_directory(paths[key], project)
+    if not paths["config"].exists():
+        write_json(paths["config"], config)
+    if not paths["registry"].exists():
+        write_json(paths["registry"], registry)
     return config, registry
 
 
@@ -1881,6 +1921,8 @@ def load_ingestion_manifest(project: pathlib.Path) -> dict | None:
     manifest = read_json(path)
     if manifest.get("schema_version") != SCHEMA_VERSION or not isinstance(manifest.get("inputs"), dict):
         raise HarnessError("unsupported ingestion manifest")
+    if manifest.get("project") != project.name:
+        raise HarnessError("ingestion manifest project identity does not match the selected project")
     return manifest
 
 
@@ -1890,7 +1932,10 @@ def ingestion_fingerprint(manifest: dict | None) -> str:
     entries = [
         {
             key: entry.get(key)
-            for key in ("asset_id", "path", "revision_id", "status", "size", "mtime_ns", "sha256")
+            for key in (
+                "asset_id", "path", "revision_id", "status", "source_kind", "paper_id",
+                "paper_role", "paper_scope", "parent_paper_id", "size", "mtime_ns", "sha256",
+            )
         }
         for _, entry in sorted(manifest.get("inputs", {}).items())
     ]
@@ -1920,6 +1965,24 @@ def record_ingestion(project: pathlib.Path, config: dict, registry: dict, args: 
         raise HarnessError("record-ingestion requires a current inbox asset")
     if not args.reason.strip():
         raise HarnessError("ingestion decision requires a reason")
+    isolated_project = project.parent == (repo_root() / "paper-lecture-notes").resolve()
+    paper_scope = args.paper_scope.strip()
+    if args.status == "adopted" and isolated_project and not args.source_kind:
+        raise HarnessError("adopted input requires --source-kind in an isolated project")
+    if args.source_kind == "paper":
+        if not args.paper_id or not PAPER_ID.fullmatch(args.paper_id):
+            raise HarnessError("paper input requires a valid --paper-id such as PAPER-MAIN")
+        if args.paper_role not in PAPER_ROLES:
+            raise HarnessError("paper input requires --paper-role")
+        if not paper_scope:
+            raise HarnessError("paper input requires --paper-scope")
+        if args.parent_paper_id:
+            raise HarnessError("paper input cannot have --parent-paper-id")
+    else:
+        if args.paper_id or args.paper_role or paper_scope:
+            raise HarnessError("Paper ID, role, and scope apply only to --source-kind paper")
+        if args.parent_paper_id and not PAPER_ID.fullmatch(args.parent_paper_id):
+            raise HarnessError("--parent-paper-id is invalid")
     min_interval = float(config.get("ingestion", {}).get("min_stability_interval_seconds", 1.0))
     if min_interval < 0:
         raise HarnessError("ingestion stability interval cannot be negative")
@@ -1930,12 +1993,31 @@ def record_ingestion(project: pathlib.Path, config: dict, registry: dict, args: 
         "schema_version": SCHEMA_VERSION, "project": project.name, "inputs": {},
     }
     existing = manifest["inputs"].get(args.asset_id, {})
+    if existing.get("paper_id") and existing.get("paper_id") != args.paper_id:
+        raise HarnessError("an existing asset cannot change its Paper ID")
+    if args.paper_id:
+        asset_path = asset.get("locations", [""])[0]
+        for other_asset_id, decision in manifest["inputs"].items():
+            other_asset = registry.get("assets", {}).get(other_asset_id, {})
+            if (
+                other_asset_id != args.asset_id
+                and decision.get("paper_id") == args.paper_id
+                and decision.get("path") != asset_path
+                and decision.get("status") == "adopted"
+                and other_asset.get("state") == "current"
+            ):
+                raise HarnessError("Paper ID is already bound to another current adopted source")
     manifest["inputs"][args.asset_id] = {
         "asset_id": args.asset_id,
         "path": asset.get("locations", [""])[0],
         "revision_id": args.revision_id,
         "status": args.status,
         "reason": args.reason.strip(),
+        "source_kind": args.source_kind or "",
+        "paper_id": args.paper_id or "",
+        "paper_role": args.paper_role or "",
+        "paper_scope": paper_scope,
+        "parent_paper_id": args.parent_paper_id or "",
         "size": asset.get("size"), "mtime_ns": asset.get("mtime_ns"),
         "sha256": asset.get("sha256"),
         "first_recorded_at": existing.get("first_recorded_at", now_utc()),
@@ -2423,6 +2505,44 @@ def inspect_gate(project: pathlib.Path, config: dict, registry: dict, phase: str
             errors.append(f"adopted inbox asset is not included/explained: {asset_id}")
         if status == "excluded" and disposition != "exclude":
             errors.append(f"excluded inbox asset does not have exclude disposition: {asset_id}")
+
+    if project.parent == (repo_root() / "paper-lecture-notes").resolve():
+        adopted_papers: dict[str, str] = {}
+        current_adopted_inputs = {
+            asset_id: manifest_inputs[asset_id]
+            for asset_id in inbox_assets
+            if asset_id in manifest_inputs and manifest_inputs[asset_id].get("status") == "adopted"
+        }
+        for asset_id, decision in current_adopted_inputs.items():
+            source_kind = decision.get("source_kind")
+            if source_kind not in SOURCE_KINDS:
+                errors.append(f"adopted input lacks a valid source kind: {asset_id}")
+                continue
+            if source_kind == "paper":
+                paper_id = decision.get("paper_id", "")
+                if not PAPER_ID.fullmatch(paper_id):
+                    errors.append(f"adopted paper lacks a valid Paper ID: {asset_id}")
+                elif paper_id in adopted_papers:
+                    errors.append(
+                        f"Paper ID is bound to multiple current sources: {paper_id} "
+                        f"({adopted_papers[paper_id]}, {asset_id})"
+                    )
+                else:
+                    adopted_papers[paper_id] = asset_id
+                if decision.get("paper_role") not in PAPER_ROLES:
+                    errors.append(f"adopted paper lacks a valid role: {asset_id}")
+                if not str(decision.get("paper_scope", "")).strip():
+                    errors.append(f"adopted paper lacks a scope: {asset_id}")
+                if decision.get("parent_paper_id"):
+                    errors.append(f"paper input has a parent Paper ID: {asset_id}")
+            elif any(decision.get(key) for key in ("paper_id", "paper_role", "paper_scope")):
+                errors.append(f"non-paper input contains paper-only metadata: {asset_id}")
+        for asset_id, decision in current_adopted_inputs.items():
+            parent_paper_id = decision.get("parent_paper_id", "")
+            if parent_paper_id and parent_paper_id not in adopted_papers:
+                errors.append(f"adopted input refers to an unknown parent Paper ID: {asset_id}")
+        if strict and not adopted_papers:
+            errors.append("isolated project has no adopted source paper with a Paper ID")
 
     if "index" not in integrations:
         (errors if strict else warnings).append("canonical note source does not input evidence-index.tex")
@@ -4397,6 +4517,11 @@ def build_parser() -> argparse.ArgumentParser:
     ingestion.add_argument("--revision-id", required=True)
     ingestion.add_argument("--status", choices=("adopted", "excluded", "deferred"), required=True)
     ingestion.add_argument("--reason", required=True)
+    ingestion.add_argument("--source-kind", choices=sorted(SOURCE_KINDS))
+    ingestion.add_argument("--paper-id")
+    ingestion.add_argument("--paper-role", choices=sorted(PAPER_ROLES))
+    ingestion.add_argument("--paper-scope", default="")
+    ingestion.add_argument("--parent-paper-id")
 
     add_sw = add_common_parser(subparsers, "add-software", "register a Git repository or package/release artifact")
     add_sw.add_argument("software_id")

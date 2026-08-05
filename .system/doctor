@@ -46,8 +46,10 @@ required_scripts=(
   .system/test-repository-mode
   .system/new-book-project
   .system/new-paper-project
+  .system/new-paper-note-project
   .system/paper-evidence-harness
   .system/test-new-paper-project
+  .system/test-new-paper-note-project
   .system/test-paper-evidence-harness
 )
 
@@ -84,6 +86,8 @@ done
   fail "offline instruction refresh test failed"
 .system/test-new-paper-project >/dev/null 2>&1 || \
   fail "offline new paper project test failed"
+.system/test-new-paper-note-project >/dev/null 2>&1 || \
+  fail "offline new paper note project test failed"
 .system/test-paper-evidence-harness >/dev/null 2>&1 || \
   fail "offline paper evidence harness test failed"
 
@@ -126,6 +130,7 @@ done
 private_probes=(
   book-translations/__doctor_private_probe__/inbox/probe.pdf
   paper-lecture-notes/inbox/probe.pdf
+  paper-lecture-notes/__doctor_private_probe__/inbox/probe.pdf
   papers/writing/__doctor_private_probe__/inbox/probe.pdf
   papers/submitted/__doctor_private_probe__/.workspace/source/probe.tex
   self-contained-math-notes/.workspace/source/probe.tex
