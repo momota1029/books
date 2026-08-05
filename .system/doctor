@@ -7,6 +7,15 @@ fail() {
   exit 1
 }
 
+if (( BASH_VERSINFO[0] < 3 ||
+      (BASH_VERSINFO[0] == 3 && BASH_VERSINFO[1] < 2) )); then
+  fail "Bash 3.2 or newer is required"
+fi
+
+command -v python3 >/dev/null 2>&1 || fail "Python 3.10 or newer is required"
+python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' \
+  >/dev/null 2>&1 || fail "Python 3.10 or newer is required"
+
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(git -C "$script_dir/.." rev-parse --show-toplevel 2>/dev/null)" || \
   fail "repository root check failed"

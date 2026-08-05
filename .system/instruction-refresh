@@ -57,7 +57,13 @@ fi
 session_token=${CODEX_THREAD_ID:-${BOOKS_INSTRUCTION_SESSION:-}}
 [[ -n $session_token ]] || \
   fail 'CODEX_THREAD_ID is unavailable; a per-thread state cannot be selected'
-session_key=$(printf '%s' "$session_token" | sha256sum | awk '{print $1}')
+session_key=$(python3 - "$session_token" <<'PY'
+import hashlib
+import sys
+
+print(hashlib.sha256(sys.argv[1].encode("utf-8")).hexdigest())
+PY
+) || fail 'per-thread state key cannot be computed'
 
 git_dir=$(git rev-parse --absolute-git-dir 2>/dev/null) || \
   fail 'Git metadata directory is unavailable'
@@ -89,7 +95,16 @@ if [[ -z $scope_arg ]]; then
 fi
 
 [[ -e $scope_arg ]] || fail 'scope does not exist'
-scope_real=$(realpath -e -- "$scope_arg") || fail 'scope cannot be resolved'
+scope_real=$(python3 - "$scope_arg" <<'PY'
+import pathlib
+import sys
+
+try:
+    print(pathlib.Path(sys.argv[1]).resolve(strict=True))
+except (OSError, RuntimeError):
+    raise SystemExit(1)
+PY
+) || fail 'scope cannot be resolved'
 if [[ -f $scope_real ]]; then
   scope_real=$(dirname -- "$scope_real")
 fi
@@ -106,14 +121,15 @@ else
 fi
 
 declare -a instruction_paths=()
-declare -A instruction_seen=()
 
 add_instruction() {
   local relative_path=$1
-  [[ -n ${instruction_seen["$relative_path"]+present} ]] && return
+  local existing_path
+  for existing_path in "${instruction_paths[@]}"; do
+    [[ $existing_path == "$relative_path" ]] && return
+  done
   [[ -f $repo_root/$relative_path && ! -L $repo_root/$relative_path ]] || \
     fail "instruction source is missing or unsafe: $relative_path"
-  instruction_seen["$relative_path"]=1
   instruction_paths+=("$relative_path")
 }
 
@@ -143,8 +159,25 @@ write_manifest() {
     printf 'VERSION\t2\n'
     printf 'SCOPE\t%s\n' "$scope_relative"
     for relative_path in "${instruction_paths[@]}"; do
-      file_hash=$(sha256sum -- "$repo_root/$relative_path" | awk '{print $1}')
-      file_mode=$(stat -c '%f' -- "$repo_root/$relative_path")
+      file_hash=$(python3 - "$repo_root/$relative_path" <<'PY'
+import hashlib
+import pathlib
+import sys
+
+digest = hashlib.sha256()
+with pathlib.Path(sys.argv[1]).open("rb") as handle:
+    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+        digest.update(chunk)
+print(digest.hexdigest())
+PY
+      ) || fail "instruction source cannot be hashed: $relative_path"
+      file_mode=$(python3 - "$repo_root/$relative_path" <<'PY'
+import os
+import sys
+
+print(format(os.lstat(sys.argv[1]).st_mode, "x"))
+PY
+      ) || fail "instruction source mode cannot be read: $relative_path"
       printf 'FILE\t%s\t%s\t%s\n' \
         "$file_hash" "$file_mode" "$relative_path"
     done
@@ -166,7 +199,14 @@ write_manifest "$verification_manifest"
 cmp -s -- "$current_manifest" "$verification_manifest" || \
   fail 'instruction sources changed while being sampled; retry'
 
-fingerprint=$(sha256sum -- "$current_manifest" | awk '{print $1}')
+fingerprint=$(python3 - "$current_manifest" <<'PY'
+import hashlib
+import pathlib
+import sys
+
+print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())
+PY
+) || fail 'instruction fingerprint cannot be computed'
 
 show_current_sources() {
   local relative_path
@@ -177,28 +217,12 @@ show_current_sources() {
 }
 
 report_change() {
-  local old_scope= old_kind old_hash old_mode old_path
-  local new_kind new_hash new_mode new_path path
-  declare -A old_hashes=()
-  declare -A new_hashes=()
+  local old_scope= old_kind old_hash old_mode old_path old_value
+  local new_kind new_hash new_mode new_path new_value
 
   if [[ -f $state_file && ! -L $state_file ]]; then
     old_scope=$(awk -F '\t' '$1 == "SCOPE" { print $2; exit }' "$state_file")
-    while IFS=$'\t' read -r old_kind old_hash old_mode old_path; do
-      [[ $old_kind == FILE ]] || continue
-      if [[ -z $old_path ]]; then
-        old_path=$old_mode
-        old_mode=unknown
-      fi
-      [[ -n $old_path ]] || continue
-      old_hashes["$old_path"]=$old_hash:$old_mode
-    done <"$state_file"
   fi
-  while IFS=$'\t' read -r new_kind new_hash new_mode new_path; do
-    [[ $new_kind == FILE && -n $new_path ]] || continue
-    new_hashes["$new_path"]=$new_hash:$new_mode
-  done <"$current_manifest"
-
   if [[ -z $old_scope ]]; then
     printf 'instruction-refresh: this thread has no acknowledged instruction snapshot\n'
   elif [[ $old_scope != "$scope_relative" ]]; then
@@ -208,18 +232,40 @@ report_change() {
     printf 'instruction-refresh: instruction generation changed\n'
   fi
 
-  for path in "${!old_hashes[@]}"; do
-    if [[ -z ${new_hashes["$path"]+present} ]]; then
-      printf '  removed: %s\n' "$path"
-    elif [[ ${old_hashes["$path"]} != "${new_hashes["$path"]}" ]]; then
-      printf '  modified: %s\n' "$path"
+  if [[ -f $state_file && ! -L $state_file ]]; then
+    while IFS=$'\t' read -r old_kind old_hash old_mode old_path; do
+      [[ $old_kind == FILE ]] || continue
+      if [[ -z $old_path ]]; then
+        old_path=$old_mode
+        old_mode=unknown
+      fi
+      [[ -n $old_path ]] || continue
+      new_value=$(awk -F '\t' -v target="$old_path" '
+        $1 == "FILE" && $4 == target { print $2 ":" $3; exit }
+      ' "$current_manifest")
+      if [[ -z $new_value ]]; then
+        printf '  removed: %s\n' "$old_path"
+      elif [[ $old_hash:$old_mode != "$new_value" ]]; then
+        printf '  modified: %s\n' "$old_path"
+      fi
+    done <"$state_file"
+  fi
+  while IFS=$'\t' read -r new_kind new_hash new_mode new_path; do
+    [[ $new_kind == FILE && -n $new_path ]] || continue
+    old_value=
+    if [[ -f $state_file && ! -L $state_file ]]; then
+      old_value=$(awk -F '\t' -v target="$new_path" '
+        $1 == "FILE" {
+          path = ($4 == "" ? $3 : $4)
+          mode = ($4 == "" ? "unknown" : $3)
+          if (path == target) { print $2 ":" mode; exit }
+        }
+      ' "$state_file")
     fi
-  done
-  for path in "${!new_hashes[@]}"; do
-    if [[ -z ${old_hashes["$path"]+present} ]]; then
-      printf '  added: %s\n' "$path"
+    if [[ -z $old_value ]]; then
+      printf '  added: %s\n' "$new_path"
     fi
-  done
+  done <"$current_manifest"
 
   show_current_sources
   printf '%s\n' \

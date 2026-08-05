@@ -15,6 +15,8 @@ cd books
 
 `bootstrap` は repository local の Git 設定、hook、mode 別の `.git/info/exclude` を準備し、`doctor` は system を検査します。どちらかが失敗した場合は、原因を解消して再実行するまで制作を始めません。system 更新後にも両方を再実行します。
 
+共通 shell tool と offline test は、GNU/Linux の Bash と macOS 標準の Bash 3.2・BSD userland の双方を対象とします。GNU 固有の `sed -i`、`sha256sum`、`realpath`、`stat -c` や Bash 4 以降だけの構文を前提にしません。evidence harness は Python 3.10 以降を必要とし、図表・PDF の検査には各 harness が確認する外部 decoder も必要です。
+
 repository mode は clone ごとの local Git config `books.repositoryMode` に記録されます。未設定の clone は `public` として扱われ、`bootstrap` も既定値として `public` を設定します。この時点の通常の出力は `mode=public` です。
 
 ## 2. public mode

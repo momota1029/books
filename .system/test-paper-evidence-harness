@@ -27,6 +27,20 @@ pass() {
   printf 'ok %s - %s\n' "$1" "$2"
 }
 
+rewrite_with_sed() {
+  local expression=$1
+  local target=$2
+  local temporary
+
+  temporary=$(mktemp "$test_root/.sed.XXXXXX") || return 1
+  if sed "$expression" "$target" >"$temporary"; then
+    mv -- "$temporary" "$target"
+  else
+    rm -f -- "$temporary"
+    return 1
+  fi
+}
+
 visual_review_checks=(
   decode-render visual-presence-crop source-completeness panels-reading-order
   axes-units-scales legend-color-symbols statistical-encoding biological-context
@@ -223,7 +237,10 @@ else
 fi
 rm -- "$project/.workspace/records/evidence/transaction.json"
 
-readarray -t ids < <(python3 - "$project/.workspace/records/evidence/registry.json" <<'PY'
+ids=()
+while IFS= read -r array_value; do
+  ids[${#ids[@]}]=$array_value
+done < <(python3 - "$project/.workspace/records/evidence/registry.json" <<'PY'
 import json
 import pathlib
 import sys
@@ -354,7 +371,10 @@ if expect_failure "$repo_dir/.system/paper-evidence-harness" relate "$project" \
 else
   fail run-relate 'manual run lineage mutation was accepted'
 fi
-readarray -t output_ids < <(python3 - "$project/.workspace/records/evidence/registry.json" <<'PY'
+output_ids=()
+while IFS= read -r array_value; do
+  output_ids[${#output_ids[@]}]=$array_value
+done < <(python3 - "$project/.workspace/records/evidence/registry.json" <<'PY'
 import json
 import pathlib
 import sys
@@ -541,7 +561,10 @@ write_pdf "$project/.workspace/build/document.pdf" "$project/.workspace/records/
   --offline yes --source-revision fixture-1 >/dev/null
 
 cp -- "$project/.workspace/build/document.pdf" "$project/draft/fixture-draft.pdf"
-readarray -t fingerprints < <(python3 - \
+fingerprints=()
+while IFS= read -r array_value; do
+  fingerprints[${#fingerprints[@]}]=$array_value
+done < <(python3 - \
   "$project/.workspace/records/evidence/registry.json" \
   "$project/.workspace/records/paper-ingestion-manifest.json" \
   "$project/draft/fixture-draft.pdf" <<'PY'
@@ -767,7 +790,8 @@ else
 fi
 mv -- "$test_root/registry-before-revision.json" "$project/.workspace/records/evidence/registry.json"
 
-sed -i 's/A test circle\./B test circle./' "$project/.workspace/source/main.tex"
+rewrite_with_sed 's/A test circle\./B test circle./' \
+  "$project/.workspace/source/main.tex"
 if expect_failure "$repo_dir/.system/paper-evidence-harness" gate "$project" --phase internal-wip; then
   pass 5 'canonical note body mutation invalidates the source snapshot'
 else
@@ -849,10 +873,23 @@ printf '%s\n' '<svg xmlns="http://www.w3.org/2000/svg"><g></svg>' >"$magic_proje
 printf '%s\n' '<svg xmlns="http://www.w3.org/2000/svg"><image href="https://example.org/private.png"/></svg>' \
   >"$magic_project/inbox/external-reference.svg"
 write_png "$test_root/embedded-raster.png"
-embedded_raster=$(base64 -w0 "$test_root/embedded-raster.png")
+embedded_raster=$(python3 - "$test_root/embedded-raster.png" <<'PY'
+import base64
+import pathlib
+import sys
+
+print(base64.b64encode(pathlib.Path(sys.argv[1]).read_bytes()).decode("ascii"))
+PY
+)
 printf '<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><image width="4" height="4" href="data:image/png;base64,%s"/></svg>\n' \
   "$embedded_raster" >"$magic_project/inbox/embedded-raster.svg"
-nested_svg=$(printf '%s' '<svg xmlns="http://www.w3.org/2000/svg"><image href="file:///tmp/private.png"/></svg>' | base64 -w0)
+nested_svg=$(python3 - <<'PY'
+import base64
+
+payload = b'<svg xmlns="http://www.w3.org/2000/svg"><image href="file:///tmp/private.png"/></svg>'
+print(base64.b64encode(payload).decode("ascii"))
+PY
+)
 printf '<svg xmlns="http://www.w3.org/2000/svg"><image href="data:image/svg+xml;base64,%s"/></svg>\n' \
   "$nested_svg" >"$magic_project/inbox/nested-data-svg.svg"
 printf 'II+\000\010\000\000\000fixture' >"$magic_project/inbox/microscopy-bigtiff.tif"
@@ -925,7 +962,10 @@ write_two_page_pdf "$review_format_project/inbox/two-pages.pdf"
 convert -size 4x4 xc:red -size 4x4 xc:blue -set delay 10 \
   "$review_format_project/inbox/two-frames.gif"
 "$repo_dir/.system/paper-evidence-harness" scan "$review_format_project" >/dev/null
-readarray -t review_format_assets < <(python3 - "$review_format_project/.workspace/records/evidence/registry.json" <<'PY'
+review_format_assets=()
+while IFS= read -r array_value; do
+  review_format_assets[${#review_format_assets[@]}]=$array_value
+done < <(python3 - "$review_format_project/.workspace/records/evidence/registry.json" <<'PY'
 import json
 import pathlib
 import sys
@@ -1031,6 +1071,7 @@ if python3 - "$repo_dir/.system/paper-evidence-harness" "$review_format_project"
     "${review_format_assets[0]}" "$test_root/alternate-source.png" <<'PY'
 import argparse
 import contextlib
+import errno
 import io
 import os
 import pathlib
@@ -1047,14 +1088,26 @@ function_globals = prepare_function.__globals__
 original_renderer = function_globals["run_bounded_renderer"]
 preparations_before = set(registry["assets"][target_id].get("visual_review_preparations", {}))
 wrapper_calls = 0
+mutation_refused = False
+
+class MutationUnavailable(Exception):
+    pass
 
 def mutate_decoder_snapshot(*args, **kwargs):
-    global wrapper_calls
+    global mutation_refused, wrapper_calls
     wrapper_calls += 1
     descriptor = kwargs["pass_fds"][0]
     os.fchmod(descriptor, 0o600)
-    with open(f"/proc/self/fd/{descriptor}", "wb") as handle:
-        handle.write(alternate.read_bytes())
+    try:
+        with open(f"/dev/fd/{descriptor}", "wb") as handle:
+            handle.write(alternate.read_bytes())
+    except OSError as error:
+        if sys.platform == "darwin" and error.errno in {
+            errno.EACCES, errno.EBADF, errno.ENXIO, errno.EPERM,
+        }:
+            mutation_refused = True
+            raise MutationUnavailable from error
+        raise
     return original_renderer(*args, **kwargs)
 
 function_globals["run_bounded_renderer"] = mutate_decoder_snapshot
@@ -1067,14 +1120,16 @@ try:
         )
 except module["HarnessError"]:
     caught = True
+except MutationUnavailable:
+    pass
 finally:
     function_globals["run_bounded_renderer"] = original_renderer
-assert caught
+assert caught or mutation_refused
 assert wrapper_calls == 1
 assert set(registry["assets"][target_id].get("visual_review_preparations", {})) == preparations_before
 PY
 then
-  pass visual-snapshot-mutation 'decoder snapshot mutation is detected before any receipt is recorded'
+  pass visual-snapshot-mutation 'decoder snapshot mutation is detected or kernel-refused before any receipt is recorded'
 else
   fail visual-snapshot-mutation 'mutated decoder snapshot was accepted'
 fi
@@ -1176,7 +1231,14 @@ PY
   --disposition exclude --exclusion-reason 'cache fixture only' \
   --visibility reader --privacy-review complete --public-summary '取得済みfixture資源' >/dev/null
 "$repo_dir/.system/paper-evidence-harness" render-index "$cache_project" >/dev/null
-cache_digest=$(sha256sum "$cache_file" | awk '{print $1}')
+cache_digest=$(python3 - "$cache_file" <<'PY'
+import hashlib
+import pathlib
+import sys
+
+print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())
+PY
+)
 if grep -Fq "$cache_digest" "$cache_project/.workspace/source/generated/evidence-index.tex" ||
   grep -Fq "${cache_digest:0:16}" "$cache_project/.workspace/source/generated/evidence-index.tex"; then
   fail privacy-hash 'reader index disclosed a fetched resource hash'
@@ -1260,9 +1322,19 @@ with zipfile.ZipFile(parent / "workbook.xlsx", "w") as archive:
 with zipfile.ZipFile(parent / "arrays.npz", "w") as archive:
     archive.writestr("array.npy", b"\x93NUMPY\x01\x00fixture")
 PY
-truncate -s 2097152 "$compression_project/inbox/large.parquet"
+python3 - "$compression_project/inbox/large.parquet" <<'PY'
+import pathlib
+import sys
+
+with pathlib.Path(sys.argv[1]).open("wb") as handle:
+    handle.seek(2 * 1024 * 1024 - 1)
+    handle.write(b"\0")
+PY
 "$repo_dir/.system/paper-evidence-harness" scan "$compression_project" >/dev/null
-readarray -t compression_ids < <(python3 - "$compression_project/.workspace/records/evidence/registry.json" <<'PY'
+compression_ids=()
+while IFS= read -r array_value; do
+  compression_ids[${#compression_ids[@]}]=$array_value
+done < <(python3 - "$compression_project/.workspace/records/evidence/registry.json" <<'PY'
 import json
 import pathlib
 import sys
@@ -1294,7 +1366,10 @@ for entry_id in "${compression_ids[@]}"; do
     --disposition exclude --exclusion-reason 'bounded parser fixture' \
     --visibility internal --privacy-review not-applicable >/dev/null
 done
-readarray -t container_ids < <(python3 - "$compression_project/.workspace/records/evidence/registry.json" <<'PY'
+container_ids=()
+while IFS= read -r array_value; do
+  container_ids[${#container_ids[@]}]=$array_value
+done < <(python3 - "$compression_project/.workspace/records/evidence/registry.json" <<'PY'
 import json
 import pathlib
 import sys
@@ -1414,7 +1489,7 @@ registry = json.loads(pathlib.Path(sys.argv[1]).read_text())
 print(next(value["id"] for value in registry["software"].values() if value["repository_url"].endswith("/stale-repo")))
 PY
 )
-sed -i '/stale-repo/d' "$github_project/inbox/links.txt"
+rewrite_with_sed '/stale-repo/d' "$github_project/inbox/links.txt"
 "$repo_dir/.system/paper-evidence-harness" scan "$github_project" >/dev/null
 if python3 - "$github_project/.workspace/records/evidence/registry.json" "$stale_software" <<'PY'
 import json

@@ -748,7 +748,7 @@ def immutable_decoder_snapshot(
         snapshot_path.unlink()
         verification_error = ""
         try:
-            yield pathlib.Path(f"/proc/self/fd/{descriptor}"), descriptor
+            yield pathlib.Path(f"/dev/fd/{descriptor}"), descriptor
         finally:
             try:
                 after = descriptor_snapshot(descriptor)

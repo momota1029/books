@@ -28,18 +28,22 @@ fail() {
 repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || fail
 cd "$repo_root"
 
-configured_urls=()
-shopt -s lastpipe
-if ! git remote get-url --push --all "$remote" 2>/dev/null |
-  mapfile -t configured_urls; then
+configured=$(git remote get-url --push --all "$remote" 2>/dev/null |
+  python3 -c '
+import sys
+
+raw = sys.stdin.buffer.read()
+if (not raw or raw.count(b"\n") != 1 or not raw.endswith(b"\n")
+        or b"\r" in raw or b"\0" in raw):
+    raise SystemExit(1)
+sys.stdout.buffer.write(raw[:-1])
+') || {
+  fail
+}
+
+if [[ -z $configured || $configured == *$'\n'* || $configured == *$'\r'* ]]; then
   fail
 fi
-
-if (( ${#configured_urls[@]} != 1 )); then
-  fail
-fi
-
-configured=${configured_urls[0]}
 
 if (( $# == 2 )) && [[ "$actual_push_url" != "$configured" ]]; then
   fail
@@ -116,7 +120,9 @@ if [[ "$name_with_owner" == *$'\t'* || "$visibility" != 'PRIVATE' ]]; then
 fi
 
 expected="$owner/$repo"
-if [[ "${name_with_owner,,}" != "${expected,,}" ]]; then
+name_with_owner_lower=$(printf '%s' "$name_with_owner" | tr '[:upper:]' '[:lower:]') || fail
+expected_lower=$(printf '%s' "$expected" | tr '[:upper:]' '[:lower:]') || fail
+if [[ $name_with_owner_lower != "$expected_lower" ]]; then
   fail
 fi
 

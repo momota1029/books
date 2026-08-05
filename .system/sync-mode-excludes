@@ -120,7 +120,15 @@ else
 fi
 
 if ! cmp -s -- "$exclude_path" "$output_file"; then
-  chmod --reference="$exclude_path" "$output_file" 2>/dev/null || true
+  python3 - "$exclude_path" "$output_file" <<'PY' || \
+    fail 'local exclude permissions could not be preserved'
+import os
+import stat
+import sys
+
+source_mode = stat.S_IMODE(os.stat(sys.argv[1], follow_symlinks=False).st_mode)
+os.chmod(sys.argv[2], source_mode)
+PY
   mv -- "$output_file" "$exclude_path" || \
     fail 'local exclude file could not be updated'
 fi

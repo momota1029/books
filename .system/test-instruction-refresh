@@ -111,6 +111,31 @@ else
   fail 5 'scope changes require rereading the applicable chain'
 fi
 
+git_dir=$(git rev-parse --absolute-git-dir)
+thread_key=$(python3 - <<'PY'
+import hashlib
+
+print(hashlib.sha256(b"thread-one").hexdigest())
+PY
+)
+state_file=$git_dir/codex-instruction-refresh/$thread_key.state
+legacy_state=$test_root/legacy-instruction-state
+awk -F '\t' '
+  BEGIN { OFS = "\t" }
+  $1 == "VERSION" { print $1, "1"; next }
+  $1 == "FILE" { print $1, $2, $4; next }
+  { print }
+' "$state_file" >"$legacy_state"
+mv -- "$legacy_state" "$state_file"
+if capture_status "$output_file" 3 .system/instruction-refresh check --scope . &&
+  grep -Fq -- 'modified: AGENTS.md' "$output_file" &&
+  ! grep -Fq -- 'added: AGENTS.md' "$output_file" &&
+  .system/instruction-refresh ack --scope . >/dev/null; then
+  pass manifest-v1 'legacy manifests are upgraded as modified records, not additions'
+else
+  fail manifest-v1 'legacy manifest compatibility'
+fi
+
 export CODEX_THREAD_ID=thread-two
 if capture_status "$output_file" 3 .system/instruction-refresh check --scope . &&
   grep -Fq -- 'no acknowledged instruction snapshot' "$output_file"; then

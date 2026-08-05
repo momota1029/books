@@ -28,6 +28,20 @@ pass() {
   printf 'ok %s - %s\n' "$1" "$2"
 }
 
+rewrite_with_sed() {
+  local expression=$1
+  local target=$2
+  local temporary
+
+  temporary=$(mktemp "$test_root/.sed.XXXXXX") || return 1
+  if sed "$expression" "$target" >"$temporary"; then
+    mv -- "$temporary" "$target"
+  else
+    rm -f -- "$temporary"
+    return 1
+  fi
+}
+
 expect_success() {
   "$@" >/dev/null 2>&1
 }
@@ -80,7 +94,7 @@ fi
 printf '%s\t%s\n' "$FAKE_VISIBILITY" "$name_with_owner"
 FAKE_GH
 chmod +x "$fake_bin/gh"
-export PATH="$fake_bin:/usr/bin:/bin"
+export PATH="$fake_bin:$PATH"
 
 cat >"$repo_dir/.public-files" <<'ALLOWLIST'
 .public-files
@@ -109,6 +123,19 @@ printf '\n*.user-local\n' >>.git/info/exclude
 .system/sync-mode-excludes >/dev/null
 [[ $(grep -Fxc -- '# BEGIN books repository-mode managed excludes' \
   .git/info/exclude) == 1 ]] || fail 1 'managed exclude idempotence'
+
+cp -- .public-files "$test_root/public-files.clean"
+printf '# comment\rhidden.txt\n' >>.public-files
+printf 'must remain unapproved\n' >hidden.txt
+git add -- .public-files hidden.txt
+if expect_failure .githooks/check-public-tree --index; then
+  pass allowlist-lines 'only LF delimits public allowlist records'
+else
+  fail allowlist-lines 'non-LF allowlist content approved a tracked path'
+fi
+git reset -q -- .public-files hidden.txt
+mv -- "$test_root/public-files.clean" .public-files
+rm -- hidden.txt
 
 remote_name=storage
 remote_url=https://github.com/example-owner/example-repository.git
@@ -142,7 +169,7 @@ if ! expect_failure env FAKE_VISIBILITY=PRIVATE \
   git config --local --get books.privateBase >/dev/null 2>&1; then
   fail 3 'failed transition rollback'
 fi
-sed -i '$d' .git/info/exclude
+rewrite_with_sed '$d' .git/info/exclude
 .system/sync-mode-excludes >/dev/null
 
 base_oid=$(git rev-parse --verify 'HEAD^{commit}')
@@ -206,7 +233,7 @@ if ! expect_failure .system/repository-mode public ||
   [[ $(git config --local --get books.privateBase) != "$base_oid" ]]; then
   fail 7 'failed transition rollback'
 fi
-sed -i '$d' .git/info/exclude
+rewrite_with_sed '$d' .git/info/exclude
 .system/sync-mode-excludes >/dev/null
 if expect_success .system/repository-mode public &&
   [[ $(git config --local --get books.repositoryMode) == public ]] &&
@@ -233,7 +260,7 @@ printf 'post-merge fixture\n' >>public.txt
 git add -- public.txt
 git commit -q -m 'post-merge fixture'
 git switch -q public-base
-sed -i \
+rewrite_with_sed \
   '/^# BEGIN books repository-mode managed excludes$/,/^# END books repository-mode managed excludes$/d' \
   .git/info/exclude
 if ! grep -Fq -- '# BEGIN books repository-mode managed excludes' \
@@ -257,6 +284,17 @@ if expect_failure env FAKE_VISIBILITY=PRIVATE \
   pass 9 'ambiguous push URL rejection'
 else
   fail 9 'ambiguous push URL rejection'
+fi
+git config --unset-all "remote.${remote_name}.pushurl"
+
+git config --add "remote.${remote_name}.pushurl" "$remote_url"$'\n'
+if expect_failure env FAKE_VISIBILITY=PRIVATE \
+  .system/verify-private-remote "$remote_name" &&
+  expect_failure env FAKE_VISIBILITY=PRIVATE \
+  .system/repository-mode private "$remote_name"; then
+  pass url-newline 'push URLs containing an embedded trailing LF are rejected'
+else
+  fail url-newline 'push URL trailing LF was normalized and accepted'
 fi
 git config --unset-all "remote.${remote_name}.pushurl"
 
