@@ -17,6 +17,7 @@ required_public_files=(
   README.md
   JAPANESE_WRITING.md
   MATH_PROSE_REVIEW.md
+  WORKFLOW_ROUTING.md
   .public-files
   .gitignore
 )

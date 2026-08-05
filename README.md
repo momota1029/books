@@ -144,7 +144,20 @@ private 作業から得た generic な system 改善は、clean な public clone
 - `out/` の配布承認と GitHub repository の visibility は別の判定です。private repository に置けることは、読者や第三者へ配布できることを意味しません。
 - 複数案件に有効な規約、prompt、template、script、build・QA tool、test、修正は generic 化し、privacy review 後に公開共有領域へ upstream します。
 
-## 8. 書籍 project の作成
+## 8. 自然言語から制作を始める
+
+ユーザーは `.system/` command や directory 名を覚える必要はありません。たとえば次のように、欲しい成果物を自然言語で依頼できます。
+
+- 「○○について新しい論文を書きたい」
+- 「この本を日本語に翻訳したい」
+- 「この論文を読み、証明を補った解説ノートを作りたい」
+- 「今の日本語論文を英訳したい」
+
+エージェントは[自然言語リクエストの制作ルーティング規範](WORKFLOW_ROUTING.md)に従い、最終成果物、source 種別、既存 project の有無から route を選び、必要な初期化 command を内部で実行します。route を変える曖昧さがある場合だけ、投稿・改訂する論文、忠実な翻訳、永続的な解説ノート、self-contained な数学ノート、会話内だけの読解支援のどれが必要かを確認し、翻訳なら source が書籍、他者論文、自分の論文のどれかも同じ一問で確認します。
+
+以下の command は手動運用と system の再現性のために残す公開 interface であり、通常のユーザー依頼ではエージェントが実行します。
+
+## 9. 書籍 project の作成
 
 書籍翻訳 project は手作業で構造を複製せず、repository root から次の command で `book-translations/` の直接の子として作成します。
 
@@ -159,7 +172,7 @@ private 作業から得た generic な system 改善は、clean な public clone
 - [日本語文章規範](JAPANESE_WRITING.md)
 - [数学文章レビュー規範](MATH_PROSE_REVIEW.md)
 
-## 9. 論文 project の作成
+## 10. 論文 project の作成
 
 数学論文の新規 project は、手作業で構造を複製せず、repository root から次の command で `papers/writing/` の直接の子として作成します。
 

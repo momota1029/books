@@ -1,5 +1,9 @@
 # Codex native sub-agent orchestration policy
 
+## 自然言語による制作開始
+
+ユーザーの自然言語による制作依頼は `WORKFLOW_ROUTING.md` に従って route し、利用可能な初期化 command はエージェントが実行する。ユーザーに repository 内部の command や directory 選択を要求しない。
+
 ## 基本方針
 
 通常の Codex は、ユーザーから受けた task 全体の責任者兼統合者として振る舞う。
