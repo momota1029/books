@@ -46,7 +46,8 @@ project 名と案件内容は repository mode にかかわらず、外部共有�
 
 ## 共通 TeX toolchain
 
-TeX PDF を採用する全制作領域では、原則として upLaTeX + dvipdfmx を標準 toolchain とし、latexmk を利用してよい。別の toolchain は、案件要件が必要とする場合、またはユーザーが明示的に決定した場合に限り採用する。
+TeX PDF を採用する全制作領域では、検証済みの同種成果物または既存 project の house style があればそれを優先する。新規の長編日本語数学書で別の案件要件またはユーザーの明示合意がない場合は、`bxjsbook`、upLaTeX + dvipdfmx、A4、11pt、`openany`、`oneside`、本文 1 行 40zw 前後、class 既定の見出し階層と柱（running head）を基準とし、latexmk を利用してよい。別の toolchain または版面は、案件要件が必要とする場合、またはユーザーが明示的に決定した場合に採用する。
+参照する既存成果物が指定された場合は、判型、実効 font size、baseline、版面、段落 indent、見出し階層、theorem/proof、目次・索引、header/footer を一組として比較して house style を決める。参照元の内容固有 macro は移植せず、point 数または page への収まりだけで大小を判断しない。actual-size と fit-width の両方で実際の render を比較し、本文密度、可読性、階層と柱の働きを検証する。
 upLaTeX 文書で日本語索引を作る場合は、原則として upmendex を用いる。別の索引処理系は、案件要件が必要とする場合、またはユーザーが明示的に決定した場合に限り採用する。
 
 ## 委譲の判断基準
@@ -144,18 +145,36 @@ RISKS: 残る懸念、判断待ち、または none
 - review finding の修正は、原則として元の実装担当へ follow-up する。親が直接修正する場合は ownership を明示的に移し、元担当と同時に同じ file を編集しない。
 - 並行実行は、対象ファイルや状態が衝突しない独立タスクに限る。競合し得る場合は直列化する。
 - 完了条件を満たした証拠がない報告は完了として扱わない。sub-agent の自己申告だけに依存せず、親 Codex が差分、test 結果、review status、生成物を task の risk に応じて確認する。
-- 数学内容を含む翻訳、論文、ノートは、追跡可能な work unit に分け、各 unit の完成時、およびその後のあらゆる revision/change ごとに、affected unit と影響範囲を `MATH_PROSE_REVIEW.md` に従い再レビューする。label/ref、notation、punctuation、formatting、translation wording の変更も例外にしない。純粋に編集上の小変更では checklist を affected correctness、definition、label/ref、rendering の項目に限定してよいが、レビュー自体を省略してはならない。
-- affected unit の数学文章レビューは、原則として authoring 担当と分けた independent read-only review phase とし、レビュー記録は project の private area に保存する。
-- draft PDF を公開または読者へ共有する前に、その input snapshot と含まれる全 unit の review status を確定し、`reviewed` とする各 unit が `MATH_PROSE_REVIEW.md` の unit gate を満たすことを確認する。何らかの変更後に draft を再公開する場合は、affected unit の再レビューを完了し、変更後 snapshot に対する gate と review status を更新する。draft は可読な進捗成果物とし、input snapshot、review status、WIP とその未完了範囲を本文で明示する。
+
+### 制作ループと品質ゲート
+
+検査の厳格さは制作中の各編集ではなく、成果物を確定・共有する境界で最大化する。領域別規約と `MATH_PROSE_REVIEW.md` は内容固有の検査項目を追加できるが、ユーザーが案件固有の高頻度 review を明示しない限り、検査の実行時期と変更分類は本節を継承する。
+
+- **WIP 制作中**: incremental build、構文、変更箇所の未解決参照、変更ページ・変更図の render 等、短時間で失敗を検出できる検査を行う。独立 review、全 phase、全ページ・全図、全索引 fixture の検査を各編集のたびに要求しない。既知の blocking finding を隠したり、WIP を `reviewed` または `out` として扱ったりしてはならない。
+- **checkpoint**: 一つの work unit、意味のまとまり、または作業 session の終端で変更をまとめ、affected scope と依存範囲を確定して必要な review と build を行う。細かな変更はこの境界まで batch してよく、各 keystroke、save、commit の前に同じ検査を反復しない。
+- **配布・promotion 前**: 読者への共有、公開、または `out/` への promotion に使う input snapshot を固定し、要求される独立 review、全体 build、全ページ・全図、目次、索引、参照、権利、privacy の gate を完全に実施する。checkpoint の部分検査だけでこの gate を代替しない。
+
+反復検査には risk と作業規模に応じた時間予算を置き、時間のかかる全体 build、全 fixture、全ページ検査は入力または依存が変わった必要範囲だけ実行し、その他は checkpoint または配布・promotion 前へ繰り越す。入力 snapshot と tool version が同じ検査結果および安全な build cache は再利用してよい。時間予算の超過を gate 通過とは扱わず、配布・promotion に必須の未完検査は最終的に完了させる。`.system/bootstrap` と `.system/doctor` は clone 後の必須実行に加え、shared tool・環境の変更時または異常の診断時に再実行し、変更のない通常の制作 cycle ごとには反復しない。
+
+変更は次の三種類に分類し、迷う場合は一段上の分類を使う。
+
+- **semantic**: 定義、主張、証明、数式、依存、事実、翻訳の意味、用語の意味、図の geometry または semantics を変える変更。checkpoint で affected unit と依存範囲を求め、authoring 担当とは別の independent read-only review を行い、記録を project の private area に保存する。
+- **structural**: label/ref、番号、章節構成、索引 entry、図表配置、caption の番号・配置・style、build・組版設定等を変えるが、内容の意味を直接は変えない変更。caption 本文の意味変更は semantic とする。対象を絞った自動検査と render 検査を行い、意味、定義順序、依存または読者解釈へ波及する場合、および配布・promotion 前に必要な範囲だけ独立 review を行う。
+- **editorial**: 意味、定義、参照、依存、文書構造を変えず、表示への影響が局所的な誤字、句読点、空白、表記統一、局所的な言い換え。差分確認と関連する incremental build を行い、表示が変わる場合は変更ページを render で確認すれば、数学文章の independent review を再度開かなくてよい。pagination、番号、参照または広域 layout へ波及した場合は structural に上げる。分類、対象 snapshot、確認結果は次の checkpoint 記録へまとめてよい。
+
+数学内容を含む翻訳、論文、ノートは追跡可能な work unit に分け、unit 完成時と semantic change 後の checkpoint で affected unit と影響範囲を `MATH_PROSE_REVIEW.md` に従いレビューする。structural change と editorial change は上記の分類に従い、変更がない unit の review を機械的にやり直さない。
+
+private な内部確認用 preview は、`unreviewed internal WIP` と input snapshot、未通過 gate、未完了範囲を明記し、配布対象から隔離する場合に限り、独立 review または全体 gate の前にも生成してよい。draft PDF を公開または読者へ共有する前には、その input snapshot と含まれる全 unit の review status を確定し、`reviewed` とする各 unit が `MATH_PROSE_REVIEW.md` の unit gate を満たすことを確認する。変更後に draft を再公開する場合は、変更分類に応じた affected scope の再検証を完了し、変更後 snapshot に対する gate と review status を更新する。draft は可読な進捗成果物とし、input snapshot、review status、WIP とその未完了範囲を本文で明示する。
 - blocking gap、unlabeled formal claim、broken reference のいずれかがある unit を `reviewed` と表示して draft PDF を公開または共有しない。
-- formal claim は意味に合う番号付き semantic environment に置き、自動生成番号と一意で安定した `label` を付ける。直前の theorem-like statement を証明する通常の proof は無番号の proof environment に置き、proof 自体の `label` や対象 statement への明示的な cross-reference を要求しない。statement から離れた proof、複数ある proof または別証明、proof 自体を他所から参照する場合に限り、番号付き proof environment と一意で安定した `label` を用い、必要な参照は `label` による cross-reference とする。
+- formal claim は意味に合う番号付き semantic environment に置き、自動生成番号と一意で安定した `label` を付ける。直前の theorem-like statement を証明する通常の proof は、見出しを原則として「証明」とする bare な無番号 proof environment に置き、proof 番号、proof 自体の `label`、対象 statement への明示的な cross-reference を付けない。statement から離れた証明・解答には対象 statement への `label` による cross-reference を含む無番号の説明見出しを用いてよい。番号付き proof は、複数の証明・別証明を区別する場合、または proof 自体が他所から参照される場合に限り、一意で安定した `label` と対象 statement への cross-reference を持たせる。
 - proof に非自明な gap を残さない。十分な長さは `MATH_PROSE_REVIEW.md` の proof dependency trace の基準で判定し、任意の語数または page 数を要件にしない。
 - unit ごとの review に加え、`out/` への promotion 前に成果物全体を一つの snapshot として `MATH_PROSE_REVIEW.md` の全 phase で再 review する。
 - blocking finding が解消されるか、scope 除外などの対応についてユーザーの明示合意が記録され、open blocking が 0 件になるまで `out/` へ promotion しない。
 - self-contained な書籍、長編講義ノート、長編数学ノートは、明示的な scope 除外がない限り、本文全体を案内する目次と巻末の用語索引を持つ。
 - 技術用語は、定義・正式導入の初出時に正規項目として索引登録する。日本語見出しは明示的な読み（sort key）を必須とし、別名/英名/表記揺れは `see` 参照で正規項目へ集約する。一般語や偶然の言及は索引登録しない。
-- 索引登録は definition-before-use、symbol registry、本文参照と整合させ、用語・索引の変更は affected unit revision として再レビューする。
-- promotion gate では、目次と索引の生成成功、採用した目次処理系の artifact（LaTeX なら `.toc`）と索引処理系の入力・出力・ログ（makeidx/upmendex なら `idx`/`ind`/`ilg`）の存在と非空性、索引処理の warning/error がないこと、重複・未解決参照の不整合がないこと、収録章節と目次項目、索引の目次掲載、ページ参照、PDF bookmark が実際の render と一致すること、および input snapshot の一致を確認する。
+- 日本語索引の `see` は、別名・表記揺れから正規項目への参照とし、project 全体で矢印等の別方式を明記しない限り、全角読点を用いた「別名，正規項目を見よ」の語順で組む。「別名, を見よ 正規項目」のような英語順の artifact を残してはならず、`seename` の訳語変更だけでなく formatter と語順を日本語化する。page 参照は正規項目だけに持たせ、別名・表記揺れは存在する正規項目への `see` 参照だけを持たせる。`seealso` を採用する場合は関連項目への参照として `see` と区別し、「項目，関連項目も見よ」等の project 共通表示を別に定める。参照元項目は自身の page 参照を併記してよく、別名専用の制約を `seealso` に適用しない。
+- 索引登録は definition-before-use、symbol registry、本文参照と整合させる。用語の意味または定義を変える索引変更は semantic、entry・sort key・参照構造の変更は structural、表示を変えない訂正は editorial として affected scope を検証する。
+- promotion gate では、目次と索引の生成成功、採用した目次処理系の artifact（LaTeX なら `.toc`）と索引処理系の入力・出力・ログ（makeidx/upmendex なら `idx`/`ind`/`ilg`）の存在と非空性、索引処理の warning/error がないこと、重複・未解決参照の不整合がないこと、収録章節と目次項目、索引の目次掲載、ページ参照、PDF bookmark が実際の render と一致すること、および input snapshot の一致を確認する。生成されたすべての `see` と、採用時にはすべての `seealso` を索引入力・出力と PDF で照合し、各 formatter の件数一致、句読点と語順、`see` 別名への page 参照 0 件、未解決 target 0 件、孤立した「を見よ」「も見よ」と不適切な段・page 分割 0 件を確認する。長い多言語項目を含む独立 fixture は採用する formatter ごとに用意し、それぞれの表示と分割防止を検証する。
 
 ### 図表と視覚要素の完全・忠実な再現
 
@@ -164,14 +183,14 @@ RISKS: 残る懸念、判断待ち、または none
 - 自由な近似、目視だけによる作図、見た目だけの代用を原図の再現として扱わない。投影、視点、曲率、位相、接続、遮蔽、前後関係、立体面を含む幾何学的構造を原図と照合し、要素の欠落または意味を変える歪みは blocking finding とする。
 - 原画像の利用権を確認できない場合は、TeX、TikZ、PGFPlots、SVG などの repository-native な vector source で再構成し、権利確認なしに原画像をコピーしない。
 - 簡略化または省略は、ユーザーが明示的に許可した場合に限る。その決定内容と成果物への影響を review 記録に残す。
-- 図表を含む affected unit は authoring 担当と分けた independent review で原図と要素単位に比較し、全要素の presence、placement、semantics に加え、geometry、投影、遮蔽、前後関係、曲面・立体面の全面積と可視範囲を確認する。球面、半球面等の曲面・立体面を輪郭線だけで代用してはならない。build 後は実際の render を全ページ・全図について検査する。要素または曲面・立体面の欠落、意味を変える歪みその他の blocking finding がある unit は `reviewed` とせず、解消またはユーザーが明示的に合意した対応が記録されるまで draft PDF を公開・共有せず、`out/` へ promotion しない。
+- 図表の semantic change を含む affected unit は checkpoint で authoring 担当と分けた independent review を行い、原図と要素単位に比較して全要素の presence、placement、semantics に加え、geometry、投影、遮蔽、前後関係、曲面・立体面の全面積と可視範囲を確認する。球面、半球面等の曲面・立体面を輪郭線だけで代用してはならない。WIP 制作中は変更図と影響ページを検査し、配布・promotion 前には実際の render を全ページ・全図について検査する。要素または曲面・立体面の欠落、意味を変える歪みその他の blocking finding がある unit は `reviewed` とせず、解消またはユーザーが明示的に合意した対応が記録されるまで draft PDF を公開・共有せず、`out/` へ promotion しない。
 
 ## 安全性と Git
 
 - ユーザーの既存変更を保持し、無関係な変更を混ぜない。
 - 削除、上書き、外部公開、送信、deploy など、重大または不可逆な操作は、親 Codex がユーザーの依頼範囲と対象を確認してから自ら実行するか、明示的に委譲する。
-- 意味のある小さな作業単位が完了し、妥当な検証を通過した時点でコミットする。未完成、未検証、秘密情報、無関係なユーザー変更を含めない。
-- コミット後は、原則として速やかに現在の追跡ブランチへ通常の push を行う。
+- 一つの work unit、関連する修正群、または作業 session の checkpoint が完了し、妥当な検証を通過した時点でコミットする。細かな編集中は変更を意味のある checkpoint までまとめてよく、各 file 保存または一行の修正ごとに commit・push しない。未完成、未検証、秘密情報、無関係なユーザー変更を含めない。
+- checkpoint のコミット後は、原則として速やかに現在の追跡ブランチへ通常の push を行う。同一 session 内で依存する複数 checkpoint を安全にまとめられる場合、またはユーザーが別の頻度を指定した場合はその境界まで push をまとめてよい。
 - force-push、履歴改変、amend は、ユーザーから明示的な依頼がない限り行わない。
 - ユーザーがコミットや push の停止、まとめてのコミット、ローカルのみなどを指定した場合は、その指示を優先する。
 - PR 作成はユーザーが明示的に求めた場合にだけ行う。

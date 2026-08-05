@@ -86,6 +86,7 @@ ingestion と読解・執筆を分離し、受け入れが確定したスナッ�
 ## ツールチェーンと latexmk 契約
 
 - LaTeX、Typst、Pandoc 等をこの指示だけで固定しない。既存方式を優先し、新規案件では数式、参考文献、相互参照、コード・図表、再現性、日本語組版を比較してユーザー確認後に最小構成を作る。
+- 長編日本語数学書・講義ノートの組版は、別要件またはユーザーの明示合意がなければ親 `AGENTS.md` の `bxjsbook` / upLaTeX + dvipdfmx の house-style 基準に従う。参照成果物が指定された場合は同基準の比較項目を一組として検証し、内容固有 macro を移植せず、actual-size と fit-width の render を確認する。
 - 合意前に大量のテンプレートや依存を追加しない。既存エンジンを uplatex から LuaLaTeX 等へ無断で変えない。
 - LaTeX/latexmk を採用する案件では、ローカル latexmk 4.83 の `-outdir`、`-auxdir`、`-emulate-aux-dir` 相当の分離機能を利用できる。`out_dir` 相当を `.workspace/build/out`、`aux_dir` 相当を `.workspace/build/aux` とする。
 - latexmk が生成する PDF、DVI、SyncTeX、log、aux、fls、fdb 等は、まず全て `.workspace/build/` 配下へ置く。`draft/` や `out/` を latexmk の直接 outdir にしない。
@@ -104,16 +105,15 @@ ingestion と読解・執筆を分離し、受け入れが確定したスナッ�
 6. 学習目標と前提知識を示し、動機、直観、定義、主張、導出、例、限界、節末要約、演習の順に教育的に再構成する。
 7. 原論文、解釈、外部知識、未解決の疑問を識別し、不確かな点を推測で埋めない。
 8. 引用精度、主張の強さ、仮定、式・図表対応、理解検証、演習の解答可能性をレビューする。
-9. 数学を含む範囲では `../MATH_PROSE_REVIEW.md` の全 phase を authoring 担当とは分けた read-only review phase として実施し、finding と再検証結果を private records に保存する。
-10. 受け入れ snapshot を再確認してビルドし、ログと全ページ表示を検証して `draft/` へ公開する。
+9. 数学を含む範囲では、work unit 完成時と semantic change 後の checkpoint で `../MATH_PROSE_REVIEW.md` の affected phase を authoring 担当とは分けた read-only review phase として実施し、finding と再検証結果を private records に保存する。structural change と editorial change は親 `AGENTS.md` の分類に従って検査範囲を絞る。
+10. WIP 制作中は変更箇所を incremental build し、checkpoint で受け入れ snapshot と影響範囲を再確認する。読者へ共有する draft または `out/` 候補ではログと全ページ表示を検証して公開する。
 11. 権利、ライセンス、配布範囲、不要物混入、直前の inbox 状態を確認し、承認後にだけ `out/` へ昇格する。
 
 ## work unit と review cycle
 
 - 制作物を追跡可能な work unit に分ける。work unit は、少なくとも claim、definition、method、proof、derivation、experiment の各 subsection、または同程度に独立して authoring・review・status 判定できる範囲とする。各 unit に安定した一意の ID、対象 source revision、依存 unit、対応する trace 項目を与える。
-- unit の完成時とその後のあらゆる revision/change ごとに、その cycle 内で affected-unit review を行う。label/ref、notation、punctuation、formatting、translation wording の変更も例外にせず、影響範囲を確認し、finding、対応、再検証、review status を private records に記録する。未レビューの affected unit は `WIP` とする。
-- 純粋に編集上の小変更では checklist を affected correctness、definition、label/ref、rendering の項目に限定してよいが、affected-unit review 自体を省略してはならない。
-- 数学を含む affected unit は、authoring 担当とは別の担当による独立 read-only review として `../MATH_PROSE_REVIEW.md` の unit gate を適用する。blocking gap、unlabeled formal claim、broken reference、definition-before-use violation、未追跡依存のいずれかがあれば `reviewed` にしない。
+- 細かな編集は checkpoint まで batch する。unit 完成時と semantic change 後の checkpoint で affected-unit review を行い、影響範囲、finding、対応、再検証、review status を private records に記録する。structural change は対象を絞った検査、editorial change は差分確認、incremental build、必要な変更ページの render を行い、意味・定義・参照・依存・文書構造へ影響しない unit の独立 review を再度開かなくてよい。
+- 数学を含む semantic change と、意味・定義順序・依存・読者解釈へ波及する structural change の affected unit は、authoring 担当とは別の担当による独立 read-only review として `../MATH_PROSE_REVIEW.md` の unit gate を適用する。blocking gap、unlabeled formal claim、broken reference、definition-before-use violation、未追跡依存のいずれかがあれば `reviewed` にしない。
 - cycle ごとに、採用した input snapshot、cycle 対象 unit、各 unit の `reviewed` / `WIP` / `blocked`、open finding、次の作業を draft 本文または `draft/STATUS.*` から確認できるようにする。draft 本文は WIP を隔離・表示しつつ通読可能に保ち、reviewed 部分と混同させない。
 - unit review は成果物全体の review を代替しない。`out/` への promotion 前に、採用 input snapshot と含まれる全 unit を固定し、`../MATH_PROSE_REVIEW.md` の全 phase と本ガイドの全体 gate を再実行する。
 
@@ -143,7 +143,7 @@ ingestion と読解・執筆を分離し、受け入れが確定したスナッ�
 
 - 数学を含む成果物は `../MATH_PROSE_REVIEW.md` の独立 read-only review と再レビューを完了する。definition-before-use violation、未追跡の仮定・依存、open blocking finding がいずれも 0 件になるまで `out/` へ promotion しない。scope 除外で対応する場合も、影響とユーザーの明示合意を private record に残して gate を再実行する。
 - formal claim は、意味に応じた番号付き semantic environment（`theorem`、`lemma`、`proposition`、`corollary`、`definition` 等）に置き、自動生成番号と一意で安定した `label` を付ける。形式的主張を無番号の強調文や通常 prose だけで提示しない。
-- 各 formal proof は明示的な proof environment に置く。直前の theorem-like statement を証明する通常の proof は無番号とし、proof 自体の `label` や対象 statement への明示的な cross-reference を要求しない。statement から離れた proof、複数ある proof、代替証明、proof 自体を他所から参照する場合に限り、番号付き proof environment と一意で安定した `label` を用い、対象 statement を `label` により示す。必要な statement、番号付き proof、definition、equation 間の参照は番号の直書きではなく `label` による cross-reference とし、prose だけの形式的証明を作らない。
+- 各 formal proof は明示的な proof environment に置く。直前の theorem-like statement を証明する通常の proof は、見出しを原則として「証明」とする bare な無番号 proof とし、proof 番号、proof 自体の `label`、対象 statement への明示的な cross-reference を付けない。statement から離れた証明・解答には対象 statement を `label` で示す無番号の説明見出しを用いてよい。番号付き proof は、複数の証明・別証明を区別する場合、または proof 自体を他所から参照する場合に限り、一意で安定した `label` と対象 statement への cross-reference を持たせる。必要な statement、番号付き proof、definition、equation 間の参照は番号の直書きではなく `label` による cross-reference とし、prose だけの形式的証明を作らない。
 - proof と derivation は、前提、依存結果、各変形の根拠、場合分け、境界条件から結論までを明示して完結させる。「明らか」「同様」「容易に分かる」等で非自明な段階を省略しない。derivation の主要な段階は番号付き・ラベル付きの式または適切な semantic environment に置き、本文から参照できるようにする。
 - 原論文の claim・proof と、ノート執筆者による reconstruction・補足導出・correction を、見出し、環境名、注記等で読者が明確に識別できるようにする。再構成や訂正を原論文の主張として表示せず、その根拠と truth status を trace および review record に対応付ける。
 - 記号は初出で定義し、型、次元、定義域、添字範囲、確率変数か実現値かを必要に応じて示す。原論文と記号を変える場合は対応表と理由を残す。
@@ -170,6 +170,6 @@ ingestion と読解・執筆を分離し、受け入れが確定したスナッ�
 - 原論文、解釈、外部知識、未解決の疑問が区別され、主要内容をページ・式・図表番号まで追跡できる。
 - 引用精度と理解検証が確認済みで、未解決事項と再現上の制約が明示されている。
 - 全 work unit について作成・最終修正後の affected-unit review が記録され、成果物に含まれる unit がすべて `reviewed` で WIP が 0 件である。数学を含む場合は `../MATH_PROSE_REVIEW.md` の独立 read-only review が完了し、definition-before-use violation、unlabeled formal claim、broken reference、未追跡依存、open blocking finding が 0 件である。
-- 合意した手順で再生成でき、警告、参照、目次、数式、フォント、全ページのレイアウト検証を通過している。
+- 合意した手順で再生成でき、警告、参照、目次、数式、フォント、全ページのレイアウト検証を通過し、参照成果物がある場合は house style を一組として actual-size と fit-width の両方で比較済みである。
 - 採用 inbox snapshot、source revision、検証結果、承認が記録され、最終成果だけが `out/` に明示的に昇格されている。
 - 配布物に秘密情報や権利不明素材がなく、公開・配布条件が確認されている。

@@ -86,7 +86,7 @@ ingestion と数学的執筆を分離し、受け入れが確定したスナッ�
 ## draft と out
 
 - `draft/` の PDF は途中成果であり final と呼ばない。`out/` への移動・複製は、完了条件を確認した明示的な promotion とする。
-- 各 work unit の制作・変更サイクルごとに、その時点で通読可能な PDF を `draft/` へ公開する。公開状態を `draft/STATUS.*` 等へ記録し、少なくともビルド日時、成功・失敗・陳腐化、source revision または commit、採用した inbox input snapshot、work unit ごとの `reviewed` / `WIP`、検証状態、残件、対応する PDF 名を含める。
+- 各 work unit の checkpoint ごとに、必要ならその時点で通読可能な PDF を `draft/` へ公開する。公開状態を `draft/STATUS.*` 等へ記録し、少なくともビルド日時、成功・失敗・陳腐化、source revision または commit、採用した inbox input snapshot、work unit ごとの `reviewed` / `WIP`、検証状態、残件、対応する PDF 名を含める。checkpoint 前の private preview は `unreviewed internal WIP` として配布対象から隔離する。
 - `reviewed` と表示する work unit は、当該 input snapshot に対する独立レビューと再検証を完了し、数学的 gap、未定義語・記号、未追跡依存、壊れた参照を 0 件にする。未完の work unit は `WIP` として完成部分から隔離し、PDF 本文と `STATUS` の双方で未完了範囲と依存不能範囲を明示する。
 - 新しいビルドを開始した時、inbox revision や canonical source が変わった時、またはビルドが失敗した時は、残っている古い成功 PDF を最新版と誤認しないよう `STATUS` を先に `building`、`failed` または `stale` に更新する。
 - `out/` の既存成果を直接上書きする前に、対象名、版、検証結果、承認を確認する。可能なら成果物と共にビルド日時、source revision/commit、採用 inbox snapshot、検証状態を記録する。
@@ -96,13 +96,14 @@ ingestion と数学的執筆を分離し、受け入れが確定したスナッ�
 ## ツールチェーンと latexmk 契約
 
 - LaTeX、Typst、Pandoc 等をこの指示だけで固定しない。既存方式を優先し、新規案件では長期保守、定理・式の相互参照、索引、依存台帳との連携、日本語・数式組版、差分可読性、再現性を比較してユーザー確認後に最小構成を作る。
+- 長編日本語数学書の組版は、別要件またはユーザーの明示合意がなければ親 `AGENTS.md` の `bxjsbook` / upLaTeX + dvipdfmx の house-style 基準に従う。参照成果物が指定された場合は同基準の比較項目を一組として検証し、内容固有 macro を移植せず、actual-size と fit-width の render を確認する。
 - 合意前に大量のテンプレート、パッケージ、独自マクロを追加しない。独自マクロには意味と範囲を記録する。既存エンジンを uplatex から LuaLaTeX 等へ無断で変えない。
 - LaTeX/latexmk を採用する案件では、ローカル latexmk 4.83 の `-outdir`、`-auxdir`、`-emulate-aux-dir` 相当の分離機能を利用できる。`out_dir` 相当を `.workspace/build/out`、`aux_dir` 相当を `.workspace/build/aux` とする。
 - latexmk が生成する PDF、DVI、SyncTeX、log、aux、fls、fdb 等は、まず全て `.workspace/build/` 配下へ置く。`draft/` や `out/` を latexmk の直接 outdir にしない。
 - latexmk の終了コード成功、生成 PDF の存在と今回の更新、ログ、未解決参照、引用、フォント、ページを確認する。その後 PDF だけを `draft/` 内の一時名へコピーし、同一ファイルシステム上の rename 等で原子的に公開する。`STATUS` は公開 PDF と同じ検証結果を指すよう更新する。
 - 失敗時は古い PDF を最新とみなさず `STATUS` を `failed` または `stale` にし、`out/` は不変とする。完了条件を満たした draft PDF だけを明示的に `out/` へ promotion する。
 - clean は `.workspace/build/` 等の再生成領域に限定する。相対パス、`-cd`、BibTeX、MakeIndex、glossary、画像参照は案件の実文書で検証する。
-- 現時点では実文書がなく未検証のため、latexmkrc や build script は作らない。案件開始時に採用方式を確定し、`.workspace/tools/` に最小設定を作って実ビルドで検証する。
+- 新規案件で実文書と採用方式が未確定の段階では、latexmkrc や build script を先行作成しない。案件開始時に採用方式を確定し、`.workspace/tools/` に最小設定を作って実ビルドで検証する。
 
 ## 全体設計と標準ワークフロー
 
@@ -111,20 +112,20 @@ ingestion と数学的執筆を分離し、受け入れが確定したスナッ�
 3. 公理、推論規則、メタレベル規約、定義、既知事項、スコープ外依存を foundations に分類する。「明らか」「標準的」を未分類の前提にしない。
 4. 各定義・命題・補題・定理に安定した ID を付け、直接依存を登録し、使用前定義と循環参照を確認する。
 5. 原則として「動機・学習目標 → 定義 → 例・非例 → 命題・定理 → 証明 → 応用 → 節末要約 → 演習」の順に、下記の work unit 単位で章を書く。
-6. work unit を新規作成または変更するたびに、新規の語・記号、証明の各推論、参照先、例、演習の解答可能性を検証し、authoring 担当とは別の独立レビューを完了してから `reviewed` とする。
+6. work unit の完成時と semantic change 後の checkpoint で、新規の語・記号、証明の各推論、参照先、例、演習の解答可能性を検証し、authoring 担当とは別の独立レビューを完了してから `reviewed` とする。structural change と editorial change は親 `AGENTS.md` の分類に従って検査範囲を絞る。
 7. 依存グラフ、記号表、索引、相互参照を更新し、循環、重複定義、意味変化、前方依存、章間のギャップを全体検証する。
 8. 初学者が局所的に追えるか、後続の修士水準で必要な厳密さ・一般性を損なわないかをレビューする。
-9. `../MATH_PROSE_REVIEW.md` の全 phase を authoring 担当とは分けた read-only review phase として実施し、finding と再検証結果を private records に保存する。
-10. 受け入れ snapshot を再確認してビルドし、ログと全ページ表示を検証して `draft/` へ公開する。
+9. checkpoint では `../MATH_PROSE_REVIEW.md` の affected phase を authoring 担当とは分けた read-only review phase として実施し、finding と再検証結果を private records に保存する。配布・promotion 前には同文書の全 phase を実施する。
+10. WIP 制作中は変更箇所を incremental build し、checkpoint で受け入れ snapshot と影響範囲を再確認する。読者へ共有する draft または `out/` 候補ではログと全ページ表示を検証して公開する。
 11. 権利、ライセンス、配布範囲、不要物混入、直前の inbox 状態を確認し、承認後にだけ `out/` へ昇格する。
 
 ## work unit と制作サイクル
 
 - 追跡・制作・レビューの最小単位である work unit は、(1) definition chain、(2) theorem とその補題群および全 proof、(3) 相互に関連する example set、(4) 相互に関連する exercise set、(5) subsection のいずれかとする。依存台帳と review artifact には一意で安定した unit ID、範囲、直接依存、採用 input snapshot、source revision、状態を記録する。
-- work unit の新規作成または内容変更は、軽微に見える場合も affected unit のレビューを必須とする。定義、主張、証明、依存、意味、参照に波及する変更では、直接・間接の影響範囲を台帳から求め、影響を受けるすべての unit を `WIP` または `review required` に戻す。
-- 各制作サイクルは、unit の authoring、台帳・相互参照の更新、`../MATH_PROSE_REVIEW.md` に従う authoring 担当とは別の independent read-only review、finding の修正、同一 snapshot に対する再レビュー、通読可能な draft PDF の build・検証・公開、`STATUS` 更新までを一組とする。
-- independent review は affected unit ごとに行い、定義・主張・証明・例・演習・前後の接続、直接依存と下流影響を review artifact で追跡可能にする。複数 unit を一括確認しても、unit ごとの判定と finding を失わない。
-- `reviewed`、`WIP`、`review required` を混同しない。`reviewed` は記録された input snapshot と source revision にだけ有効であり、入力、本文または依存の変更後に自動継承しない。
+- 細かな編集は checkpoint まで batch する。work unit の新規作成、完成、semantic change では affected unit の review を必須とし、定義、主張、証明、依存、意味、参照に波及する変更では直接・間接の影響範囲を台帳から求め、影響を受ける unit を `WIP` または `review required` に戻す。structural change は対象を絞った検査、editorial change は差分確認と incremental build で再検証してよい。
+- 各 checkpoint は、unit の authoring、必要な台帳・相互参照の更新、変更分類に応じた `../MATH_PROSE_REVIEW.md` の review、finding の修正、同一 snapshot に対する再検証、必要な draft PDF の build・検証・公開、`STATUS` 更新を一組とする。
+- semantic change の independent review は affected unit ごとに行い、定義・主張・証明・例・演習・前後の接続、直接依存と下流影響を review artifact で追跡可能にする。複数 unit を一括確認しても、unit ごとの判定と finding を失わない。
+- `reviewed`、`WIP`、`review required` を混同しない。`reviewed` は記録された input snapshot と source revision に対して有効とする。semantic change または意味へ波及する structural change 後は自動継承せず、editorial change では差分と再検証結果を記録して status を更新できる。
 
 ## 数学文章レビューと promotion gate
 
@@ -140,7 +141,7 @@ ingestion と数学的執筆を分離し、受け入れが確定したスナッ�
 - 各章の冒頭に前提、学習目標、後続章での役割、末尾に要約、依存の追加分、演習を置く。定義直後に典型例と非例を示し、直観を定義や証明の代わりにしない。
 - 定義、命題、補題、定理、系、例、反例、注意、演習を区別する。すべての formal assertion は意味に対応する番号付き semantic environment に置き、一意で安定した label を付ける。説明的 prose は動機・直観・接続に使えるが、formal statement または proof の代わりにしない。
 - 定義は型、量化範囲、条件、同値定式化を明確にし、定義前に本文、見出し、caption、例、演習を含むどの場所でも本質的な意味で使わない。
-- 定理は仮定と結論を明示し、すべての proof を明示的な proof environment に置く。直前の theorem-like statement を証明する通常の proof は無番号とし、proof 自体の label や対象 statement への明示的な cross-reference を要求しない。statement から離れた proof、複数ある proof、代替証明、proof 自体を他所から参照する場合に限り、番号付き proof environment と一意で安定した label を用い、対象 statement を label により示す。必要な statement、番号付き proof、definition、equation 間の参照は label による cross-reference を使い、prose だけの形式的証明を作らない。
+- 定理は仮定と結論を明示し、すべての proof を明示的な proof environment に置く。直前の theorem-like statement を証明する通常の proof は、見出しを原則として「証明」とする bare な無番号 proof とし、proof 番号、proof 自体の label、対象 statement への明示的な cross-reference を付けない。statement から離れた証明・解答には対象 statement を label で示す無番号の説明見出しを用いてよい。番号付き proof は、複数の証明・別証明を区別する場合、または proof 自体を他所から参照する場合に限り、一意で安定した label と対象 statement への cross-reference を持たせる。必要な statement、番号付き proof、definition、equation 間の参照は label による cross-reference を使い、prose だけの形式的証明を作らない。
 - proof は、非自明な各推論、各含意の向き、場合分けの網羅性と各場合、計算の各変形根拠、使用する外部結果の仮定と適用条件を明示する。「証明を省略」「同様」「明らか」「容易」「標準的」だけで step または case を代替しない。proof の十分性は語数やページ数ではなく、reviewer が statement から結論までの dependency trace を先行する定義・公理・結果・直接導出に対応させて再構成できることで判定する。
 - 計算証明では変形根拠、収束、定義域、零除算回避、極限と演算の交換条件を示す。存在、well-definedness、一意性を必要な順に証明し、反例と端点で仮定を検討する。
 - AI 生成の証明、例、反例は候補として扱い、全推論と依存を独立検証するまで確定しない。
@@ -189,10 +190,10 @@ ingestion と数学的執筆を分離し、受け入れが確定したスナッ�
 - 未定義語・記号がなく、非自明な結果は原則証明済みで、例外は承認済みスコープ外依存として出典、仮定、使用箇所が明示されている。
 - 依存台帳に欠落、循環、前方論証依存がなく、公理、規約、既知事項、スコープ外事項が分類されている。
 - `../MATH_PROSE_REVIEW.md` の独立 read-only review と再レビューが完了し、definition-before-use violation、未追跡依存、unresolved blocking gap、open blocking finding がすべて 0 件である。
-- すべての formal assertion が種類に応じた番号付き semantic environment と一意で安定した label を持ち、すべての proof が明示的な proof environment に置かれている。直前の statement に続く通常の無番号 proof には proof 自体の label を要求せず、それ以外の番号を要する proof は一意で安定した label と証明対象への cross-reference を持つ。prose だけの formal statement・proof と再構成不能な proof dependency trace が 0 件である。
+- すべての formal assertion が種類に応じた番号付き semantic environment と一意で安定した label を持ち、すべての proof が明示的な proof environment に置かれている。直前の statement に続く通常の proof は原則「証明」の bare な無番号 proof で不要な proof 番号・label・対象参照がなく、離れた証明・解答と番号付き proof は前記規則どおり必要な対象参照・label を持つ。prose だけの formal statement・proof と再構成不能な proof dependency trace が 0 件である。
 - 各章が定義、例・非例、命題・定理、証明、応用、要約、演習の教育的流れを持ち、演習の難度、依存、ヒント・解答方針が記録されている。
 - 記号表、用語、索引、参考文献、相互参照が本文と一致し、初学者への局所説明と修士水準までの全体整合性がレビュー済みである。
-- 合意した手順で再生成でき、警告、参照、目次、数式、フォント、全ページのレイアウト検証を通過している。
+- 合意した手順で再生成でき、警告、参照、目次、数式、フォント、全ページのレイアウト検証を通過し、参照成果物がある場合は house style を一組として actual-size と fit-width の両方で比較済みである。
 - 採用 inbox snapshot、source revision、検証結果、承認が記録され、最終成果だけが `out/` に明示的に昇格されている。
 - 各 affected work unit の independent review が記録され、draft の `reviewed` unit に gap・未定義・壊れた参照がなく、`WIP` は隔離・明示され、`out/` の `WIP` と unresolved blocking は 0 件である。
 - 配布物に秘密情報や権利不明素材がなく、公開・配布条件が確認されている。

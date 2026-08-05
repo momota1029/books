@@ -36,9 +36,9 @@ severity は次のように分類する。
 レビューの単位となる work unit は、subsection、定理とその証明の cluster、一続きの導出、exercise set、translation batch など、依存関係と変更影響を追跡できるまとまりとして、制作前または分割時に定義する。
 各 unit の範囲、source revision、依存先、状態、最終 review revision を review artifact に記録する。
 
-- 各 unit の完成時、およびその後のあらゆる revision/change ごとに、affected unit と影響範囲を review する。label/ref、notation、punctuation、formatting、translation wording の変更も例外にせず、レビューを原稿末尾の一回だけにまとめない。
-- 各 work cycle で、authoring 担当とは分けた independent review を行う。小さな変更でも affected unit を再 review し、その直接依存と直接の利用箇所への波及を確認する。純粋に編集上の小変更では checklist を affected correctness、definition、label/ref、rendering の項目に限定してよいが、review 自体を省略してはならない。
-- draft PDF を公開または読者へ共有する前に、その snapshot に含まれるすべての unit を review する。公開済み draft を何らかの変更後に再公開する場合は、affected unit の再 review を完了し、変更後 snapshot に対する gate と review status を更新する。
+- WIP 制作中、checkpoint、配布・promotion 前の gate と、semantic、structural、editorial の変更分類は親 `AGENTS.md` に従う。細かな編集は checkpoint まで batch し、各 save または revision ごとに同じ review を反復しない。
+- 各 unit の完成時と semantic change 後の checkpoint で、affected unit、その直接依存、直接の利用箇所への波及を review する。authoring 担当とは分けた independent review は semantic change に必須とし、structural change では意味・定義順序・依存・読者解釈へ波及する範囲に限定して行う。editorial change は差分確認、関連する incremental build、必要な変更ページの render で再検証し、independent review を再度開かなくてよい。
+- draft PDF を公開または読者へ共有する前に、その snapshot に含まれるすべての unit の status と必要な review を確定する。公開済み draft を変更後に再公開する場合は、変更分類に応じた affected scope の再検証を完了し、変更後 snapshot に対する gate と review status を更新する。`unreviewed internal WIP` と snapshot、未通過 gate、未完了範囲を明記して配布対象から隔離した private preview は、全体 review 前にも生成してよい。
 - `reviewed`、`unreviewed`、`WIP` を project の `STATUS` と成果物本文の双方で識別し、snapshot と表示が一致していることを確認する。open blocking finding がある unit を `reviewed` と表示してはならない。
 - draft は、読者が完成範囲と未完成範囲を正しく判断できる可読品質にする。未完成の後半は明示した placeholder または roadmap として隔離し、未完成の証明を完成済みの本文のように掲載しない。
 - `out/` への promotion 前には、unit ごとの既存 review に依存せず、成果物全体を一つの snapshot として全 phase で再 review する。
@@ -91,7 +91,7 @@ severity は次のように分類する。
 
 証明を含意ごとに分解し、次を一つずつ検証する。
 
-- すべての proof を明示した proof environment に置く。直前の theorem-like statement を証明する通常の proof は無番号とし、proof 自体の `label` や対象 statement への明示的な cross-reference を要求しない。statement から離れた proof、複数ある proof または別証明、proof 自体を他所から参照する場合に限り、自動生成番号と一意で安定した `label` のある proof environment を使い、対象 statement を `label` により示す。
+- すべての proof を明示した proof environment に置く。直前の theorem-like statement を証明する通常の proof は、見出しを原則として「証明」とする bare な無番号 proof environment とし、proof 番号、proof 自体の `label`、対象 statement への明示的な cross-reference を付けない。statement から離れた証明・解答には、対象 statement を `label` で示す無番号の説明見出しを用いてよい。自動生成番号と一意で安定した `label` のある proof environment は、複数の証明・別証明を区別する場合、または proof 自体を他所から参照する場合に限り、対象 statement も `label` で示す。
 - 各 proof について、goal、hypotheses と変数の domain、construction または必要な intermediate claim、各 implication の justification、尽くすべき cases、target conclusion を識別する。末尾では得られた結論が target conclusion であることを明示する。
 - 各 implication の根拠が定義、先行結果、外部定理、または明示した直接計算に対応するか。
 - 暗黙の補題を必要としていないか。原文と合意した依存から妥当に復元できる非自明な中間推論は、読者が追えるよう具体的に展開する。必要なら statement と証明を追加するか、正確な外部依存として記録する。再利用する、または構造上独立した非自明な intermediate claim は、番号と `label` のある lemma として分離する。成立しない gap や原文の誤りを創作によって修正せず、source issue と訳注または review record で追跡する。
@@ -124,8 +124,10 @@ unit ごとに statement、proof、definition、label、ref の件数を集計�
 - `label` の一意性、`ref` の存在と参照対象、定理・番号付き proof・式・定義・図表番号、文中の参照名を build 結果と照合する。未定義・重複 label、broken ref、orphan proof を 0 件にする。
 - project の house macro は定義、引数、意味、scope を確認し、未定義 macro、意味の衝突、表示だけで意味を担う用法を残さない。
 - TeX の compile 成功だけで数式の意味が正しいとは判定しない。PDF 上でも theorem、番号付き proof、equation、definition の番号と参照、無番号 proof と直前 statement の対応、欠落 glyph、改行、式の切断、図表との対応を目視確認する。
+- 参照する既存成果物が指定された場合は、判型、実効 font size、baseline、版面、段落 indent、見出し階層、theorem/proof、目次・索引、header/footer を一組として比較する。参照元の内容固有 macro は移植せず、point 数または page への収まりだけで大小を判定せず、actual-size と fit-width の両方の render で本文密度、可読性、階層と柱を確認する。
 - upLaTeX 文書で日本語索引を作る場合は、原則として upmendex を用いる。別の索引処理系は、案件要件が必要とする場合、またはユーザーが明示的に決定した場合に限り採用し、その決定を review artifact に記録する。
-- self-contained な書籍、長編講義ノート、長編数学ノートは、明示的な scope 除外がない限り、収録章節を案内する目次と巻末の用語索引を持つことを確認する。build gate では目次と索引の生成成功、採用した目次処理系の artifact（LaTeX なら `.toc`）と索引処理系の入力・出力・ログ（makeidx/upmendex なら `idx`/`ind`/`ilg`）の存在と非空性、索引処理の warning/error がないこと、索引の目次掲載、ページ参照、PDF bookmark と実際の render の一致を検証する。
+- 日本語索引の `see` は別名・表記揺れから正規項目への参照とし、project 全体で矢印等の別方式を明記しない限り、全角読点を用いた「別名，正規項目を見よ」の順で組む。「別名, を見よ 正規項目」のような英語順は不可とし、`seename` の訳語だけでなく formatter と語順を検査する。正規項目だけが page 参照を持ち、別名・表記揺れは存在する正規項目への `see` 参照だけを持つことを確認する。`seealso` を採用する場合は関連項目への参照として別に扱い、「項目，関連項目も見よ」等の project 共通表示を定める。参照元項目は自身の page 参照を併記してよく、別名専用の制約を `seealso` に適用しない。
+- self-contained な書籍、長編講義ノート、長編数学ノートは、明示的な scope 除外がない限り、収録章節を案内する目次と巻末の用語索引を持つことを確認する。build gate では目次と索引の生成成功、採用した目次処理系の artifact（LaTeX なら `.toc`）と索引処理系の入力・出力・ログ（makeidx/upmendex なら `idx`/`ind`/`ilg`）の存在と非空性、索引処理の warning/error がないこと、索引の目次掲載、ページ参照、PDF bookmark と実際の render の一致を検証する。さらに、生成されたすべての `see` と、採用時にはすべての `seealso` について索引入力・出力と PDF の件数一致、各 formatter の句読点と語順、`see` 別名への page 参照 0 件、未解決 target 0 件、孤立した「を見よ」「も見よ」と不適切な段・page 分割 0 件を確認する。長い多言語項目を含む独立 fixture は採用する formatter ごとに用意し、それぞれの表示と分割防止を再現する。
 
 ## phase 6b: 図表の原図照合と render audit
 
@@ -166,6 +168,7 @@ draft に完成 unit を含める場合、各 unit は次の unit gate を満た
 - [ ] unjustified step が 0 件である。
 - [ ] unlabeled formal claim が 0 件である。
 - [ ] numbering error と reference error が 0 件である。
+- [ ] 直前の statement に続く通常の proof が、原則「証明」の見出しを持つ bare な無番号 proof であり、不要な proof 番号、proof label、対象参照が 0 件である。離れた証明・解答の無番号説明見出しには対象参照があり、番号付き proof は複数・別証明または proof 自体が参照対象となる場合に限定され、必要な proof label と対象参照を持つ。
 
 WIP は draft に限り、状態、未完了箇所、依存不能範囲を `STATUS` と本文で明示して完成 unit から隔離できる。
 WIP を `reviewed` の本文に混ぜず、`out/` では WIP を 0 件にする。
@@ -180,10 +183,12 @@ WIP を `reviewed` の本文に混ぜず、`out/` では WIP を 0 件にする�
 - [ ] definition-before-use violation が 0 件である。
 - [ ] unjustified step と unlabeled formal claim が 0 件である。
 - [ ] statement、proof、definition、label、ref の件数を記録し、statement と proof の構造上の対応、番号付き proof に必要な label・参照、その他の label・参照に欠落がなく、未定義・重複 label、broken ref、orphan proof が 0 件である。
+- [ ] 通常の直後 proof、離れた証明・解答、番号付き proof の見出し・番号・label・対象参照が phase 4 の規則に一致している。
 - [ ] WIP、unreviewed unit、未完成の proof が 0 件である。
 - [ ] 未追跡の仮定と依存が 0 件である。
 - [ ] truth status、source fidelity、文書種別ごとの追加検査が完了している。
 - [ ] build、参照、数式表示の検査が完了している。
+- [ ] 索引の全 `see` と、採用時には全 `seealso` が phase 6 の各意味と日本語表示に従い、`see` の正規項目と別名の page/参照分担、各 target の存在、各 formatter の件数・句読点・語順・段・page 分割、および formatter ごとの独立 fixture の gate を満たしている。
 - [ ] 成果物全体について全 phase の再 review と independent re-review が完了している。
 - [ ] review artifact の保存先が private local area であり、public 差分に混入していない。
 
