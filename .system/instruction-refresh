@@ -1,0 +1,247 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+export LC_ALL=C
+umask 077
+
+usage() {
+  printf 'Usage: %s check [--scope <path>]\n       %s ack --scope <path>\n' \
+    "$0" "$0" >&2
+}
+
+fail() {
+  printf 'instruction-refresh: %s\n' "$1" >&2
+  exit 1
+}
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+repo_root="$(git -C "$script_dir/.." rev-parse --show-toplevel 2>/dev/null)" || \
+  fail 'repository root is unavailable'
+repo_root="$(cd -- "$repo_root" && pwd -P)"
+cd -- "$repo_root"
+
+command_name=${1:-}
+case "$command_name" in
+  check|ack)
+    shift
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac
+
+scope_arg=
+while (( $# )); do
+  case "$1" in
+    --scope)
+      (( $# >= 2 )) || {
+        usage
+        exit 2
+      }
+      scope_arg=$2
+      shift 2
+      ;;
+    *)
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+if [[ $command_name == ack && -z $scope_arg ]]; then
+  usage
+  exit 2
+fi
+
+session_token=${CODEX_THREAD_ID:-${BOOKS_INSTRUCTION_SESSION:-}}
+[[ -n $session_token ]] || \
+  fail 'CODEX_THREAD_ID is unavailable; a per-thread state cannot be selected'
+session_key=$(printf '%s' "$session_token" | sha256sum | awk '{print $1}')
+
+git_dir=$(git rev-parse --absolute-git-dir 2>/dev/null) || \
+  fail 'Git metadata directory is unavailable'
+git_dir=$(cd -- "$git_dir" && pwd -P) || \
+  fail 'Git metadata directory cannot be resolved'
+state_root=$git_dir/codex-instruction-refresh
+if [[ -e $state_root || -L $state_root ]]; then
+  [[ -d $state_root && ! -L $state_root ]] || \
+    fail 'per-thread state directory is unsafe'
+else
+  mkdir -- "$state_root" || fail 'per-thread state directory cannot be created'
+fi
+[[ -d $state_root && ! -L $state_root ]] || \
+  fail 'per-thread state directory is unsafe'
+state_file=$state_root/$session_key.state
+
+recorded_scope=
+if [[ -f $state_file && ! -L $state_file ]]; then
+  recorded_scope=$(awk -F '\t' '$1 == "SCOPE" { print $2; exit }' \
+    "$state_file")
+fi
+
+if [[ -z $scope_arg ]]; then
+  if [[ -n $recorded_scope ]]; then
+    scope_arg=$repo_root/$recorded_scope
+  else
+    scope_arg=$PWD
+  fi
+fi
+
+[[ -e $scope_arg ]] || fail 'scope does not exist'
+scope_real=$(realpath -e -- "$scope_arg") || fail 'scope cannot be resolved'
+if [[ -f $scope_real ]]; then
+  scope_real=$(dirname -- "$scope_real")
+fi
+[[ -d $scope_real ]] || fail 'scope is not a directory or regular file'
+case "$scope_real/" in
+  "$repo_root/"*) ;;
+  *) fail 'scope is outside this repository' ;;
+esac
+
+if [[ $scope_real == "$repo_root" ]]; then
+  scope_relative=.
+else
+  scope_relative=${scope_real#"$repo_root"/}
+fi
+
+declare -a instruction_paths=()
+declare -A instruction_seen=()
+
+add_instruction() {
+  local relative_path=$1
+  [[ -n ${instruction_seen["$relative_path"]+present} ]] && return
+  [[ -f $repo_root/$relative_path && ! -L $repo_root/$relative_path ]] || \
+    fail "instruction source is missing or unsafe: $relative_path"
+  instruction_seen["$relative_path"]=1
+  instruction_paths+=("$relative_path")
+}
+
+add_instruction AGENTS.md
+add_instruction WORKFLOW_ROUTING.md
+add_instruction JAPANESE_WRITING.md
+add_instruction MATH_PROSE_REVIEW.md
+add_instruction .system/instruction-refresh
+add_instruction .githooks/post-merge
+
+cursor=$repo_root
+if [[ $scope_relative != . ]]; then
+  IFS=/ read -r -a scope_parts <<<"$scope_relative"
+  for scope_part in "${scope_parts[@]}"; do
+    cursor=$cursor/$scope_part
+    if [[ -f $cursor/AGENTS.md ]]; then
+      add_instruction "${cursor#"$repo_root"/}/AGENTS.md"
+    fi
+  done
+fi
+
+write_manifest() {
+  local destination=$1
+  local relative_path file_hash file_mode
+
+  {
+    printf 'VERSION\t2\n'
+    printf 'SCOPE\t%s\n' "$scope_relative"
+    for relative_path in "${instruction_paths[@]}"; do
+      file_hash=$(sha256sum -- "$repo_root/$relative_path" | awk '{print $1}')
+      file_mode=$(stat -c '%f' -- "$repo_root/$relative_path")
+      printf 'FILE\t%s\t%s\t%s\n' \
+        "$file_hash" "$file_mode" "$relative_path"
+    done
+  } >"$destination"
+}
+
+current_manifest=$(mktemp "$state_root/.current.XXXXXX")
+verification_manifest=$(mktemp "$state_root/.verify.XXXXXX")
+cleanup() {
+  rm -f -- "$current_manifest" "$verification_manifest"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+write_manifest "$current_manifest"
+write_manifest "$verification_manifest"
+cmp -s -- "$current_manifest" "$verification_manifest" || \
+  fail 'instruction sources changed while being sampled; retry'
+
+fingerprint=$(sha256sum -- "$current_manifest" | awk '{print $1}')
+
+show_current_sources() {
+  local relative_path
+  printf 'instruction-refresh: current sources for scope %s:\n' "$scope_relative"
+  for relative_path in "${instruction_paths[@]}"; do
+    printf '  %s\n' "$relative_path"
+  done
+}
+
+report_change() {
+  local old_scope= old_kind old_hash old_mode old_path
+  local new_kind new_hash new_mode new_path path
+  declare -A old_hashes=()
+  declare -A new_hashes=()
+
+  if [[ -f $state_file && ! -L $state_file ]]; then
+    old_scope=$(awk -F '\t' '$1 == "SCOPE" { print $2; exit }' "$state_file")
+    while IFS=$'\t' read -r old_kind old_hash old_mode old_path; do
+      [[ $old_kind == FILE ]] || continue
+      if [[ -z $old_path ]]; then
+        old_path=$old_mode
+        old_mode=unknown
+      fi
+      [[ -n $old_path ]] || continue
+      old_hashes["$old_path"]=$old_hash:$old_mode
+    done <"$state_file"
+  fi
+  while IFS=$'\t' read -r new_kind new_hash new_mode new_path; do
+    [[ $new_kind == FILE && -n $new_path ]] || continue
+    new_hashes["$new_path"]=$new_hash:$new_mode
+  done <"$current_manifest"
+
+  if [[ -z $old_scope ]]; then
+    printf 'instruction-refresh: this thread has no acknowledged instruction snapshot\n'
+  elif [[ $old_scope != "$scope_relative" ]]; then
+    printf 'instruction-refresh: scope changed: %s -> %s\n' \
+      "$old_scope" "$scope_relative"
+  else
+    printf 'instruction-refresh: instruction generation changed\n'
+  fi
+
+  for path in "${!old_hashes[@]}"; do
+    if [[ -z ${new_hashes["$path"]+present} ]]; then
+      printf '  removed: %s\n' "$path"
+    elif [[ ${old_hashes["$path"]} != "${new_hashes["$path"]}" ]]; then
+      printf '  modified: %s\n' "$path"
+    fi
+  done
+  for path in "${!new_hashes[@]}"; do
+    if [[ -z ${old_hashes["$path"]+present} ]]; then
+      printf '  added: %s\n' "$path"
+    fi
+  done
+
+  show_current_sources
+  printf '%s\n' \
+    'instruction-refresh: stop before the next action, reread every current source above,' \
+    'instruction-refresh: reassess the active task and plan, then run ack for this scope.'
+}
+
+case "$command_name" in
+  check)
+    if [[ ! -f $state_file || -L $state_file ]] || \
+      ! cmp -s -- "$state_file" "$current_manifest"; then
+      report_change
+      exit 3
+    fi
+    printf 'instruction-refresh: current %s for scope %s\n' \
+      "$fingerprint" "$scope_relative"
+    ;;
+  ack)
+    state_tmp=$(mktemp "$state_root/.state.XXXXXX")
+    cp -- "$current_manifest" "$state_tmp"
+    mv -f -- "$state_tmp" "$state_file"
+    printf 'instruction-refresh: acknowledged %s for scope %s\n' \
+      "$fingerprint" "$scope_relative"
+    ;;
+esac

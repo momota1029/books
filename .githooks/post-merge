@@ -11,3 +11,44 @@ repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || {
   printf 'post-merge: repository-mode excludes could not be synchronized\n' >&2
   exit 1
 }
+
+old_head=$(git rev-parse --verify 'ORIG_HEAD^{commit}' 2>/dev/null || true)
+new_head=$(git rev-parse --verify 'HEAD^{commit}' 2>/dev/null || true)
+instruction_change=0
+declare -a instruction_changes=()
+
+if [[ -n $old_head && -n $new_head ]]; then
+  while IFS= read -r -d '' changed_path; do
+    case "$changed_path" in
+      AGENTS.md|*/AGENTS.md|WORKFLOW_ROUTING.md|JAPANESE_WRITING.md|\
+      MATH_PROSE_REVIEW.md|.system/instruction-refresh|.githooks/post-merge)
+        instruction_change=1
+        instruction_changes+=("$changed_path")
+        ;;
+    esac
+  done < <(git diff --no-renames --name-only -z "$old_head" "$new_head" --)
+fi
+
+if (( instruction_change )); then
+  printf 'post-merge: instruction sources changed:\n' >&2
+  printf '  %s\n' "${instruction_changes[@]}" >&2
+  printf '%s\n' \
+    'post-merge: active Codex threads will reassess them at the next action boundary.' \
+    >&2
+fi
+
+refresh="$repo_root/.system/instruction-refresh"
+if [[ -n ${CODEX_THREAD_ID:-} && -x $refresh ]]; then
+  if refresh_output=$("$refresh" check 2>&1); then
+    :
+  else
+    refresh_status=$?
+    if (( refresh_status == 3 )); then
+      printf '%s\n' "$refresh_output" >&2
+    else
+      printf 'post-merge: instruction refresh check failed:\n%s\n' \
+        "$refresh_output" >&2
+      exit 1
+    fi
+  fi
+fi

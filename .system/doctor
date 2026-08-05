@@ -29,9 +29,11 @@ required_scripts=(
   .githooks/pre-push
   .system/bootstrap
   .system/doctor
+  .system/instruction-refresh
   .system/verify-private-remote
   .system/repository-mode
   .system/sync-mode-excludes
+  .system/test-instruction-refresh
   .system/test-repository-mode
   .system/new-book-project
   .system/new-paper-project
@@ -62,6 +64,8 @@ done
 # the real repository state unchanged.
 .system/test-repository-mode >/dev/null 2>&1 || \
   fail "offline repository mode test failed"
+.system/test-instruction-refresh >/dev/null 2>&1 || \
+  fail "offline instruction refresh test failed"
 .system/test-new-paper-project >/dev/null 2>&1 || \
   fail "offline new paper project test failed"
 

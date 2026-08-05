@@ -12,10 +12,12 @@ WORKFLOW_ROUTING.md
 .githooks/pre-push
 .system/bootstrap
 .system/doctor
+.system/instruction-refresh
 .system/new-book-project
 .system/new-paper-project
 .system/repository-mode
 .system/sync-mode-excludes
+.system/test-instruction-refresh
 .system/test-new-paper-project
 .system/test-repository-mode
 .system/verify-private-remote

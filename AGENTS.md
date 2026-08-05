@@ -40,6 +40,18 @@ private copy を正本にせず、案件固有の adapter が必要なら差分�
 案件間の同品質は、同じ versioned 規約、同じ quality gates、同じ promotion 条件を適用して担保する。
 tool は検査の再現性と漏れの低減に使うが、数学的・翻訳上・権利上の内容の正しさを絶対に保証するものとは扱わない。
 
+## 実行中スレッドへの規約更新反映
+
+`AGENTS.md` 等の instruction source は session 開始時の読み込みだけに固定せず、実行中に merge、pull、user・別担当の編集で変わり得る共有状態として扱う。Git hook は既存会話へ prompt を直接注入できないため、各 Codex thread は `.system/instruction-refresh` の thread-local な既読世代と action boundary で照合する。
+
+- thread の最初の実作業前に、対象 scope に適用される root と各階層の `AGENTS.md`、および checker が列挙する共通 instruction source を完全に読み、`.system/instruction-refresh ack --scope <対象 path>` でその世代を既読として記録する。既読状態は `CODEX_THREAD_ID` ごとに Git metadata 内へ保存し、別 thread と共有しない。user に command 実行を求めず agent 自身が行う。
+- 編集開始前、work unit/checkpoint、task または scope の切替、担当・ownership の移管、sub-agent への委譲、長時間の build・test・調査、進捗報告、turn の最終報告、draft の共有、promotion、外部操作の直前に `.system/instruction-refresh check --scope <対象 path>` を実行する。同じ世代・scope のまま連続する細かな編集の各 keystroke では反復しない。
+- merge または pull を実行した thread は、post-merge の通知有無にかかわらず次の action 前に check する。別 terminal や別担当が merge した場合も、各 active thread は次の action boundary の check で検出する。実行中の atomic command を途中で中断する保証はなく、完了後の最初の boundary で反映する。
+- check が未初期化または変更を返した場合は、新しい編集、commit、送信等へ進まず、列挙された現在の instruction source をすべて読み直す。差分が active task の scope、route、禁止事項、品質 gate、担当、計画、成果物状態へ与える影響を再評価し、必要なら draft/status と作業計画を更新してユーザーへ路線変更を報告した後に同じ scope を ack する。変更前の instruction に基づく承認、review、検査結果を、変更後も有効と自動的に仮定しない。
+- instruction の更新は、上位の system/developer/user instruction を上書きせず、破壊的操作、外部送信、公開等の新しい権限を遡及的に与えない。新旧規約の衝突、途中成果との非互換、または安全に移行できない変更があれば作業を停止し、影響と選択肢をユーザーへ報告する。
+- `.system/instruction-refresh` 自体または post-merge hook の更新も世代に含める。shared tool の変更を検出した場合は、本ファイルの bootstrap/doctor 規則も適用する。
+- 本規則が merge される前から動いており `.system/instruction-refresh` を一度も読み込んでいない既存 thread へは、repository 内の仕組みだけで polling を遡及開始できない。その thread には一度だけ user または外側の harness から再読・check を指示するか、新しい thread へ引き継ぐ。導入後に既読世代を持つ thread は通常の action boundary で自動的に追随する。
+
 ## project の配置と継承
 
 制作領域は、その領域に置かれた共有 `AGENTS.md` と本ファイルを継承し、案件ごとの private copy を正本にしない。

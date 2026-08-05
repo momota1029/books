@@ -120,6 +120,8 @@ git commit
 
 更新後の `bootstrap` または `doctor` が失敗した場合は push せず、原因を解消して再実行します。
 
+`AGENTS.md`、文章・レビュー規範、routing 規範が merge で変わると、post-merge hook はその場で通知します。実行中の各 Codex thread はスレッド別の既読世代を保持し、checkpoint、task 切替、長時間処理、進捗・最終報告等の action boundary で `.system/instruction-refresh` により再確認します。変更時は現在適用される規約を読み直してから計画と作業路線を更新するため、ある thread の確認が別 thread の通知を消すことはありません。hook から既存会話へ直接割り込みを注入するものではなく、実行中の command が終わった次の boundary で反映されます。この確認 command も通常はエージェント自身が実行し、ユーザーが操作する必要はありません。ただし、この規則を取り込む前から動いていて checker を一度も読み込んでいない thread だけは自力で polling を開始できないため、一度だけ再読を指示するか新しい thread へ引き継ぎます。
+
 ## 6. public mode へ戻す
 
 ```sh
