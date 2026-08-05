@@ -21,7 +21,7 @@ repository mode は clone ごとの local Git config `books.repositoryMode` に�
 
 public mode で Git 管理できるのは、共有する structure、rules、generic code など、`.public-files` allowlist に一致し privacy review を通過したファイルだけです。通常の `git add`、`git commit`、`git push` を使えますが、pre-commit hook は index を、pre-push hook は送信対象の commit tree を検査します。
 
-案件名、原資料、原稿、翻訳、ノート、PDF、manifest、ログ、画像、案件固有の設定や tool、および `inbox/`、`draft/`、`out/`、`.workspace/` や直接の book project は、public mode では stage、commit、push できません。
+案件名、原資料、原稿、翻訳、ノート、PDF、manifest、ログ、画像、案件固有の設定や tool、および `inbox/`、`draft/`、`out/`、`.workspace/`、直接の book project、`papers/writing/`・`papers/submitted/` 直下の論文 project は、public mode では stage、commit、push できません。
 
 現在の公開 remote に対して private mode への切替を試みると失敗します。public repository を private 作業用 remote として承認することはありません。
 
@@ -158,5 +158,15 @@ private 作業から得た generic な system 改善は、clean な public clone
 - [運用・公開境界](AGENTS.md)
 - [日本語文章規範](JAPANESE_WRITING.md)
 - [数学文章レビュー規範](MATH_PROSE_REVIEW.md)
+
+## 9. 論文 project の作成
+
+数学論文の新規 project は、手作業で構造を複製せず、repository root から次の command で `papers/writing/` の直接の子として作成します。
+
+```sh
+.system/new-paper-project <paper-id>
+```
+
+各 project には `inbox/`、`draft/`、`out/` と、canonical source・台帳・build 領域を分離した `.workspace/` が作られます。証明・例集、日本語論文、英語論文、投稿 bundle の制作、レビュー、投稿後に `papers/submitted/` へ移す条件は、[数学論文執筆・投稿ガイド](papers/AGENTS.md)に従います。
 
 ここに記載した `.system/` scripts は system の公開 interface です。

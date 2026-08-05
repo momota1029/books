@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+export LC_ALL=C
+export GIT_CONFIG_GLOBAL=/dev/null
+export GIT_CONFIG_SYSTEM=/dev/null
+
+source_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+test_root=$(mktemp -d)
+
+cleanup() {
+  if [[ -n ${test_root:-} && -d $test_root ]]; then
+    rm -rf -- "$test_root"
+  fi
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+fail() {
+  printf 'not ok %s - %s\n' "$1" "$2" >&2
+  exit 1
+}
+
+pass() {
+  printf 'ok %s - %s\n' "$1" "$2"
+}
+
+expect_failure() {
+  if "$@" >/dev/null 2>&1; then
+    return 1
+  fi
+}
+
+repo_dir=$test_root/repository
+mkdir -p "$repo_dir/.system" "$repo_dir/papers/writing" \
+  "$repo_dir/papers/submitted"
+cp -- "$source_root/.system/new-paper-project" \
+  "$source_root/.system/sync-mode-excludes" "$repo_dir/.system/"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$repo_dir/.system/doctor"
+printf '%s\n' '# placeholder' >"$repo_dir/papers/writing/.gitignore"
+printf '%s\n' '# placeholder' >"$repo_dir/papers/submitted/.gitignore"
+chmod +x "$repo_dir/.system/new-paper-project" \
+  "$repo_dir/.system/sync-mode-excludes" "$repo_dir/.system/doctor"
+
+git init -q "$repo_dir"
+cd "$repo_dir"
+git config --local user.name 'Paper Project Test'
+git config --local user.email 'paper-project@example.invalid'
+git config --local books.repositoryMode public
+git add -- .system papers
+git commit -q -m 'test fixture'
+.system/sync-mode-excludes public >/dev/null
+
+if .system/new-paper-project alpha >/dev/null &&
+  [[ -d papers/writing/alpha/inbox ]] &&
+  [[ -d papers/writing/alpha/draft ]] &&
+  [[ -d papers/writing/alpha/out ]] &&
+  [[ -d papers/writing/alpha/.workspace/source ]] &&
+  [[ -d papers/writing/alpha/.workspace/records ]] &&
+  [[ -d papers/writing/alpha/.workspace/tools ]] &&
+  [[ -d papers/writing/alpha/.workspace/build ]] &&
+  [[ -d papers/writing/alpha/.workspace/cache ]] &&
+  [[ -d papers/writing/alpha/.workspace/tmp ]] &&
+  [[ -d papers/writing/alpha/.workspace/logs ]] &&
+  [[ -d papers/writing/alpha/.workspace/locks ]] &&
+  [[ $(<papers/writing/alpha/.workspace/system-version) == \
+    $(git rev-parse --verify 'HEAD^{commit}') ]] &&
+  git check-ignore --no-index -q -- papers/writing/alpha/; then
+  pass 1 'public project creation and privacy guard'
+else
+  fail 1 'public project creation and privacy guard'
+fi
+
+if expect_failure .system/new-paper-project alpha &&
+  expect_failure .system/new-paper-project ../escape &&
+  expect_failure .system/new-paper-project submitted &&
+  [[ ! -e papers/escape ]] &&
+  [[ ! -e papers/writing/submitted ]]; then
+  pass 2 'invalid and duplicate target rejection'
+else
+  fail 2 'invalid and duplicate target rejection'
+fi
+
+mv -- papers papers-real
+ln -s -- papers-real papers
+if expect_failure .system/new-paper-project symlinked &&
+  [[ ! -e papers-real/writing/symlinked ]]; then
+  pass 3 'symlinked project root rejection'
+else
+  fail 3 'symlinked project root rejection'
+fi
+rm -- papers
+mv -- papers-real papers
+
+git config --local books.repositoryMode private
+.system/sync-mode-excludes private >/dev/null
+if .system/new-paper-project beta >/dev/null &&
+  ! git check-ignore --no-index -q -- papers/writing/beta/ &&
+  [[ -d papers/writing/beta/.workspace/records ]]; then
+  pass 4 'private project staging availability'
+else
+  fail 4 'private project staging availability'
+fi
+
+git config --local books.repositoryMode invalid
+if expect_failure .system/new-paper-project gamma &&
+  [[ ! -e papers/writing/gamma ]]; then
+  pass 5 'invalid mode rejection and cleanup'
+else
+  fail 5 'invalid mode rejection and cleanup'
+fi

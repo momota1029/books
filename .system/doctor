@@ -33,6 +33,8 @@ required_scripts=(
   .system/sync-mode-excludes
   .system/test-repository-mode
   .system/new-book-project
+  .system/new-paper-project
+  .system/test-new-paper-project
 )
 
 required_public_paths=(
@@ -40,6 +42,9 @@ required_public_paths=(
   "${required_scripts[@]}"
   book-translations/AGENTS.md
   paper-lecture-notes/AGENTS.md
+  papers/AGENTS.md
+  papers/writing/.gitignore
+  papers/submitted/.gitignore
   self-contained-math-notes/AGENTS.md
 )
 
@@ -56,6 +61,8 @@ done
 # the real repository state unchanged.
 .system/test-repository-mode >/dev/null 2>&1 || \
   fail "offline repository mode test failed"
+.system/test-new-paper-project >/dev/null 2>&1 || \
+  fail "offline new paper project test failed"
 
 hooks_path="$(git config --local --get core.hooksPath 2>/dev/null)" && \
   hooks_status=0 || hooks_status=$?
@@ -96,6 +103,8 @@ done
 private_probes=(
   book-translations/__doctor_private_probe__/inbox/probe.pdf
   paper-lecture-notes/inbox/probe.pdf
+  papers/writing/__doctor_private_probe__/inbox/probe.pdf
+  papers/submitted/__doctor_private_probe__/.workspace/source/probe.tex
   self-contained-math-notes/.workspace/source/probe.tex
 )
 

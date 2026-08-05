@@ -12,8 +12,10 @@ MATH_PROSE_REVIEW.md
 .system/bootstrap
 .system/doctor
 .system/new-book-project
+.system/new-paper-project
 .system/repository-mode
 .system/sync-mode-excludes
+.system/test-new-paper-project
 .system/test-repository-mode
 .system/verify-private-remote
 book-translations/AGENTS.md
@@ -22,6 +24,9 @@ paper-lecture-notes/inbox/.gitignore
 paper-lecture-notes/draft/.gitignore
 paper-lecture-notes/out/.gitignore
 paper-lecture-notes/.workspace/.gitignore
+papers/AGENTS.md
+papers/writing/.gitignore
+papers/submitted/.gitignore
 self-contained-math-notes/AGENTS.md
 self-contained-math-notes/inbox/.gitignore
 self-contained-math-notes/draft/.gitignore

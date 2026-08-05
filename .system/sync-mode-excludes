@@ -101,6 +101,10 @@ if [[ $mode == public ]]; then
       '**/.workspace/**' \
       '/book-translations/*' \
       '!/book-translations/AGENTS.md' \
+      '/papers/writing/*' \
+      '!/papers/writing/.gitignore' \
+      '/papers/submitted/*' \
+      '!/papers/submitted/.gitignore' \
       '*.pdf' \
       '*.epub' \
       '*.mobi' \
