@@ -43,6 +43,53 @@ catalog の ID と relation は少なくとも次の対象を結ぶ。
 
 自動抽出は完全性の証明ではない。caption のない vector drawing、複合 panel、scan 画像内の図、shading、PDF object として分離されない図、リンク文字列と異なる PDF annotation、外部 page の動的内容は漏れ得る。採用 PDF と採用 visual は `prepare-visual-review` で source hash に結合した全ページ・全 frame の review package を作り、担当 Codex が全 frame を実際に確認する。別 identity の Codex が同じ package を独立に再確認し、両者の immutable receipt が `pass` した後だけ該当 review status を `complete` とする。人手は既定の必須条件ではないが、判読不能、分野知識だけでは一意に定まらない科学的解釈、原資料の欠落、権利・privacy の判断不能、または両 review の不一致が残る場合は、推測で閉じずユーザーまたは domain expert へ判断を求める。自動候補の誤検出は理由付きで `exclude` にし、漏れた図は `add-visual` で登録する。
 
+## Python harness と AI 読解の責務境界
+
+Python harness は証拠を固定し、検査を再現し、確認漏れを減らすための補助装置であり、講義ノートの執筆者、原論文・source code の読解者、または内容 reviewer ではない。
+harness の `pass` は実装された機械的条件を満たしたことだけを示し、科学的・数学的・実装上・翻訳上・権利上の判断が正しいことを示さない。
+難しい意味判断を Python の判定へ押し込まず、Python に向く客観的不変条件と、Codex または人間が証拠に基づいて行う文脈依存の判断を分離する。
+
+### Python に委ねる範囲
+
+- file の同一性、安定性、hash、size、format、path containment、symlink、archive、取得量、実行時間等の客観的・再現可能な検査を行わせる。
+- ID、schema、型付き relation、revision、fingerprint、receipt、build input、PDF 内 placement sentinel、staleness、未処理項目等の構造的一貫性を検査させる。
+- 機械的に発見できる候補を列挙し、採否、除外理由、review、lineage、実行条件の記録漏れを検出させる。
+- 同じ input と tool version に対して同じ判定を期待でき、偽陽性・偽陰性の境界を test で説明できる規則だけを fail-closed gate にする。
+
+### Python に委ねない範囲
+
+- 原論文の主張、証明、図表、実験、source code の意味、正しさ、重要性、教育上の説明順、引用範囲、code excerpt の十分性を自動判定させない。
+- README、docstring、file 名、symbol 名、型、静的 pattern、test 成功、実行成功、PDF text、配置 macro だけから software の実際の挙動や原論文との一致を確定させない。
+- 自動発見されなかったことを対象が存在しない証拠とせず、catalog に登録されたことを本文で説明済みの証拠としない。
+- `record-visual-review` 等へ保存された reviewer の申告は判断の追跡記録であって判断内容の真実性を機械的に証明するものではないため、receipt の存在や schema 適合だけで semantic review を完了扱いしない。
+- 文脈依存の finding を解消するためだけに新しい Python rule を追加せず、その finding は本文、trace、review record、または本 `AGENTS.md` の判断手順で扱う。
+
+### Codex が資料を読んで行う範囲
+
+- 採用した固定 revision の原論文、supplement、および説明対象の実 source code を開いて読み、生成 index、catalog、README、API 文書、要約だけで読解を代替しない。
+- software は読者に必要な entry point から実際の call graph、data flow、主要な control flow、既定設定、前処理、数値・統計処理、乱数と非決定性、error handling、主要 output までを、関係する source file と依存先を辿って確認する。
+- 原論文の式、algorithm、擬似 code、method 記述、実験条件と実装を対応付け、一致、追加実装、既定値による具体化、省略、差異、判断不能を区別する。
+- 各 code 解釈には exact software revision、file path、symbol、可能なら line または安定した locator を付け、source から直接観察した事実、実行で観察した事実、Codex の推論、未確認事項を分けて trace に残す。
+- 講義ノートでは必要最小限の実 code excerpt を実際に掲載し、各 excerpt の入力、出力、前提、主要処理、論文内の役割、前後の非掲載部分との関係を読者が追える文章で説明する。
+- `\EvidenceCodePlacement` と build receipt が確認するのは placement marker、PDF text の sentinel、および backing asset が build input に現れることまでであり、listing 本体の実表示、非空性、marker と同じ listing scope にあることまでは証明しないため、excerpt の実掲載、選定、正確な転記、意味説明、原論文との対応、権利、教育上の十分性は Codex が別に検証する。
+- repository 全体を読んでいない場合は「source code 全体を確認した」と書かず、確認した entry point、file、symbol、依存範囲と未確認範囲を明示する。
+- 複数資料を横断した解釈、暗黙の前提や実装差の発見、教育的再構成、code excerpt の選定、意味を保った説明、判断不能箇所の特定は AI を用いる中心作業とするが、出典と独立検証なしに確定事実へ昇格させない。
+
+### AI の判断を信頼しすぎないための検証
+
+- primary Codex は結論だけでなく、再確認可能な locator、引用可能な短い根拠、推論過程、反証候補、限界を review record に残す。
+- shared draft または promotion に含める source code の意味説明は、authoring に関与していない別 identity の Codex が同じ固定 revision の実 source を開いて read-only で再確認し、要約や primary receipt の言い換えだけで済ませない。
+- independent reviewer は少なくとも excerpt の正確性、前後の文脈、依存先、paper-to-code 対応、主張の強さ、未確認範囲、権利表示を確認し、finding と再検証結果を private record に残す。
+- 実行、unit test、再計算、static analysis は解釈を支える証拠として使えるが、未実行 path、環境差、test が主張していない性質、論文の一般的 claim まで証明したものと扱わない。
+- AI 間で結論が一致しても正しさの保証にはならないため、原資料が不完全、意味が一意でない、専門判断や権利判断が不足する場合は、確信度を上げて閉じずユーザーまたは domain expert へ escalation する。
+
+### harness を拡張するときの規律
+
+- 新しい command、schema field、gate を追加する前に、それが安全性、再現性、provenance、構造的一貫性のどの客観的不変条件を検査するかを本ガイドへ記述する。
+- 同じ要件を Python と prose に二重実装するときは、Python を機械的な下限、`AGENTS.md` と review を意味上の正本とし、双方の変更と test を同じ quality checkpoint で確認する。
+- WIP の semantic authoring は `internal-wip` で pending を明示して進めてよく、完全な catalog と厳格 gate を各段落の執筆前提にしない。
+- harness の規模や厳格さを品質そのものとみなさず、運用負荷が読解・執筆・独立 review を圧迫する場合は、機械的安全性を保ったまま command、schema、module、gate の責務を分割・簡素化する。
+
 ## ワークスペースの契約
 
 各 direct-child project の作業領域は次の4つに固定する。共有 `AGENTS.md` は collection root に一つだけ置く。案件固有の必要が生じても project のトップ階層を増やさず、まず `.workspace/` 内の既存区分へ配置する。
@@ -226,7 +273,7 @@ repository root から、事前に確定した current project root を第一引
 - 記号は初出で定義し、型、次元、定義域、添字範囲、確率変数か実現値かを必要に応じて示す。原論文と記号を変える場合は対応表と理由を残す。
 - 式変形の仮定、定理、近似、極限操作を明記し、近似と等号を混同しない。式番号、本文参照、演算子、書体を統一する。
 - 図表ごとに出典、元番号、ページ、引用・再描画・改変・新規作成の別、権利を figure trace に記録する。値、軸、単位、凡例、集計条件、番号、キャプション、本文参照、白黒・縮小時の可読性、アクセシビリティ、画像解像度を確認する。索引または caption だけで掲載済みとせず、本文 PDF に図表本体が描画され、placement binding と build input が一致することを確認する。
-- 手法、再計算、再現条件の理解に code が必要な場合は、該当 revision に結合した必要最小限の listing を本文へ掲載し、前提、入力、主要処理、出力、論文内の役割を説明する。repository URL、software ID、ファイル名、実行 receipt だけを code 掲載の代用にせず、code placement と build input を照合する。秘密、credential、権利上掲載できない code は掲載せず blocking または明示した scope 除外として扱う。
+- 手法、再計算、再現条件の理解に code が必要な場合は、該当 revision の実 source を読んだうえで必要最小限の listing を本文へ掲載し、file、symbol、line 等の locator、前提、入力、主要処理、出力、論文内の役割、原論文との差異、非掲載部分との関係を説明する。repository URL、software ID、ファイル名、README、実行 receipt、test 成功だけを code 読解または掲載の代用にせず、semantic code review、code placement、build input を別々に照合する。秘密、credential、権利上掲載できない code は掲載せず blocking または明示した scope 除外として扱う。
 - 原論文・supplement の全 figure/table/panel に disposition を与え、本文で扱うものは図の目的、読み順、各 panel、軸、単位、符号、色・線・記号、sample、統計、比較対象、結論と限界を説明する。省略する場合も index から消さず、理由を表示する。
 - note visual は全て catalog、caption、本文参照、origin、rights、alt text を持つ。`source-original`、`permitted-copy`、`faithful-redraw`、`adapted`、`note-original`、`software-output` を混同せず、redraw/adapted は元 visual、software output は exact software/run/input へ edge を持たせる。
 - ビルド成功だけで完成としない。エラー、警告、未解決参照、重複ラベル、欠落引用、参考文献、目次、索引、しおり、式・図表番号を確認し、索引の全ページ参照が PDF 内リンクとして機能して正しいページへ移動することを検証する。
@@ -255,6 +302,7 @@ repository root から、事前に確定した current project root を第一引
 - 引用精度と理解検証が確認済みで、未解決事項と再現上の制約が明示されている。
 - direct-child project の project root と `.workspace/project-id` が一致し、canonical source、台帳、build、review、`STATUS`、draft、out が当該 project の内側だけにあり、別 project への mutable path 依存と流用された gate/receipt が 0 件である。
 - 複数の原論文を含む場合、全 Paper ID の役割、revision、担当 scope、相互関係が確定し、各 claim、式、図表、引用が正しい Paper ID へ追跡できる。
+- source code を説明する場合、固定 revision の実 source に対する確認範囲、entry point、主要依存、paper-to-code 対応、掲載 excerpt の locator と権利、観察・推論・未確認事項の区別が記録され、別 identity の Codex による semantic code review が完了している。
 - 全 work unit について作成・最終修正後の affected-unit review が記録され、成果物に含まれる unit がすべて `reviewed` で WIP が 0 件である。数学を含む場合は repository root の `MATH_PROSE_REVIEW.md` の独立 read-only review が完了し、definition-before-use violation、unlabeled formal claim、broken reference、未追跡依存、open blocking finding が 0 件である。
 - 全 current asset、visual、resource、software が講義ノートの evidence index に載り、採否が確定している。説明対象は本文の evidence reference を持ち、全 included/explained visual は図表本体、実描画 asset を明示した visual placement、必要な lineage を持ち、全 explained code asset は読者に必要な listing と code placement を持つ。各 backing file が current build receipt の input と一致し、各 placement 固有表示が PDF に存在している。全 source document と全 included/explained visual に current preparation と primary/independent Codex review pair があり、全 source visual の完全性確認、全 note visual の origin・rights・alt text、全 software の exact revision・license・環境・利用法・出力 lineage が確定している。
 - evidence catalog、生成 index、source revision、software/run receipt、PDF build receipt、`draft/STATUS` が同じ fingerprint/snapshot を指し、`shared-draft` または `promotion` の該当 gate を通過している。`out/` は pending 0 かつ offline build receipt を持つ promotion gate の pass を必須とする。
