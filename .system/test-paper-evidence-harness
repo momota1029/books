@@ -1,0 +1,1051 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+export LC_ALL=C
+export GIT_CONFIG_GLOBAL=/dev/null
+export GIT_CONFIG_SYSTEM=/dev/null
+
+source_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+test_root=$(mktemp -d)
+
+cleanup() {
+  if [[ -n ${test_root:-} && -d $test_root ]]; then
+    rm -rf -- "$test_root"
+  fi
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+fail() {
+  printf 'not ok %s - %s\n' "$1" "$2" >&2
+  exit 1
+}
+
+pass() {
+  printf 'ok %s - %s\n' "$1" "$2"
+}
+
+write_pdf() {
+  python3 - "$1" "${2:-}" <<'PY'
+import json
+import pathlib
+import sys
+
+registry_path = pathlib.Path(sys.argv[2]) if sys.argv[2] else None
+ids = []
+if registry_path:
+    registry = json.loads(registry_path.read_text())
+    for section in ("assets", "visuals", "resources", "software", "runs"):
+        ids.extend(sorted(key for key, value in registry[section].items() if value.get("state", "current") == "current"))
+commands = ["BT", "/F1 8 Tf", "10 185 Td", "(EVIDENCE INDEX) Tj"]
+for entry_id in ids:
+    commands.extend(["0 -12 Td", f"({entry_id}) Tj"])
+commands.append("ET")
+stream = "\n".join(commands).encode()
+objects = [
+    b"<< /Type /Catalog /Pages 2 0 R >>",
+    b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 220] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+    f"<< /Length {len(stream)} >>\nstream\n".encode() + stream + b"\nendstream",
+    b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+]
+payload = bytearray(b"%PDF-1.4\n")
+offsets = [0]
+for number, obj in enumerate(objects, 1):
+    offsets.append(len(payload))
+    payload.extend(f"{number} 0 obj\n".encode())
+    payload.extend(obj + b"\nendobj\n")
+xref = len(payload)
+payload.extend(f"xref\n0 {len(objects) + 1}\n".encode())
+payload.extend(b"0000000000 65535 f \n")
+for offset in offsets[1:]:
+    payload.extend(f"{offset:010d} 00000 n \n".encode())
+payload.extend(
+    f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+)
+pathlib.Path(sys.argv[1]).write_bytes(payload)
+PY
+}
+
+expect_failure() {
+  if "$@" >/dev/null 2>&1; then
+    return 1
+  fi
+}
+
+repo_dir=$test_root/repository
+mkdir -p "$repo_dir/.system"
+cp -- "$source_root/.system/paper-evidence-harness" "$repo_dir/.system/"
+chmod +x "$repo_dir/.system/paper-evidence-harness"
+git init -q "$repo_dir"
+
+project=$repo_dir/paper-lecture-notes
+mkdir -p "$project/inbox" "$project/draft" "$project/out" \
+  "$project/.workspace/source"
+
+if "$repo_dir/.system/paper-evidence-harness" init "$project" >/dev/null &&
+  [[ -f $project/.workspace/records/evidence/registry.json ]] &&
+  [[ -f $project/.workspace/tools/evidence-harness.json ]] &&
+  [[ -f $project/.workspace/source/generated/evidence-index.tex ]]; then
+  pass 1 'atomic project initialization'
+else
+  fail 1 'atomic project initialization'
+fi
+
+printf '%s\n' 'x,y' '1,2' >"$project/inbox/supplement.csv"
+printf '%s\n' \
+  'Project data: https://example.org/data.csv' \
+  'Official code: https://github.com/example/tool' \
+  >"$project/inbox/README.md"
+printf '%s\n' \
+  '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">' \
+  '<circle cx="5" cy="5" r="4"/></svg>' \
+  >"$project/.workspace/source/figures/concept.svg"
+printf '%s\n' \
+  '\input{.workspace/source/generated/evidence-macros.tex}' \
+  '\begin{document}' \
+  '\input{.workspace/source/generated/evidence-index.tex}' \
+  '\end{document}' \
+  >"$project/.workspace/source/main.tex"
+
+if "$repo_dir/.system/paper-evidence-harness" scan "$project" >/dev/null &&
+  "$repo_dir/.system/paper-evidence-harness" gate "$project" --phase internal-wip >/dev/null &&
+  expect_failure "$repo_dir/.system/paper-evidence-harness" gate "$project" --phase shared-draft; then
+  pass 2 'discovery succeeds while shared gate fails closed on pending evidence'
+else
+  fail 2 'discovery and pending gate behavior'
+fi
+
+printf '%s\n' '{"state":"simulated interrupted write"}' \
+  >"$project/.workspace/records/evidence/transaction.json"
+if expect_failure "$repo_dir/.system/paper-evidence-harness" gate "$project" --phase internal-wip; then
+  pass tx 'interrupted catalog transaction is fail-closed'
+else
+  fail tx 'transaction marker gate'
+fi
+rm -- "$project/.workspace/records/evidence/transaction.json"
+
+readarray -t ids < <(python3 - "$project/.workspace/records/evidence/registry.json" <<'PY'
+import json
+import pathlib
+import sys
+
+registry = json.loads(pathlib.Path(sys.argv[1]).read_text())
+csv_asset = next(value["id"] for value in registry["assets"].values() if "inbox/supplement.csv" in value.get("locations", []))
+readme_asset = next(value["id"] for value in registry["assets"].values() if "inbox/README.md" in value.get("locations", []))
+note_asset = next(value["id"] for value in registry["assets"].values() if value.get("kind") == "note-visual")
+visual = next(value["id"] for value in registry["visuals"].values() if value.get("source_asset") == note_asset)
+print(csv_asset)
+print(readme_asset)
+print(note_asset)
+print(visual)
+for value in registry["resources"].values():
+    print(value["id"])
+for value in registry["software"].values():
+    print(value["id"])
+PY
+)
+
+csv_asset=${ids[0]}
+readme_asset=${ids[1]}
+note_asset=${ids[2]}
+visual_id=${ids[3]}
+resource_one=${ids[4]}
+resource_two=${ids[5]}
+software_id=${ids[6]}
+
+git_sentinel=$test_root/git-env-injection-ran
+git_helper=$test_root/git-env-helper
+printf '%s\n' '#!/bin/sh' "touch '$git_sentinel'" 'exit 1' >"$git_helper"
+chmod +x "$git_helper"
+git_injection_key="url.ext::$git_helper.insteadOf"
+env GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0="$git_injection_key" \
+  GIT_CONFIG_VALUE_0='https://github.com/example/tool' \
+  GIT_CONFIG_KEY_1='protocol.ext.allow' GIT_CONFIG_VALUE_1='always' \
+  git ls-remote https://github.com/example/tool >/dev/null 2>&1 || true
+test -f "$git_sentinel" || fail git-env 'control injection did not execute'
+unlink "$git_sentinel"
+env GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0="$git_injection_key" \
+  GIT_CONFIG_VALUE_0='https://github.com/example/tool' \
+  GIT_CONFIG_KEY_1='protocol.ext.allow' GIT_CONFIG_VALUE_1='always' \
+  "$repo_dir/.system/paper-evidence-harness" fetch-software "$project" "$software_id" \
+  --revision injected-test >/dev/null 2>&1 || true
+if [[ ! -e $git_sentinel ]]; then
+  pass git-env 'git subprocess ignores injected helper configuration'
+else
+  fail git-env 'git subprocess executed an injected helper'
+fi
+
+python3 - "$project/.workspace/source/software-output/run-plot.png" <<'PY'
+import pathlib
+import sys
+
+pathlib.Path(sys.argv[1]).write_bytes(b"\x89PNG\r\n\x1a\nfixture")
+PY
+fixture_work=$test_root/software-work
+fixture_bare=$project/.workspace/cache/software/$software_id/fixture.git
+mkdir -p "$fixture_work" "$(dirname -- "$fixture_bare")"
+git init -q "$fixture_work"
+git -C "$fixture_work" config user.name fixture
+git -C "$fixture_work" config user.email fixture@example.invalid
+printf '%s\n' fixture >"$fixture_work/README"
+git -C "$fixture_work" add README
+git -C "$fixture_work" commit -qm fixture
+fixture_commit=$(git -C "$fixture_work" rev-parse HEAD)
+git clone -q --bare "$fixture_work" "$fixture_bare"
+git --git-dir="$fixture_bare" config remote.origin.url https://github.com/example/tool
+python3 - "$repo_dir/.system/paper-evidence-harness" "$fixture_bare" "$fixture_commit" <<'PY'
+import pathlib
+import runpy
+import sys
+module = runpy.run_path(sys.argv[1])
+cache_entries, cache_size = module["validate_git_cache_budget"](pathlib.Path(sys.argv[2]))
+inventory = module["git_tree_inventory"](pathlib.Path(sys.argv[2]), sys.argv[3])
+assert cache_entries > 0 and cache_size > 0
+assert inventory["file_count"] == 1
+assert inventory["top_level"] == ["README"]
+assert inventory["inventory_bytes"] <= 16 * 1024 * 1024
+PY
+python3 - "$project/.workspace/records/evidence/registry.json" "$software_id" "$fixture_commit" "$fixture_bare" <<'PY'
+import json
+import os
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+registry = json.loads(path.read_text())
+software = registry["software"][sys.argv[2]]
+software["resolved_revision"] = sys.argv[3]
+cache_entries = 0
+cache_size = 0
+for root, directories, files in os.walk(sys.argv[4]):
+    cache_entries += len(directories) + len(files)
+    cache_size += sum((pathlib.Path(root) / name).stat().st_size for name in files)
+software["retrieval"] = {
+    "ok": True,
+    "resolved_commit": sys.argv[3],
+    "requested_revision": software.get("requested_revision", ""),
+    "cache_path": f".workspace/cache/software/{sys.argv[2]}/fixture.git",
+    "cache_entry_count": cache_entries,
+    "cache_size": cache_size,
+    "file_count": 1,
+    "inventory_bytes": len(b"README\0"),
+    "top_level": ["README"],
+    "license_candidates": [],
+    "submodules_present": False,
+    "lfs_review_required": False,
+}
+path.write_text(json.dumps(registry, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+PY
+printf '%s\n' 'fixture-lock=1' >"$project/.workspace/tools/dependency.lock"
+"$repo_dir/.system/paper-evidence-harness" record-run "$project" RUN-FIXTURE \
+  --software "$software_id" --status success --command 'tool --plot' \
+  --environment 'fixture environment' --dependency-lock .workspace/tools/dependency.lock \
+  --seed none --notes 'synthetic no-input fixture' \
+  --output .workspace/source/software-output/run-plot.png >/dev/null
+if expect_failure "$repo_dir/.system/paper-evidence-harness" record-run "$project" RUN-FIXTURE \
+  --software "$software_id" --status failed --command 'changed command' \
+  --environment 'changed environment' --seed none; then
+  pass run-id 'run receipt IDs are immutable and cannot retain stale lineage'
+else
+  fail run-id 'run receipt overwrite was accepted'
+fi
+if expect_failure "$repo_dir/.system/paper-evidence-harness" relate "$project" \
+  "$resource_one" input-to RUN-FIXTURE; then
+  pass run-relate 'public relate command cannot mutate immutable run lineage'
+else
+  fail run-relate 'manual run lineage mutation was accepted'
+fi
+readarray -t output_ids < <(python3 - "$project/.workspace/records/evidence/registry.json" <<'PY'
+import json
+import pathlib
+import sys
+
+registry = json.loads(pathlib.Path(sys.argv[1]).read_text())
+run = registry["runs"]["RUN-FIXTURE"]
+asset = run["outputs"][0]
+visual = next(value["id"] for value in registry["visuals"].values() if value.get("source_asset") == asset)
+assert run["output_visuals"] == [visual]
+assert any(edge["from"] == visual and edge["kind"] == "generated-by" for edge in registry["relations"])
+assert any(edge["from"] == asset and edge["kind"] == "generated-by" and edge["to"] == "RUN-FIXTURE" for edge in registry["relations"])
+assert any(edge["from"] == "RUN-FIXTURE" and edge["kind"] == "uses" for edge in registry["relations"])
+print(asset)
+print(visual)
+PY
+)
+output_asset=${output_ids[0]}
+output_visual=${output_ids[1]}
+"$repo_dir/.system/paper-evidence-harness" add-visual "$project" VIS-RUN-DERIVED \
+  --source-asset "$output_asset" --type panel --page 1 --label 'manual panel' \
+  --caption 'Later manual panel interpretation' --origin adapted >/dev/null
+"$repo_dir/.system/paper-evidence-harness" annotate "$project" VIS-RUN-DERIVED \
+  --disposition exclude --exclusion-reason 'derived panel fixture only' \
+  --visibility internal --privacy-review not-applicable >/dev/null
+if "$repo_dir/.system/paper-evidence-harness" relate "$project" \
+  "$resource_one" documents RUN-FIXTURE >/dev/null; then
+  pass run-documents 'non-execution documentation edges may refer to immutable runs'
+else
+  fail run-documents 'valid non-execution run relation was rejected'
+fi
+
+"$repo_dir/.system/paper-evidence-harness" annotate "$project" "$csv_asset" \
+  --disposition exclude --exclusion-reason 'fixture only' \
+  --visibility internal --privacy-review not-applicable >/dev/null
+"$repo_dir/.system/paper-evidence-harness" annotate "$project" "$readme_asset" \
+  --disposition exclude --exclusion-reason 'fixture only' \
+  --visibility internal --privacy-review not-applicable \
+  --visual-review complete --link-review complete --attachment-review complete \
+  --reviewer fixture-reviewer >/dev/null
+"$repo_dir/.system/paper-evidence-harness" annotate "$project" "$note_asset" \
+  --disposition include --rights-status cleared --license CC0-1.0 \
+  --visibility reader --privacy-review complete --public-summary '講義ノート独自の概念図ファイル' \
+  --origin note-original --creator tester >/dev/null
+"$repo_dir/.system/paper-evidence-harness" annotate "$project" "$visual_id" \
+  --disposition include --rights-status cleared --license CC0-1.0 \
+  --visibility reader --privacy-review complete --public-summary 'テスト用の円を示す独自図' \
+  --origin note-original --creator tester --alt-text 'A test circle.' >/dev/null
+"$repo_dir/.system/paper-evidence-harness" annotate "$project" "$output_asset" \
+  --disposition exclude --exclusion-reason 'lineage fixture only' \
+  --visibility internal --privacy-review not-applicable >/dev/null
+"$repo_dir/.system/paper-evidence-harness" annotate "$project" "$output_visual" \
+  --disposition exclude --exclusion-reason 'lineage fixture only' \
+  --visibility internal --privacy-review not-applicable >/dev/null
+"$repo_dir/.system/paper-evidence-harness" annotate "$project" "$resource_one" \
+  --disposition exclude --exclusion-reason 'network-free fixture' \
+  --visibility reader --privacy-review complete --public-summary '検証用の外部資源' >/dev/null
+"$repo_dir/.system/paper-evidence-harness" annotate "$project" "$resource_two" \
+  --disposition exclude --exclusion-reason 'network-free fixture' \
+  --visibility reader --privacy-review complete --public-summary '検証用の外部資源' >/dev/null
+private_resource=$("$repo_dir/.system/paper-evidence-harness" add-resource "$project" \
+  --url 'https://example.org/private/confidential-subject-42' | head -n 1)
+"$repo_dir/.system/paper-evidence-harness" annotate "$project" "$private_resource" \
+  --disposition exclude --exclusion-reason 'private fixture' \
+  --visibility internal --privacy-review not-applicable >/dev/null
+"$repo_dir/.system/paper-evidence-harness" annotate "$project" "$software_id" \
+  --disposition exclude --exclusion-reason 'network-free fixture' \
+  --visibility internal --privacy-review not-applicable >/dev/null
+"$repo_dir/.system/paper-evidence-harness" annotate "$project" RUN-FIXTURE \
+  --disposition include --visibility reader --privacy-review complete \
+  --public-summary '固定 revision に対する検証用再現実行' \
+  --rights-status not-applicable >/dev/null
+
+if ! expect_failure "$repo_dir/.system/paper-evidence-harness" record-ingestion "$project" "$csv_asset" \
+  --revision-id FIXTURE-CSV-1 --status adopted --reason 'must fail after one observation'; then
+  fail adoption 'single-observation adoption was accepted'
+fi
+sleep 1
+"$repo_dir/.system/paper-evidence-harness" scan "$project" >/dev/null
+"$repo_dir/.system/paper-evidence-harness" record-ingestion "$project" "$csv_asset" \
+  --revision-id FIXTURE-CSV-1 --status excluded --reason 'fixture only' >/dev/null
+"$repo_dir/.system/paper-evidence-harness" record-ingestion "$project" "$readme_asset" \
+  --revision-id FIXTURE-README-1 --status excluded --reason 'fixture only' >/dev/null
+if "$repo_dir/.system/paper-evidence-harness" record-ingestion "$project" "$readme_asset" \
+  --revision-id FIXTURE-README-1 --status adopted --reason 'two stable observations' >/dev/null; then
+  pass adoption 'adoption requires two matching stable scan observations'
+else
+  fail adoption 'two-observation adoption failed'
+fi
+"$repo_dir/.system/paper-evidence-harness" record-ingestion "$project" "$readme_asset" \
+  --revision-id FIXTURE-README-1 --status excluded --reason 'fixture only' >/dev/null
+
+printf '%s\n' \
+  '% \input{.workspace/source/generated/evidence-macros.tex}' \
+  '\begin{document}' \
+  "% \\EvidenceVisual{$visual_id}" \
+  "\\EvidenceAsset{$visual_id}" \
+  '% \input{.workspace/source/generated/evidence-index.tex}' \
+  '\end{document}' \
+  >"$project/.workspace/source/main.tex"
+"$repo_dir/.system/paper-evidence-harness" scan "$project" >/dev/null
+if expect_failure "$repo_dir/.system/paper-evidence-harness" gate "$project" --phase internal-wip; then
+  pass 3 'commented TeX integrations are ignored and reference kinds are checked'
+else
+  fail 3 'TeX comment and typed reference gate'
+fi
+
+printf '%s\n' \
+  '\input{.workspace/source/generated/evidence-macros.tex}' \
+  '\begin{document}' \
+  "\\EvidenceVisual{$visual_id}" \
+  "\\begin{figure}\\EvidenceOriginalCaption{$visual_id}{A test circle.}\\end{figure}" \
+  '\input{.workspace/source/generated/evidence-index.tex}' \
+  '\end{document}' \
+  >"$project/.workspace/source/main.tex"
+"$repo_dir/.system/paper-evidence-harness" scan "$project" >/dev/null
+mkdir -p "$project/.workspace/build"
+printf '%s\n' \
+  "PWD $project" \
+  "INPUT $project/.workspace/source/main.tex" \
+  "INPUT $project/.workspace/source/generated/evidence-macros.tex" \
+  "INPUT $project/.workspace/source/generated/evidence-index.tex" \
+  >"$project/.workspace/build/document.fls"
+write_pdf "$project/.workspace/build/document.pdf"
+if ! expect_failure "$repo_dir/.system/paper-evidence-harness" record-build "$project" \
+  --fls .workspace/build/document.fls \
+  --pdf .workspace/build/document.pdf \
+  --offline yes --source-revision blank-fixture; then
+  fail 4 'blank PDF was accepted as a rendered evidence index'
+fi
+write_pdf "$project/.workspace/build/document.pdf" "$project/.workspace/records/evidence/registry.json"
+"$repo_dir/.system/paper-evidence-harness" record-build "$project" \
+  --fls .workspace/build/document.fls \
+  --pdf .workspace/build/document.pdf \
+  --offline yes --source-revision fixture-1 >/dev/null
+
+cp -- "$project/.workspace/build/document.pdf" "$project/draft/fixture-draft.pdf"
+readarray -t fingerprints < <(python3 - \
+  "$project/.workspace/records/evidence/registry.json" \
+  "$project/.workspace/records/paper-ingestion-manifest.json" \
+  "$project/draft/fixture-draft.pdf" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+registry = json.loads(pathlib.Path(sys.argv[1]).read_text())
+manifest = json.loads(pathlib.Path(sys.argv[2]).read_text())
+pdf = pathlib.Path(sys.argv[3])
+print(registry["receipts"]["builds"][-1]["catalog_fingerprint"])
+print(registry["scan"]["source_fingerprint"])
+print(manifest["snapshot_fingerprint"])
+print(hashlib.sha256(pdf.read_bytes()).hexdigest())
+PY
+)
+printf '%s\n' \
+  '# fixture status' \
+  '- state: ready' \
+  '- WIP_units: none' \
+  '- blocked_units: none' \
+  "- evidence_catalog_fingerprint: \`${fingerprints[0]}\`" \
+  "- evidence_source_fingerprint: \`${fingerprints[1]}\`" \
+  "- evidence_ingestion_fingerprint: \`${fingerprints[2]}\`" \
+  '- evidence_pdf: `fixture-draft.pdf`' \
+  "- evidence_pdf_sha256: \`${fingerprints[3]}\`" \
+  >"$project/draft/STATUS.md"
+
+if grep -Fq '\nolinkurl{https://example.org/data.csv}' "$project/.workspace/source/generated/evidence-index.tex" &&
+  grep -Fq "$readme_asset" "$project/.workspace/source/generated/evidence-index.tex" &&
+  ! grep -Fq 'inbox/README.md' "$project/.workspace/source/generated/evidence-index.tex" &&
+  ! grep -Fq 'tool --plot' "$project/.workspace/source/generated/evidence-index.tex" &&
+  ! grep -Fq 'fixture environment' "$project/.workspace/source/generated/evidence-index.md" &&
+  ! grep -Fq '.workspace/cache/software' "$project/.workspace/source/generated/evidence-index.tex" &&
+  grep -Fq "$private_resource" "$project/.workspace/source/generated/evidence-index.tex" &&
+  ! grep -Fq 'confidential-subject-42' "$project/.workspace/source/generated/evidence-index.tex" &&
+  ! grep -Fq 'confidential-subject-42' "$project/.workspace/source/generated/evidence-index.md" &&
+  "$repo_dir/.system/paper-evidence-harness" gate "$project" --phase shared-draft >/dev/null &&
+  "$repo_dir/.system/paper-evidence-harness" gate "$project" --phase promotion >/dev/null; then
+  pass 4 'privacy-safe reader index, typed evidence, build receipt, and promotion gate'
+else
+  fail 4 'completed evidence gate'
+fi
+
+python3 - "$project/.workspace/records/evidence/registry.json" "$resource_one" <<'PY'
+import json
+import pathlib
+import sys
+path = pathlib.Path(sys.argv[1])
+registry = json.loads(path.read_text())
+registry["relations"].append({"from": sys.argv[2], "kind": "input-to", "to": "RUN-FIXTURE", "automatic": False})
+path.write_text(json.dumps(registry, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+PY
+"$repo_dir/.system/paper-evidence-harness" render-index "$project" >/dev/null
+if "$repo_dir/.system/paper-evidence-harness" gate "$project" --phase internal-wip >"$test_root/run-lineage.log" 2>&1; then
+  fail run-lineage 'tampered run lineage passed the gate'
+elif grep -Fq 'run lineage edges do not exactly match the immutable receipt' "$test_root/run-lineage.log"; then
+  pass run-lineage 'gate rejects run lineage not present in the immutable receipt'
+else
+  fail run-lineage 'run lineage tamper failed for an unrelated reason'
+fi
+python3 - "$project/.workspace/records/evidence/registry.json" "$resource_one" <<'PY'
+import json
+import pathlib
+import sys
+path = pathlib.Path(sys.argv[1])
+registry = json.loads(path.read_text())
+registry["relations"] = [
+    relation for relation in registry["relations"]
+    if not (relation.get("from") == sys.argv[2] and relation.get("kind") == "input-to" and relation.get("to") == "RUN-FIXTURE")
+]
+path.write_text(json.dumps(registry, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+PY
+"$repo_dir/.system/paper-evidence-harness" render-index "$project" >/dev/null
+
+printf '%s\n' 'fixture-lock=2' >"$project/.workspace/tools/dependency.lock"
+if expect_failure "$repo_dir/.system/paper-evidence-harness" gate "$project" --phase internal-wip; then
+  pass run-lock 'dependency lock mutation invalidates its run receipt'
+else
+  fail run-lock 'mutated dependency lock was accepted'
+fi
+printf '%s\n' 'fixture-lock=1' >"$project/.workspace/tools/dependency.lock"
+
+printf '%s\n' tamper >"$fixture_bare/tamper.extra"
+if expect_failure "$repo_dir/.system/paper-evidence-harness" gate "$project" --phase internal-wip; then
+  pass software-budget 'software cache entry/size receipt is revalidated by every gate'
+else
+  fail software-budget 'post-fetch software cache growth was accepted'
+fi
+unlink "$fixture_bare/tamper.extra"
+
+commit_object=$fixture_bare/objects/${fixture_commit:0:2}/${fixture_commit:2}
+if [[ -f $commit_object ]]; then
+  mv -- "$commit_object" "$commit_object.missing"
+  if expect_failure "$repo_dir/.system/paper-evidence-harness" gate "$project" --phase internal-wip; then
+    pass software-cache 'missing software commit object invalidates its receipt'
+  else
+    fail software-cache 'software cache mutation was accepted'
+  fi
+  mv -- "$commit_object.missing" "$commit_object"
+fi
+
+tree_object_id=$(git --git-dir="$fixture_bare" rev-parse "$fixture_commit^{tree}")
+tree_object=$fixture_bare/objects/${tree_object_id:0:2}/${tree_object_id:2}
+if [[ -f $tree_object ]]; then
+  cp -- "$tree_object" "$tree_object.clean"
+  chmod u+w "$tree_object"
+  python3 - "$tree_object" <<'PY'
+import pathlib
+import sys
+path = pathlib.Path(sys.argv[1])
+payload = bytearray(path.read_bytes())
+payload[len(payload) // 2] ^= 0x01
+path.write_bytes(payload)
+PY
+  if expect_failure "$repo_dir/.system/paper-evidence-harness" gate "$project" --phase internal-wip; then
+    pass software-tree 'same-size Git tree corruption invalidates the inventory receipt'
+  else
+    fail software-tree 'same-size Git object corruption was accepted'
+  fi
+  mv -- "$tree_object.clean" "$tree_object"
+fi
+
+cp -- "$project/.workspace/records/evidence/registry.json" "$test_root/registry-before-revision.json"
+"$repo_dir/.system/paper-evidence-harness" annotate "$project" "$software_id" --revision v2 >/dev/null
+if python3 - "$project/.workspace/records/evidence/registry.json" "$software_id" <<'PY'
+import json
+import pathlib
+import sys
+software = json.loads(pathlib.Path(sys.argv[1]).read_text())["software"][sys.argv[2]]
+assert software["requested_revision"] == "v2"
+assert software["resolved_revision"] == ""
+assert software["retrieval"] == {}
+PY
+then
+  pass software-revision 'changing a requested revision invalidates the fetched receipt'
+else
+  fail software-revision 'stale fetched revision survived annotation'
+fi
+mv -- "$test_root/registry-before-revision.json" "$project/.workspace/records/evidence/registry.json"
+
+sed -i 's/A test circle\./B test circle./' "$project/.workspace/source/main.tex"
+if expect_failure "$repo_dir/.system/paper-evidence-harness" gate "$project" --phase internal-wip; then
+  pass 5 'canonical note body mutation invalidates the source snapshot'
+else
+  fail 5 'canonical source freshness gate'
+fi
+
+printf '%s\n' '%PDF-1.4' '% changed after receipt' '%%EOF' >"$project/.workspace/build/document.pdf"
+if expect_failure "$repo_dir/.system/paper-evidence-harness" gate "$project" --phase shared-draft; then
+  pass 6 'build receipt is invalidated when its PDF changes'
+else
+  fail 6 'build receipt integrity gate'
+fi
+write_pdf "$project/.workspace/build/document.pdf" "$project/.workspace/records/evidence/registry.json"
+
+printf '%s\n' 'x,y' '1,3' >"$project/inbox/supplement.csv"
+if expect_failure "$repo_dir/.system/paper-evidence-harness" gate "$project" --phase internal-wip; then
+  pass 7 'same-size input mutation invalidates the discovery snapshot'
+else
+  fail 7 'discovery freshness gate'
+fi
+"$repo_dir/.system/paper-evidence-harness" scan "$project" >/dev/null
+new_csv_asset=$(python3 - "$project/.workspace/records/evidence/registry.json" <<'PY'
+import json
+import pathlib
+import sys
+registry = json.loads(pathlib.Path(sys.argv[1]).read_text())
+print(next(value["id"] for value in registry["assets"].values() if value.get("state") == "current" and "inbox/supplement.csv" in value.get("locations", [])))
+PY
+)
+if expect_failure "$repo_dir/.system/paper-evidence-harness" record-ingestion "$project" "$new_csv_asset" \
+  --revision-id FIXTURE-CSV-2 --status adopted --reason 'changed bytes'; then
+  pass reset 'content change resets the two-observation adoption requirement'
+else
+  fail reset 'changed revision inherited old observations'
+fi
+
+unsafe_project=$repo_dir/unsafe-notes
+mkdir -p "$unsafe_project/inbox" "$unsafe_project/draft" "$unsafe_project/out" \
+  "$unsafe_project/.workspace/source"
+"$repo_dir/.system/paper-evidence-harness" init "$unsafe_project" >/dev/null
+python3 - "$unsafe_project/inbox/unsafe.zip" <<'PY'
+import sys
+import zipfile
+
+with zipfile.ZipFile(sys.argv[1], "w") as archive:
+    archive.writestr("../escape.txt", "unsafe")
+    link = zipfile.ZipInfo("link")
+    link.create_system = 3
+    link.external_attr = (0o120777 << 16)
+    archive.writestr(link, "target")
+PY
+"$repo_dir/.system/paper-evidence-harness" scan "$unsafe_project" >/dev/null
+unsafe_asset=$(python3 - "$unsafe_project/.workspace/records/evidence/registry.json" <<'PY'
+import json
+import pathlib
+import sys
+registry = json.loads(pathlib.Path(sys.argv[1]).read_text())
+print(next(value["id"] for value in registry["assets"].values() if value.get("kind") == "source-archive"))
+PY
+)
+"$repo_dir/.system/paper-evidence-harness" annotate "$unsafe_project" "$unsafe_asset" \
+  --visibility reader --privacy-review complete --public-summary '危険 archive の検査 fixture' >/dev/null
+if grep -Fq 'archive member `../escape.txt`' "$unsafe_project/.workspace/source/generated/evidence-index.md" &&
+  grep -Fq 'archive member `link`' "$unsafe_project/.workspace/source/generated/evidence-index.md" &&
+  expect_failure "$repo_dir/.system/paper-evidence-harness" gate "$unsafe_project" --phase internal-wip; then
+  pass 8 'archive traversal and symlink members are blocking without extraction'
+else
+  fail 8 'archive quarantine gate'
+fi
+
+magic_project=$repo_dir/magic-notes
+mkdir -p "$magic_project/inbox" "$magic_project/draft" "$magic_project/out" \
+  "$magic_project/.workspace/source"
+"$repo_dir/.system/paper-evidence-harness" init "$magic_project" >/dev/null
+printf '%s\n' 'not a PNG image' >"$magic_project/inbox/forged.png"
+printf '%s\n' 'not an SVG image' >"$magic_project/inbox/forged.svg"
+printf '%s\n' '<!-- <svg > -->' 'not XML' >"$magic_project/inbox/comment-only.svg"
+printf '%s\n' '<svg xmlns="http://www.w3.org/2000/svg"><g></svg>' >"$magic_project/inbox/malformed.svg"
+printf 'II+\000\010\000\000\000fixture' >"$magic_project/inbox/microscopy-bigtiff.tif"
+"$repo_dir/.system/paper-evidence-harness" scan "$magic_project" >/dev/null
+if python3 - "$magic_project/.workspace/records/evidence/registry.json" <<'PY' &&
+import json
+import pathlib
+import sys
+registry = json.loads(pathlib.Path(sys.argv[1]).read_text())
+for filename in ("forged.png", "forged.svg", "comment-only.svg", "malformed.svg"):
+    entry = next(value for value in registry["assets"].values() if value["locations"][0].endswith(filename))
+    assert entry["media_type"] == "application/octet-stream"
+    assert entry["media_type_mismatch"] is True
+    assert entry["kind"] == "source-supplement"
+bigtiff = next(value for value in registry["assets"].values() if value["locations"][0].endswith("microscopy-bigtiff.tif"))
+assert bigtiff["media_type"] == "image/tiff"
+assert bigtiff["media_type_mismatch"] is False
+assert bigtiff["kind"] == "source-visual"
+PY
+  "$repo_dir/.system/paper-evidence-harness" gate "$magic_project" --phase internal-wip >"$test_root/magic.log" 2>&1; then
+  fail magic 'forged visual signatures passed the gate'
+elif grep -Fq 'asset media type does not match its extension' "$test_root/magic.log"; then
+  pass magic 'known visual extensions require matching binary or SVG structure signatures'
+else
+  fail magic 'forged visual was rejected for an unrelated reason'
+fi
+
+secret_project=$repo_dir/secret-notes
+mkdir -p "$secret_project/inbox" "$secret_project/draft" "$secret_project/out" \
+  "$secret_project/.workspace/source"
+"$repo_dir/.system/paper-evidence-harness" init "$secret_project" >/dev/null
+printf '%s\n' 'https://example.org/file?token=do-not-copy' >"$secret_project/inbox/link.txt"
+printf '%s\n' 'https://user:raw-userinfo-secret@example.org/private' >>"$secret_project/inbox/link.txt"
+printf '%s\n' 'https://example.org/aws?X-Amz-Security-Token=TOPSECRET&X-Amz-Signature=SIGNED' >>"$secret_project/inbox/link.txt"
+"$repo_dir/.system/paper-evidence-harness" scan "$secret_project" >/dev/null
+if ! grep -Fq 'do-not-copy' "$secret_project/.workspace/records/evidence/registry.json" &&
+  ! grep -Fq 'raw-userinfo-secret' "$secret_project/.workspace/records/evidence/registry.json" &&
+  ! grep -Fq 'TOPSECRET' "$secret_project/.workspace/records/evidence/registry.json" &&
+  ! grep -Fq 'SIGNED' "$secret_project/.workspace/records/evidence/registry.json" &&
+  expect_failure "$repo_dir/.system/paper-evidence-harness" gate "$secret_project" --phase internal-wip; then
+  pass 9 'query and userinfo secrets are redacted and blocking'
+else
+  fail 9 'secret URL handling'
+fi
+
+cache_project=$repo_dir/cache-notes
+mkdir -p "$cache_project/inbox" "$cache_project/draft" "$cache_project/out" \
+  "$cache_project/.workspace/source"
+"$repo_dir/.system/paper-evidence-harness" init "$cache_project" >/dev/null
+cache_resource=$("$repo_dir/.system/paper-evidence-harness" add-resource "$cache_project" \
+  --url https://example.org/data.bin | head -n 1)
+"$repo_dir/.system/paper-evidence-harness" scan "$cache_project" >/dev/null
+cache_file=$cache_project/.workspace/cache/external/$cache_resource/fixture.bin
+mkdir -p "$(dirname -- "$cache_file")"
+printf '%s' 'cached-bytes' >"$cache_file"
+python3 - "$cache_project/.workspace/records/evidence/registry.json" "$cache_resource" "$cache_file" "$cache_project" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+registry_path = pathlib.Path(sys.argv[1])
+resource_id = sys.argv[2]
+cache_file = pathlib.Path(sys.argv[3])
+project = pathlib.Path(sys.argv[4])
+data = cache_file.read_bytes()
+registry = json.loads(registry_path.read_text())
+registry["resources"][resource_id]["retrieval"] = {
+    "ok": True, "cache_path": cache_file.relative_to(project).as_posix(),
+    "size": len(data), "sha256": hashlib.sha256(data).hexdigest(),
+}
+registry_path.write_text(json.dumps(registry, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+PY
+"$repo_dir/.system/paper-evidence-harness" annotate "$cache_project" "$cache_resource" \
+  --disposition exclude --exclusion-reason 'cache fixture only' \
+  --visibility reader --privacy-review complete --public-summary '取得済みfixture資源' >/dev/null
+"$repo_dir/.system/paper-evidence-harness" render-index "$cache_project" >/dev/null
+cache_digest=$(sha256sum "$cache_file" | awk '{print $1}')
+if grep -Fq "$cache_digest" "$cache_project/.workspace/source/generated/evidence-index.tex" ||
+  grep -Fq "${cache_digest:0:16}" "$cache_project/.workspace/source/generated/evidence-index.tex"; then
+  fail privacy-hash 'reader index disclosed a fetched resource hash'
+else
+  pass privacy-hash 'reader index keeps fetched resource hashes in the private ledger'
+fi
+"$repo_dir/.system/paper-evidence-harness" add-software "$cache_project" SW-CACHE \
+  --name 'artifact fixture' --artifact-resource "$cache_resource" --revision 1.0 >/dev/null
+"$repo_dir/.system/paper-evidence-harness" fetch-software "$cache_project" SW-CACHE >/dev/null
+"$repo_dir/.system/paper-evidence-harness" scan "$cache_project" >/dev/null
+if "$repo_dir/.system/paper-evidence-harness" gate "$cache_project" --phase internal-wip >/dev/null; then
+  printf '%s' 'changed-byte' >"$cache_file"
+  if expect_failure "$repo_dir/.system/paper-evidence-harness" gate "$cache_project" --phase internal-wip; then
+    pass resource-cache 'resource cache size/hash receipt is revalidated'
+  else
+    fail resource-cache 'resource cache mutation was accepted'
+  fi
+else
+  fail resource-cache 'valid resource cache receipt failed'
+fi
+
+many_archive=$test_root/many-members.zip
+python3 - "$many_archive" <<'PY'
+import sys
+import zipfile
+with zipfile.ZipFile(sys.argv[1], "w") as archive:
+    for number in range(10001):
+        archive.writestr(f"member-{number:05d}", b"")
+PY
+if "$repo_dir/.system/paper-evidence-harness" --archive-worker "$many_archive" |
+  python3 -c 'import json,sys; value=json.load(sys.stdin); raise SystemExit(0 if value.get("status") == "blocked" and value.get("limit_exceeded") else 1)'; then
+  pass archive-limit 'archive member limit fails bounded inspection'
+else
+  fail archive-limit 'archive member limit'
+fi
+
+long_name_archive=$test_root/long-member-names.zip
+python3 - "$long_name_archive" <<'PY'
+import sys
+import zipfile
+with zipfile.ZipFile(sys.argv[1], "w") as archive:
+    for number in range(260):
+        archive.writestr(f"{number:04d}-" + "x" * 65400, b"")
+PY
+if python3 - "$repo_dir/.system/paper-evidence-harness" "$long_name_archive" <<'PY'
+import pathlib
+import runpy
+import sys
+module = runpy.run_path(sys.argv[1])
+result = module["inspect_archive"](pathlib.Path(sys.argv[2]))
+assert result["status"] == "blocked"
+assert result["limit_exceeded"]
+PY
+then
+  pass archive-output 'archive worker output is captured under a fixed byte limit'
+else
+  fail archive-output 'archive worker output bound'
+fi
+
+compression_project=$repo_dir/compression-notes
+mkdir -p "$compression_project/inbox" "$compression_project/draft" "$compression_project/out" \
+  "$compression_project/.workspace/source"
+"$repo_dir/.system/paper-evidence-harness" init "$compression_project" >/dev/null
+python3 - "$compression_project/inbox/table.csv.gz" <<'PY'
+import gzip
+import bz2
+import lzma
+import pathlib
+import sys
+import zipfile
+with gzip.open(sys.argv[1], "wb") as handle:
+    handle.write(b"x,y\n1,2\n")
+parent = pathlib.Path(sys.argv[1]).parent
+(parent / "table-bz.csv.bz2").write_bytes(bz2.compress(b"x,y\n1,2\n"))
+(parent / "table-xz.csv.xz").write_bytes(lzma.compress(b"x,y\n1,2\n"))
+(parent / "fake.csv.gz").write_bytes(b"not really gzip")
+(parent / "unsupported.7z").write_bytes(b"7z\xbc\xaf\x27\x1cfixture")
+with zipfile.ZipFile(parent / "workbook.xlsx", "w") as archive:
+    archive.writestr("[Content_Types].xml", b"<Types/>")
+    archive.writestr("xl/workbook.xml", b"<workbook/>")
+with zipfile.ZipFile(parent / "arrays.npz", "w") as archive:
+    archive.writestr("array.npy", b"\x93NUMPY\x01\x00fixture")
+PY
+truncate -s 2097152 "$compression_project/inbox/large.parquet"
+"$repo_dir/.system/paper-evidence-harness" scan "$compression_project" >/dev/null
+readarray -t compression_ids < <(python3 - "$compression_project/.workspace/records/evidence/registry.json" <<'PY'
+import json
+import pathlib
+import sys
+registry = json.loads(pathlib.Path(sys.argv[1]).read_text())
+for filename in (
+    "table.csv.gz", "table-bz.csv.bz2", "table-xz.csv.xz", "fake.csv.gz",
+    "unsupported.7z", "large.parquet", "workbook.xlsx", "arrays.npz",
+):
+    entry = next(value for value in registry["assets"].values() if any(path.endswith(filename) for path in value.get("locations", [])))
+    if filename in {"table.csv.gz", "table-bz.csv.bz2", "table-xz.csv.xz"}:
+        assert entry["archive"]["status"] == "inspected"
+        assert entry["archive"]["inspection_mode"] == "single-stream-header-only"
+    if filename == "fake.csv.gz":
+        assert entry["archive"]["status"] == "error"
+        assert "invalid .gz compression header" in entry["archive"]["error"]
+    if filename == "large.parquet":
+        assert entry["metadata_status"] == "not-required"
+    if filename in {"workbook.xlsx", "arrays.npz"}:
+        assert entry["kind"] == "source-data"
+        assert entry["archive"]["status"] == "inspected"
+        assert entry["archive"]["container_signature_valid"] is True
+        assert entry["archive"]["container_internals"] is True
+        assert entry["media_type_mismatch"] is False
+    print(entry["id"])
+PY
+)
+for entry_id in "${compression_ids[@]}"; do
+  "$repo_dir/.system/paper-evidence-harness" annotate "$compression_project" "$entry_id" \
+    --disposition exclude --exclusion-reason 'bounded parser fixture' \
+    --visibility internal --privacy-review not-applicable >/dev/null
+done
+readarray -t container_ids < <(python3 - "$compression_project/.workspace/records/evidence/registry.json" <<'PY'
+import json
+import pathlib
+import sys
+registry = json.loads(pathlib.Path(sys.argv[1]).read_text())
+for value in registry["assets"].values():
+    if value.get("archive", {}).get("container_internals"):
+        print(value["id"])
+PY
+)
+for entry_id in "${container_ids[@]}"; do
+  "$repo_dir/.system/paper-evidence-harness" annotate "$compression_project" "$entry_id" \
+    --visibility reader --privacy-review complete --public-summary '検証済み統計データcontainer' >/dev/null
+done
+if grep -Fq 'container internal components' "$compression_project/.workspace/source/generated/evidence-index.tex" &&
+  ! grep -Fq '[Content_Types].xml' "$compression_project/.workspace/source/generated/evidence-index.tex" &&
+  ! grep -Fq 'array.npy' "$compression_project/.workspace/source/generated/evidence-index.md" &&
+  python3 - "$repo_dir/.system/paper-evidence-harness" "$compression_project" "${container_ids[@]}" <<'PY'
+import pathlib
+import runpy
+import sys
+module = runpy.run_path(sys.argv[1])
+project = pathlib.Path(sys.argv[2])
+config, registry = module["initialize"](project)
+for entry_id in sys.argv[3:]:
+    annotation = registry["assets"][entry_id]["annotations"]
+    annotation.update({
+        "disposition": "include", "rights_status": "cleared", "license": "CC0-1.0",
+        "archive_review_status": "complete", "reviewer": "fixture", "reviewed_at": "fixture",
+    })
+errors, _ = module["inspect_gate"](project, config, registry, "shared-draft")
+assert not any(
+    error.startswith("archive member is unresolved: " + entry_id)
+    for entry_id in sys.argv[3:] for error in errors
+)
+PY
+then
+  pass container-data 'known ZIP data containers use one reviewed asset without publishing or resolving every internal member'
+else
+  fail container-data 'known ZIP container review policy'
+fi
+unlink "$compression_project/inbox/fake.csv.gz"
+"$repo_dir/.system/paper-evidence-harness" scan "$compression_project" >/dev/null
+if "$repo_dir/.system/paper-evidence-harness" gate "$compression_project" --phase internal-wip >/dev/null &&
+  ! find "$compression_project/.workspace/tmp/evidence-scan" -type f -print -quit | grep -q .; then
+  pass compression 'single-stream compression is indexed without expansion and excluded unsupported archives do not block WIP'
+else
+  fail compression 'bounded compression and large-data scanning'
+fi
+
+url_project=$repo_dir/url-notes
+mkdir -p "$url_project/inbox" "$url_project/draft" "$url_project/out" "$url_project/.workspace/source"
+"$repo_dir/.system/paper-evidence-harness" init "$url_project" >/dev/null
+encoded_id=$("$repo_dir/.system/paper-evidence-harness" add-resource "$url_project" \
+  --url 'https://example.org/a%2fb' | head -n 1)
+literal_id=$("$repo_dir/.system/paper-evidence-harness" add-resource "$url_project" \
+  --url 'https://example.org/a/b' | head -n 1)
+if [[ $encoded_id != "$literal_id" ]] && python3 - "$url_project/.workspace/records/evidence/registry.json" "$encoded_id" "$literal_id" <<'PY'
+import json
+import pathlib
+import sys
+registry = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert registry["resources"][sys.argv[2]]["canonical_url"] == "https://example.org/a%2Fb"
+assert registry["resources"][sys.argv[3]]["canonical_url"] == "https://example.org/a/b"
+PY
+then
+  pass url-path 'URL canonicalization preserves encoded reserved-path identity'
+else
+  fail url-path 'encoded URL path canonicalization'
+fi
+
+github_project=$repo_dir/github-url-notes
+mkdir -p "$github_project/inbox" "$github_project/draft" "$github_project/out" \
+  "$github_project/.workspace/source"
+"$repo_dir/.system/paper-evidence-harness" init "$github_project" >/dev/null
+printf '%s\n' \
+  'https://github.com/acme/release-repo/releases/tag/v1.2.3' \
+  'https://github.com/acme/tree-repo/tree/main/subdir' \
+  'https://github.com/acme/commit-repo/commit/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
+  'https://github.com/acme/conflict-repo/releases/tag/v1' \
+  'https://github.com/acme/conflict-repo/releases/tag/v2' \
+  'https://github.com/CaseOrg/CaseRepo/releases/tag/v1' \
+  'https://github.com/caseorg/caserepo/releases/tag/v2' \
+  'https://github.com/acme/stale-repo/releases/tag/v1' \
+  >"$github_project/inbox/links.txt"
+"$repo_dir/.system/paper-evidence-harness" scan "$github_project" >/dev/null
+if python3 - "$github_project/.workspace/records/evidence/registry.json" <<'PY'
+import json
+import pathlib
+import sys
+registry = json.loads(pathlib.Path(sys.argv[1]).read_text())
+software = {value["repository_url"].rsplit("/", 1)[-1]: value for value in registry["software"].values()}
+assert software["release-repo"]["requested_revision"] == "v1.2.3"
+assert not software["release-repo"]["revision_requires_review"]
+assert software["tree-repo"]["requested_revision"] == ""
+assert software["tree-repo"]["revision_requires_review"]
+assert software["commit-repo"]["requested_revision"] == "a" * 40
+assert not software["commit-repo"]["revision_requires_review"]
+assert software["conflict-repo"]["requested_revision"] == ""
+assert software["conflict-repo"]["revision_candidates"] == ["v1", "v2"]
+assert software["conflict-repo"]["revision_conflict"]
+assert software["conflict-repo"]["revision_requires_review"]
+assert software["caserepo"]["repository_url"] == "https://github.com/caseorg/caserepo"
+assert software["caserepo"]["revision_candidates"] == ["v1", "v2"]
+assert software["caserepo"]["revision_conflict"]
+assert software["caserepo"]["revision_requires_review"]
+PY
+then
+  pass github-url 'GitHub revisions preserve ambiguity across URL forms and case variants'
+else
+  fail github-url 'GitHub URL revision parsing'
+fi
+stale_software=$(python3 - "$github_project/.workspace/records/evidence/registry.json" <<'PY'
+import json
+import pathlib
+import sys
+registry = json.loads(pathlib.Path(sys.argv[1]).read_text())
+print(next(value["id"] for value in registry["software"].values() if value["repository_url"].endswith("/stale-repo")))
+PY
+)
+sed -i '/stale-repo/d' "$github_project/inbox/links.txt"
+"$repo_dir/.system/paper-evidence-harness" scan "$github_project" >/dev/null
+if python3 - "$github_project/.workspace/records/evidence/registry.json" "$stale_software" <<'PY'
+import json
+import pathlib
+import sys
+registry = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert registry["software"][sys.argv[2]]["state"] == "missing"
+assert all(edge.get("to") != sys.argv[2] for edge in registry["relations"] if edge.get("automatic"))
+PY
+then
+  pass software-freshness 'auto-discovered software becomes missing when all source links disappear'
+else
+  fail software-freshness 'stale auto-discovered software remained current'
+fi
+tree_software=$(python3 - "$github_project/.workspace/records/evidence/registry.json" <<'PY'
+import json
+import pathlib
+import sys
+registry = json.loads(pathlib.Path(sys.argv[1]).read_text())
+print(next(value["id"] for value in registry["software"].values() if value["repository_url"].endswith("/tree-repo")))
+PY
+)
+if expect_failure "$repo_dir/.system/paper-evidence-harness" fetch-software "$github_project" "$tree_software"; then
+  pass github-ambiguous 'ambiguous GitHub tree URL is refused before revision resolution'
+else
+  fail github-ambiguous 'ambiguous GitHub tree fetch without explicit revision'
+fi
+
+if python3 - "$repo_dir/.system/paper-evidence-harness" "$fixture_work" <<'PY'
+import pathlib
+import runpy
+import subprocess
+import sys
+
+module = runpy.run_path(sys.argv[1])
+HarnessError = module["HarnessError"]
+
+def response(stdout):
+    return subprocess.CompletedProcess(["git"], 0, stdout, "")
+
+resolve_revision = module["resolve_git_revision"]
+resolve_revision.__globals__["git_network_run"] = lambda *args, **kwargs: response(
+    "1" * 40 + "\trefs/tags/v1\n" + "2" * 40 + "\trefs/tags/v1^{}\n"
+)
+assert resolve_revision("https://github.com/acme/repo", "v1") == "2" * 40
+
+for revision in ("*", "refs/heads/*", "bad?ref", "refs//heads/main"):
+    try:
+        resolve_revision("https://github.com/acme/repo", revision)
+    except HarnessError:
+        pass
+    else:
+        raise AssertionError(f"unsafe revision accepted: {revision}")
+
+resolve_revision.__globals__["git_network_run"] = lambda *args, **kwargs: response(
+    "1" * 40 + "\trefs/heads/v1\n" + "2" * 40 + "\trefs/tags/v1\n"
+)
+try:
+    resolve_revision("https://github.com/acme/repo", "v1")
+except HarnessError:
+    pass
+else:
+    raise AssertionError("multiple logical refs were accepted")
+
+try:
+    module["git_run"](
+        ["git", "-C", sys.argv[2], "show", "HEAD:README"], max_output_bytes=3,
+    )
+except HarnessError:
+    pass
+else:
+    raise AssertionError("oversized git stdout was accepted")
+PY
+then
+  pass git-revision 'Git revision lookup is exact, unique, and output-bounded'
+else
+  fail git-revision 'Git revision ambiguity or output bound'
+fi
+
+printf x >"$test_root/growing.bin"
+if python3 - "$repo_dir/.system/paper-evidence-harness" "$github_project" "$test_root/growing.bin" <<'PY'
+import os
+import pathlib
+import runpy
+import sys
+module = runpy.run_path(sys.argv[1])
+real_read = os.read
+calls = 0
+def growing_read(descriptor, amount):
+    global calls
+    calls += 1
+    return b"x" if calls <= 2 else b""
+os.read = growing_read
+try:
+    snapshot = module["stable_file_snapshot"](pathlib.Path(sys.argv[3]), capture_limit=1024)
+    assert not snapshot["stable"]
+    assert "data" not in snapshot
+finally:
+    os.read = real_read
+target = pathlib.Path(sys.argv[3])
+expected = module["stable_file_snapshot"](target)
+target.write_bytes(b"xx")
+try:
+    with module["immutable_parse_snapshot"](pathlib.Path(sys.argv[2]), target, expected, 1024):
+        raise AssertionError("changed parser input was accepted")
+except module["HarnessError"] as error:
+    assert "file changed before parser snapshot" in str(error)
+status, _, error = module["run_tool"](
+    [sys.executable, "-c", "import sys; sys.stdout.write('x' * 2048)"],
+    max_output_bytes=1024,
+)
+assert status == 127 and "capture limit" in error
+PY
+then
+  pass process-bounds 'growing-file reads and parser output are stopped at explicit bounds'
+else
+  fail process-bounds 'scan/parser resource bounds'
+fi

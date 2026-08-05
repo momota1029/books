@@ -1,0 +1,3496 @@
+#!/usr/bin/env python3
+"""Inventory and provenance harness for paper lecture-note projects."""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import datetime as dt
+import fcntl
+import hashlib
+import http.client
+import ipaddress
+import json
+import mimetypes
+import os
+import pathlib
+import re
+import select
+import shutil
+import socket
+import ssl
+import stat
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+import urllib.parse
+import xml.parsers.expat
+import zipfile
+
+
+SCHEMA_VERSION = 1
+TEXT_SUFFIXES = {
+    ".bib", ".cfg", ".cls", ".csv", ".ipynb", ".jl", ".json", ".md",
+    ".py", ".r", ".rst", ".sty", ".tex", ".toml", ".tsv", ".txt",
+    ".yaml", ".yml",
+}
+IMAGE_SUFFIXES = {
+    ".avif", ".bmp", ".eps", ".gif", ".heic", ".jpeg", ".jpg",
+    ".pdf", ".png", ".svg", ".tif", ".tiff", ".webp",
+}
+ARCHIVE_SUFFIXES = {
+    ".7z", ".bz2", ".gz", ".rar", ".tar", ".tbz", ".tbz2", ".tgz",
+    ".txz", ".xz", ".zip",
+}
+MAGIC_REQUIRED_SUFFIXES = {
+    ".7z", ".avif", ".bmp", ".bz2", ".eps", ".gif", ".gz", ".heic",
+    ".jpeg", ".jpg", ".pdf", ".png", ".rar", ".tbz", ".tbz2", ".tgz",
+    ".svg", ".tif", ".tiff", ".txz", ".webp", ".xz", ".zip",
+}
+CODE_SUFFIXES = {
+    ".c", ".cc", ".cpp", ".f", ".f90", ".go", ".h", ".hpp", ".java",
+    ".jl", ".js", ".m", ".py", ".r", ".rb", ".rs", ".sh", ".swift",
+}
+DATA_SUFFIXES = {
+    ".csv", ".dta", ".feather", ".h5", ".hdf5", ".json", ".mat",
+    ".npy", ".npz", ".parquet", ".rdata", ".sav", ".tsv", ".xlsx",
+}
+ZIP_CONTAINER_FORMATS = {
+    ".docx": "office-open-xml-wordprocessing",
+    ".npz": "numpy-zip",
+    ".ods": "opendocument-spreadsheet",
+    ".odt": "opendocument-text",
+    ".odp": "opendocument-presentation",
+    ".pptx": "office-open-xml-presentation",
+    ".xlsm": "office-open-xml-macro-spreadsheet",
+    ".xlsx": "office-open-xml-spreadsheet",
+}
+SECRET_QUERY_NAMES = {
+    "access_token", "api_key", "apikey", "auth", "authorization", "key",
+    "credential", "googleaccessid", "password", "secret", "sig", "signature",
+    "token", "x-amz-credential", "x-amz-security-token", "x-amz-signature",
+    "x-goog-credential", "x-goog-signature",
+}
+SUPPORTED_GIT_HOSTS = {"github.com", "gitlab.com", "bitbucket.org"}
+ENTRY_ID = re.compile(r"^[A-Z][A-Z0-9-]{2,63}$")
+URL_RE = re.compile(r"https?://[^\s<>\"'{}\\]+", re.IGNORECASE)
+DOI_RE = re.compile(r"(?<![\w/])10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.IGNORECASE)
+CAPTION_RE = re.compile(
+    r"^\s*((?:supplementary\s+)?(?:figure|fig\.?|table)|(?:補足)?(?:図|表))"
+    r"\s*([A-Z]?[0-9]+(?:[.:-][A-Z0-9]+)?)\s*[.：:]?\s*(.*)$",
+    re.IGNORECASE,
+)
+NOTE_REF_RE = re.compile(
+    r"\\Evidence(Asset|Visual|Resource|Software)\{([A-Z][A-Z0-9-]{2,63})\}"
+)
+ORIGINAL_CAPTION_RE = re.compile(
+    r"\\EvidenceOriginalCaption\{([A-Z][A-Z0-9-]{2,63})\}"
+)
+INPUT_INDEX_RE = re.compile(r"evidence-index\.tex")
+INPUT_MACROS_RE = re.compile(r"evidence-macros\.tex")
+RELATION_KINDS = {
+    "derived-from", "documents", "explains", "generated-by", "input-to",
+    "reproduces", "resource-identifies-software", "supplements", "uses",
+}
+RELATION_TYPES = {
+    "derived-from": ({"assets", "visuals"}, {"assets", "visuals"}),
+    "documents": ({"assets", "resources"}, {"assets", "visuals", "software", "runs"}),
+    "explains": ({"assets", "visuals", "resources"}, {"assets", "visuals", "resources", "software"}),
+    "generated-by": ({"assets", "visuals"}, {"software", "runs"}),
+    "input-to": ({"assets", "resources"}, {"software", "runs"}),
+    "reproduces": ({"visuals"}, {"visuals"}),
+    "resource-identifies-software": ({"resources"}, {"software"}),
+    "supplements": ({"assets", "resources"}, {"assets"}),
+    "uses": ({"software", "runs"}, {"assets", "resources", "software"}),
+}
+ENTRY_STATES = {"current", "missing", "pending-write"}
+DISPOSITIONS = {"pending", "include", "explain", "exclude"}
+RIGHTS_STATUSES = {"pending", "cleared", "restricted-internal", "blocked", "not-applicable"}
+VISIBILITIES = {"pending", "reader", "internal"}
+PRIVACY_REVIEW_STATUSES = {"pending", "complete", "not-applicable"}
+VISUAL_ORIGINS = {
+    "pending", "source-original", "permitted-copy", "faithful-redraw",
+    "adapted", "note-original", "software-output",
+}
+REFERENCE_SECTIONS = {
+    "asset": "assets", "visual": "visuals", "original-caption": "visuals",
+    "resource": "resources", "software": "software",
+}
+
+
+class HarnessError(RuntimeError):
+    pass
+
+
+def now_utc() -> str:
+    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
+
+
+def fail(message: str, code: int = 1) -> None:
+    print(f"paper-evidence-harness: {message}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+def repo_root() -> pathlib.Path:
+    root = pathlib.Path(__file__).resolve().parent.parent
+    if not (root / ".system" / "paper-evidence-harness").is_file():
+        raise HarnessError("repository root check failed")
+    return root
+
+
+def ensure_within(path: pathlib.Path, parent: pathlib.Path) -> pathlib.Path:
+    resolved = path.resolve()
+    try:
+        resolved.relative_to(parent.resolve())
+    except ValueError as exc:
+        raise HarnessError("path escapes the repository or project") from exc
+    return resolved
+
+
+def project_path(value: str) -> pathlib.Path:
+    root = repo_root()
+    raw = pathlib.Path(value)
+    project = ensure_within(raw if raw.is_absolute() else root / raw, root)
+    if not project.is_dir() or project.is_symlink():
+        raise HarnessError("project directory check failed")
+    for name in ("inbox", "draft", "out", ".workspace"):
+        candidate = project / name
+        if not candidate.is_dir() or candidate.is_symlink():
+            raise HarnessError(f"required project directory is invalid: {name}")
+    return project
+
+
+def managed_paths(project: pathlib.Path) -> dict[str, pathlib.Path]:
+    workspace = project / ".workspace"
+    return {
+        "registry": workspace / "records" / "evidence" / "registry.json",
+        "audit": workspace / "records" / "evidence" / "last-audit.json",
+        "ingestion": workspace / "records" / "paper-ingestion-manifest.json",
+        "transaction": workspace / "records" / "evidence" / "transaction.json",
+        "config": workspace / "tools" / "evidence-harness.json",
+        "generated": workspace / "source" / "generated",
+        "figures": workspace / "source" / "figures",
+        "assets": workspace / "source" / "assets",
+        "outputs": workspace / "source" / "software-output",
+        "external_cache": workspace / "cache" / "external",
+        "software_cache": workspace / "cache" / "software",
+        "scan_tmp": workspace / "tmp" / "evidence-scan",
+        "lock": workspace / "locks" / "paper-evidence-harness.lock",
+    }
+
+
+def reject_symlink_chain(path: pathlib.Path, stop: pathlib.Path) -> None:
+    current = path
+    while True:
+        if current.is_symlink():
+            raise HarnessError(f"managed path is a symlink: {current}")
+        if current == stop:
+            return
+        if stop not in current.parents:
+            raise HarnessError("managed path escapes project")
+        current = current.parent
+
+
+def secure_directory(path: pathlib.Path, project: pathlib.Path) -> pathlib.Path:
+    """Create/check a private managed directory without accepting symlink ancestors."""
+    ensure_within(path, project)
+    reject_symlink_chain(path.parent, project)
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    reject_symlink_chain(path, project)
+    if not path.is_dir():
+        raise HarnessError(f"managed directory is invalid: {path}")
+    return path
+
+
+@contextlib.contextmanager
+def project_lock(project: pathlib.Path):
+    paths = managed_paths(project)
+    lock_path = paths["lock"]
+    secure_directory(lock_path.parent, project)
+    if lock_path.exists() and lock_path.is_symlink():
+        raise HarnessError("lock path is a symlink")
+    with lock_path.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield
+
+
+def atomic_write(path: pathlib.Path, data: str) -> None:
+    root = repo_root()
+    if ".workspace" in path.parts:
+        workspace_index = path.parts.index(".workspace")
+        root = pathlib.Path(*path.parts[:workspace_index])
+    secure_directory(path.parent, root)
+    if path.exists() and path.is_symlink():
+        raise HarnessError(f"refusing to replace symlink: {path}")
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temp = pathlib.Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+def write_json(path: pathlib.Path, value: object) -> None:
+    atomic_write(path, json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+
+
+def read_json(path: pathlib.Path) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HarnessError(f"JSON could not be read: {path}") from exc
+    if not isinstance(value, dict):
+        raise HarnessError(f"JSON root must be an object: {path}")
+    return value
+
+
+def default_config(project: pathlib.Path) -> dict:
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "project": project.name,
+        "discovery_scope": (
+            "adopted local inputs and canonical note source, plus their direct URLs; "
+            "downloaded pages are not crawled until explicitly adopted"
+        ),
+        "scan_roots": [
+            {"path": "inbox", "role": "external-input"},
+            {"path": ".workspace/source/figures", "role": "note-visual"},
+            {"path": ".workspace/source/assets", "role": "note-asset"},
+            {"path": ".workspace/source/software-output", "role": "software-output"},
+        ],
+        "note_source": ".workspace/source",
+        "generated_index": ".workspace/source/generated/evidence-index.tex",
+        "generated_macros": ".workspace/source/generated/evidence-macros.tex",
+        "network": {
+            "allowed_schemes": ["https"],
+            "max_redirects": 5,
+            "timeout_seconds": 20,
+            "max_resource_bytes": 104857600,
+        },
+        "ingestion": {"min_stability_interval_seconds": 1.0},
+        "parsing": {"max_snapshot_bytes": 536870912},
+    }
+
+
+def default_registry(project: pathlib.Path, config: dict) -> dict:
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "project": project.name,
+        "scope": config["discovery_scope"],
+        "scan": {},
+        "assets": {},
+        "visuals": {},
+        "resources": {},
+        "software": {},
+        "runs": {},
+        "relations": [],
+        "note_references": [],
+        "receipts": {"builds": []},
+    }
+
+
+def validate_registry_shape(registry: dict) -> None:
+    if registry.get("schema_version") != SCHEMA_VERSION:
+        raise HarnessError("unsupported registry schema version")
+    for key in ("assets", "visuals", "resources", "software", "runs"):
+        if not isinstance(registry.get(key), dict):
+            raise HarnessError(f"registry field must be an object: {key}")
+    if not isinstance(registry.get("relations"), list):
+        raise HarnessError("registry relations must be an array")
+    if not isinstance(registry.get("note_references"), list):
+        raise HarnessError("registry note_references must be an array")
+    prefix_by_section = {
+        "assets": "ASSET-", "visuals": "VIS-", "resources": "RES-",
+        "software": "SW-", "runs": "RUN-",
+    }
+    for section, prefix in prefix_by_section.items():
+        for key, entry in registry[section].items():
+            if not isinstance(entry, dict) or key != entry.get("id") or not ENTRY_ID.fullmatch(key) or not key.startswith(prefix):
+                raise HarnessError(f"invalid {section} registry entry: {key}")
+            if entry.get("state", "current") not in ENTRY_STATES:
+                raise HarnessError(f"unknown entry state: {key}")
+            annotation = entry.get("annotations", {})
+            if not isinstance(annotation, dict):
+                raise HarnessError(f"entry annotations must be an object: {key}")
+            if annotation.get("disposition", "pending") not in DISPOSITIONS:
+                raise HarnessError(f"unknown entry disposition: {key}")
+            if annotation.get("rights_status", "pending") not in RIGHTS_STATUSES:
+                raise HarnessError(f"unknown rights status: {key}")
+            if annotation.get("visibility", "pending") not in VISIBILITIES:
+                raise HarnessError(f"unknown reader visibility: {key}")
+            if annotation.get("privacy_review_status", "pending") not in PRIVACY_REVIEW_STATUSES:
+                raise HarnessError(f"unknown privacy review status: {key}")
+            if section == "visuals" and annotation.get("origin", "pending") not in VISUAL_ORIGINS:
+                raise HarnessError(f"unknown visual origin: {key}")
+            if section == "runs" and entry.get("status") not in {"success", "failed", "non-reproducible"}:
+                raise HarnessError(f"unknown run status: {key}")
+            if section == "runs":
+                for field in ("inputs", "outputs", "output_visuals"):
+                    identifiers = entry.get(field)
+                    if not isinstance(identifiers, list) or not all(isinstance(value, str) for value in identifiers):
+                        raise HarnessError(f"run receipt field must be an ID array: {key}.{field}")
+                    if len(identifiers) != len(set(identifiers)):
+                        raise HarnessError(f"run receipt field contains duplicate IDs: {key}.{field}")
+            if section == "software" and entry.get("source_type", "git") not in {"git", "artifact"}:
+                raise HarnessError(f"unknown software source type: {key}")
+    if not isinstance(registry.get("receipts", {}).get("builds", []), list):
+        raise HarnessError("registry build receipts must be an array")
+
+
+def initialize(project: pathlib.Path) -> tuple[dict, dict]:
+    paths = managed_paths(project)
+    for key in ("generated", "figures", "assets", "outputs", "external_cache", "software_cache", "scan_tmp"):
+        secure_directory(paths[key], project)
+    for key in ("config", "registry", "audit", "ingestion", "transaction"):
+        reject_symlink_chain(paths[key], project)
+    if paths["config"].exists():
+        config = read_json(paths["config"])
+    else:
+        config = default_config(project)
+        write_json(paths["config"], config)
+    if config.get("schema_version") != SCHEMA_VERSION:
+        raise HarnessError("unsupported config schema version")
+    if paths["registry"].exists():
+        registry = read_json(paths["registry"])
+    else:
+        registry = default_registry(project, config)
+        write_json(paths["registry"], registry)
+    validate_registry_shape(registry)
+    return config, registry
+
+
+def sha256_file(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def stable_file_snapshot(path: pathlib.Path, capture_limit: int = 0) -> dict:
+    """Hash a regular file through an O_NOFOLLOW descriptor and verify stability."""
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise HarnessError(f"file could not be opened safely: {path}") from exc
+    digest = hashlib.sha256()
+    head = b""
+    captured: list[bytes] = []
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise HarnessError(f"scan target is not a regular file: {path}")
+        bytes_read = 0
+        while bytes_read < before.st_size:
+            chunk = os.read(descriptor, min(1024 * 1024, before.st_size - bytes_read))
+            if not chunk:
+                break
+            bytes_read += len(chunk)
+            if not head:
+                head = chunk[:16]
+            digest.update(chunk)
+            if capture_limit and before.st_size <= capture_limit:
+                captured.append(chunk)
+        grew_during_read = bool(os.read(descriptor, 1))
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    stable = (
+        before.st_size == after.st_size
+        and before.st_mtime_ns == after.st_mtime_ns
+        and before.st_ino == after.st_ino
+        and before.st_dev == after.st_dev
+        and bytes_read == before.st_size
+        and not grew_during_read
+    )
+    result = {
+        "sha256": digest.hexdigest(), "size": after.st_size,
+        "mtime_ns": after.st_mtime_ns, "inode": after.st_ino,
+        "device": after.st_dev, "stable": stable, "head": head,
+    }
+    if stable and capture_limit and before.st_size <= capture_limit:
+        result["data"] = b"".join(captured)
+    return result
+
+
+@contextlib.contextmanager
+def immutable_parse_snapshot(
+    project: pathlib.Path, path: pathlib.Path, expected: dict, max_bytes: int,
+):
+    """Copy one bounded, already-hashed revision to a private parser snapshot."""
+    temp_root = secure_directory(managed_paths(project)["scan_tmp"], project)
+    reject_symlink_chain(temp_root, project)
+    if expected.get("size", max_bytes + 1) > max_bytes:
+        raise HarnessError(f"parser snapshot exceeds configured limit ({max_bytes} bytes)")
+    required_free = int(expected.get("size", 0)) + 16 * 1024 * 1024
+    if shutil.disk_usage(temp_root).free < required_free:
+        raise HarnessError("insufficient private temporary space for parser snapshot")
+    source_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    source_fd = os.open(path, source_flags)
+    temp_fd, temp_name = tempfile.mkstemp(prefix="parse-", suffix=path.suffix, dir=temp_root)
+    temp_path = pathlib.Path(temp_name)
+    digest = hashlib.sha256()
+    head = b""
+    try:
+        before = os.fstat(source_fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise HarnessError(f"scan target is not a regular file: {path}")
+        if (
+            before.st_size != expected.get("size")
+            or before.st_mtime_ns != expected.get("mtime_ns")
+            or before.st_ino != expected.get("inode")
+            or before.st_dev != expected.get("device")
+        ):
+            raise HarnessError(f"file changed before parser snapshot: {path}")
+        expected_size = int(expected["size"])
+        bytes_read = 0
+        with os.fdopen(temp_fd, "wb") as target:
+            while bytes_read < expected_size:
+                chunk = os.read(source_fd, min(1024 * 1024, expected_size - bytes_read))
+                if not chunk:
+                    break
+                bytes_read += len(chunk)
+                if not head:
+                    head = chunk[:16]
+                digest.update(chunk)
+                target.write(chunk)
+            grew_during_read = bool(os.read(source_fd, 1))
+            target.flush()
+            os.fsync(target.fileno())
+        after = os.fstat(source_fd)
+        stable = (
+            before.st_size == after.st_size
+            and before.st_mtime_ns == after.st_mtime_ns
+            and before.st_ino == after.st_ino
+            and before.st_dev == after.st_dev
+            and bytes_read == expected_size
+            and not grew_during_read
+        )
+        copied_digest = digest.hexdigest()
+        if (
+            not stable
+            or copied_digest != expected.get("sha256")
+            or after.st_size != expected.get("size")
+            or after.st_mtime_ns != expected.get("mtime_ns")
+            or after.st_ino != expected.get("inode")
+            or after.st_dev != expected.get("device")
+        ):
+            raise HarnessError(f"file changed between hashing and parser snapshot: {path}")
+        yield temp_path
+    finally:
+        os.close(source_fd)
+        with contextlib.suppress(OSError):
+            os.close(temp_fd)
+        temp_path.unlink(missing_ok=True)
+
+
+def short_id(prefix: str, material: str) -> str:
+    digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:16].upper()
+    return f"{prefix}-{digest}"
+
+
+def parser_process_limits() -> None:
+    import resource
+    resource.setrlimit(resource.RLIMIT_AS, (1024 * 1024 * 1024, 1024 * 1024 * 1024))
+    resource.setrlimit(resource.RLIMIT_CPU, (120, 120))
+    resource.setrlimit(resource.RLIMIT_FSIZE, (64 * 1024 * 1024, 64 * 1024 * 1024))
+    resource.setrlimit(resource.RLIMIT_NOFILE, (128, 128))
+
+
+def run_tool(
+    argv: list[str], timeout: int = 60, max_output_bytes: int = 16 * 1024 * 1024,
+) -> tuple[int, str, str]:
+    """Run an untrusted-document parser with bounded process and captured output."""
+    try:
+        with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
+            result = subprocess.run(
+                argv, check=False, stdout=stdout_file, stderr=stderr_file,
+                timeout=timeout, env={**os.environ, "LC_ALL": "C"},
+                preexec_fn=parser_process_limits,
+            )
+            stdout_size = stdout_file.tell()
+            stderr_size = stderr_file.tell()
+            if stdout_size > max_output_bytes or stderr_size > max_output_bytes:
+                return 127, "", "tool output exceeded the configured capture limit"
+            stdout_file.seek(0)
+            stderr_file.seek(0)
+            stdout = stdout_file.read(max_output_bytes + 1).decode("utf-8", errors="replace")
+            stderr = stderr_file.read(max_output_bytes + 1).decode("utf-8", errors="replace")
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return 127, "", str(exc)
+    return result.returncode, stdout, stderr
+
+
+def sniff_type(path: pathlib.Path, head: bytes | None = None) -> str:
+    if head is None:
+        head = stable_file_snapshot(path)["head"]
+    signatures = (
+        (b"%PDF-", "application/pdf"),
+        (b"PK\x03\x04", "application/zip"),
+        (b"PK\x05\x06", "application/zip"),
+        (b"PK\x07\x08", "application/zip"),
+        (b"\x89PNG\r\n\x1a\n", "image/png"),
+        (b"\xff\xd8\xff", "image/jpeg"),
+        (b"GIF87a", "image/gif"),
+        (b"GIF89a", "image/gif"),
+        (b"BM", "image/bmp"),
+        (b"II*\x00", "image/tiff"),
+        (b"MM\x00*", "image/tiff"),
+        (b"II+\x00\x08\x00\x00\x00", "image/tiff"),
+        (b"MM\x00+\x00\x08\x00\x00", "image/tiff"),
+        (b"\x1f\x8b", "application/gzip"),
+        (b"BZh", "application/x-bzip2"),
+        (b"\xfd7zXZ\x00", "application/x-xz"),
+        (b"7z\xbc\xaf'\x1c", "application/x-7z-compressed"),
+        (b"Rar!\x1a\x07", "application/vnd.rar"),
+        (b"%!PS-Adobe-", "application/postscript"),
+    )
+    for signature, media_type in signatures:
+        if head.startswith(signature):
+            return media_type
+    if len(head) >= 12 and head.startswith(b"RIFF") and head[8:12] == b"WEBP":
+        return "image/webp"
+    if len(head) >= 12 and head[4:8] == b"ftyp":
+        brand = head[8:12]
+        if brand in {b"avif", b"avis"}:
+            return "image/avif"
+        if brand in {b"heic", b"heix", b"hevc", b"hevx", b"mif1", b"msf1"}:
+            return "image/heic"
+    if path.suffix.lower() in MAGIC_REQUIRED_SUFFIXES:
+        return "application/octet-stream"
+    return mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+
+
+def valid_svg_document(data: bytes) -> bool:
+    """Validate one bounded SVG document without fetching or expanding entities."""
+    if not data:
+        return False
+    root_name = ""
+    parser = xml.parsers.expat.ParserCreate(namespace_separator="}")
+    parser.SetParamEntityParsing(xml.parsers.expat.XML_PARAM_ENTITY_PARSING_NEVER)
+
+    def start_element(name: str, attributes: dict) -> None:
+        nonlocal root_name
+        if not root_name:
+            root_name = name.rsplit("}", 1)[-1]
+
+    def reject_entity(*arguments: object) -> None:
+        raise ValueError("SVG entity declarations are not accepted")
+
+    parser.StartElementHandler = start_element
+    parser.EntityDeclHandler = reject_entity
+    parser.ExternalEntityRefHandler = lambda *arguments: 1
+    try:
+        parser.Parse(data, True)
+    except (ValueError, xml.parsers.expat.ExpatError):
+        return False
+    return root_name == "svg"
+
+
+def classify(path: pathlib.Path, role: str, media_type: str) -> str:
+    suffix = path.suffix.lower()
+    if role == "note-visual":
+        return "note-visual"
+    if role == "software-output":
+        return "software-output"
+    if role == "note-asset":
+        return "note-asset"
+    if media_type.startswith("image/"):
+        return "source-visual"
+    if media_type == "application/pdf":
+        return "source-document"
+    if suffix in DATA_SUFFIXES:
+        return "source-data"
+    if suffix in ARCHIVE_SUFFIXES or media_type in {"application/zip", "application/gzip"}:
+        return "source-archive"
+    if suffix in CODE_SUFFIXES:
+        return "source-code"
+    return "source-supplement"
+
+
+def default_annotation(kind: str) -> dict:
+    annotation = {
+        "disposition": "pending",
+        "visibility": "pending",
+        "privacy_review_status": "pending",
+        "public_summary": "",
+        "title": "",
+        "description": "",
+        "rights_status": "pending",
+        "license": "",
+        "exclusion_reason": "",
+    }
+    if kind in {"source-document", "source-supplement", "source-archive"}:
+        annotation.update({
+            "visual_review_status": "pending",
+            "link_review_status": "pending",
+            "attachment_review_status": "pending",
+            "archive_review_status": "pending" if kind == "source-archive" else "not-applicable",
+        })
+    if kind in {"note-visual", "software-output", "source-visual"}:
+        annotation.update({"origin": "pending", "alt_text": "", "creator": ""})
+    return annotation
+
+
+def merge_annotation(old: dict | None, kind: str) -> dict:
+    result = default_annotation(kind)
+    if isinstance(old, dict):
+        result.update(old)
+    return result
+
+
+def safe_archive_member(name: str) -> bool:
+    pure = pathlib.PurePosixPath(name.replace("\\", "/"))
+    return bool(name) and not pure.is_absolute() and ".." not in pure.parts
+
+
+def inspect_archive_worker(path: pathlib.Path) -> dict:
+    result = {
+        "status": "unsupported",
+        "members": [],
+        "unsafe_entries": [],
+        "encrypted_entries": [],
+        "total_uncompressed_bytes": 0,
+        "nested_archives": 0,
+        "limit_exceeded": "",
+    }
+    if path.stat().st_size > 1024 * 1024 * 1024:
+        result["status"] = "blocked"
+        result["limit_exceeded"] = "compressed input exceeds 1 GiB"
+        return result
+    try:
+        if zipfile.is_zipfile(path):
+            result["status"] = "inspected"
+            with zipfile.ZipFile(path) as archive:
+                for member_index, info in enumerate(archive.infolist(), 1):
+                    if member_index > 10000:
+                        result["status"] = "blocked"
+                        result["limit_exceeded"] = "archive exceeds 10000 members"
+                        break
+                    unix_mode = info.external_attr >> 16
+                    file_type = stat.S_IFMT(unix_mode) if unix_mode else 0
+                    member = {
+                        "path": info.filename,
+                        "size": info.file_size,
+                        "compressed_size": info.compress_size,
+                        "unix_mode": oct(unix_mode) if unix_mode else "",
+                    }
+                    result["members"].append(member)
+                    result["total_uncompressed_bytes"] += info.file_size
+                    if result["total_uncompressed_bytes"] > 5 * 1024 * 1024 * 1024:
+                        result["status"] = "blocked"
+                        result["limit_exceeded"] = "declared expansion exceeds 5 GiB"
+                        break
+                    if not safe_archive_member(info.filename):
+                        result["unsafe_entries"].append(info.filename)
+                    if file_type and file_type not in {stat.S_IFREG, stat.S_IFDIR}:
+                        result["unsafe_entries"].append(info.filename)
+                    if info.flag_bits & 0x1:
+                        result["encrypted_entries"].append(info.filename)
+                    if pathlib.PurePosixPath(info.filename).suffix.lower() in ARCHIVE_SUFFIXES:
+                        result["nested_archives"] += 1
+                suffix = path.suffix.lower()
+                container_format = ZIP_CONTAINER_FORMATS.get(suffix)
+                if container_format and result["status"] == "inspected":
+                    names = {info.filename for info in archive.infolist()}
+                    signature_valid = False
+                    if suffix in {".xlsx", ".xlsm"}:
+                        signature_valid = "[Content_Types].xml" in names and "xl/workbook.xml" in names
+                    elif suffix == ".docx":
+                        signature_valid = "[Content_Types].xml" in names and "word/document.xml" in names
+                    elif suffix == ".pptx":
+                        signature_valid = "[Content_Types].xml" in names and "ppt/presentation.xml" in names
+                    elif suffix in {".ods", ".odt", ".odp"}:
+                        signature_valid = "mimetype" in names and "META-INF/manifest.xml" in names
+                    elif suffix == ".npz":
+                        npy_names = [name for name in names if name.lower().endswith(".npy")]
+                        if npy_names:
+                            try:
+                                with archive.open(sorted(npy_names)[0]) as member:
+                                    signature_valid = member.read(6) == b"\x93NUMPY"
+                            except (KeyError, OSError, RuntimeError, zipfile.BadZipFile):
+                                signature_valid = False
+                    result["container_format"] = container_format
+                    result["container_signature_valid"] = signature_valid
+                    result["container_internals"] = True
+            return result
+        try:
+            archive = tarfile.open(path, "r|*")
+        except tarfile.TarError:
+            archive = None
+        if archive is not None:
+            result["status"] = "inspected"
+            with archive:
+                for member_index, info in enumerate(archive, 1):
+                    if member_index > 10000:
+                        result["status"] = "blocked"
+                        result["limit_exceeded"] = "archive exceeds 10000 members"
+                        break
+                    member = {"path": info.name, "size": info.size, "type": info.type.decode("latin1")}
+                    result["members"].append(member)
+                    result["total_uncompressed_bytes"] += max(info.size, 0)
+                    if result["total_uncompressed_bytes"] > 5 * 1024 * 1024 * 1024:
+                        result["status"] = "blocked"
+                        result["limit_exceeded"] = "declared expansion exceeds 5 GiB"
+                        break
+                    if not safe_archive_member(info.name) or info.issym() or info.islnk() or info.isdev():
+                        result["unsafe_entries"].append(info.name)
+                    if pathlib.PurePosixPath(info.name).suffix.lower() in ARCHIVE_SUFFIXES:
+                        result["nested_archives"] += 1
+            return result
+    except (OSError, zipfile.BadZipFile, tarfile.TarError) as exc:
+        result["status"] = "error"
+        result["error"] = str(exc)
+    return result
+
+
+def archive_worker_limits() -> None:
+    import resource
+    resource.setrlimit(resource.RLIMIT_AS, (512 * 1024 * 1024, 512 * 1024 * 1024))
+    resource.setrlimit(resource.RLIMIT_CPU, (15, 15))
+    resource.setrlimit(resource.RLIMIT_FSIZE, (16 * 1024 * 1024, 16 * 1024 * 1024))
+    resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))
+
+
+def inspect_archive(path: pathlib.Path) -> dict:
+    try:
+        with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
+            completed = subprocess.run(
+                [sys.executable, str(pathlib.Path(__file__).resolve()), "--archive-worker", str(path)],
+                check=False, stdout=stdout_file, stderr=stderr_file, timeout=20,
+                env={"PATH": os.environ.get("PATH", os.defpath), "LANG": "C", "LC_ALL": "C"},
+                preexec_fn=archive_worker_limits,
+            )
+            if stdout_file.tell() > 16 * 1024 * 1024 or stderr_file.tell() > 16 * 1024 * 1024:
+                raise HarnessError("isolated archive inspector output exceeded 16 MiB")
+            stdout_file.seek(0)
+            stdout = stdout_file.read(16 * 1024 * 1024 + 1).decode("utf-8", errors="replace")
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {
+            "status": "blocked", "members": [], "unsafe_entries": [],
+            "encrypted_entries": [], "total_uncompressed_bytes": 0,
+            "nested_archives": 0, "limit_exceeded": f"isolated inspection failed: {type(exc).__name__}",
+        }
+    except HarnessError as exc:
+        return {
+            "status": "blocked", "members": [], "unsafe_entries": [],
+            "encrypted_entries": [], "total_uncompressed_bytes": 0,
+            "nested_archives": 0, "limit_exceeded": str(exc),
+        }
+    if completed.returncode != 0:
+        return {
+            "status": "blocked", "members": [], "unsafe_entries": [],
+            "encrypted_entries": [], "total_uncompressed_bytes": 0,
+            "nested_archives": 0, "limit_exceeded": "isolated inspector exited unsuccessfully",
+        }
+    try:
+        result = json.loads(stdout)
+    except json.JSONDecodeError:
+        result = {"status": "blocked", "limit_exceeded": "isolated inspector returned invalid data"}
+    return result
+
+
+def is_single_stream_compression(path: pathlib.Path) -> bool:
+    """Return true only for compression wrappers, not compressed tar archives."""
+    suffix = path.suffix.lower()
+    return suffix in {".gz", ".bz2", ".xz"} and pathlib.Path(path.stem).suffix.lower() != ".tar"
+
+
+def inspect_single_stream_compression(path: pathlib.Path, snapshot: dict) -> dict:
+    """Index a compression stream without decompressing attacker-controlled bytes."""
+    member_name = pathlib.Path(path.stem).name or "compressed-stream"
+    suffix = path.suffix.lower()
+    head = snapshot.get("head", b"")
+    valid_header = {
+        ".gz": len(head) >= 4 and head[:3] == b"\x1f\x8b\x08" and not (head[3] & 0xE0),
+        ".bz2": len(head) >= 4 and head[:3] == b"BZh" and head[3:4] in b"123456789",
+        ".xz": head.startswith(b"\xfd7zXZ\x00"),
+    }.get(suffix, False)
+    if not valid_header:
+        return {
+            "status": "error", "inspection_mode": "single-stream-header-only",
+            "members": [], "unsafe_entries": [], "encrypted_entries": [],
+            "total_uncompressed_bytes": 0, "nested_archives": 0,
+            "limit_exceeded": "", "error": f"invalid {suffix} compression header",
+        }
+    return {
+        "status": "inspected",
+        "inspection_mode": "single-stream-header-only",
+        "members": [{
+            "path": member_name, "size": None,
+            "compressed_size": snapshot.get("size", 0),
+            "type": "single compressed stream; uncompressed size not trusted or read",
+        }],
+        "unsafe_entries": [], "encrypted_entries": [],
+        "total_uncompressed_bytes": 0, "nested_archives": 0,
+        "limit_exceeded": "",
+        "capability_limit": "payload was not decompressed; adoption requires a separately hashed inbox asset",
+    }
+
+
+def pdf_metadata(path: pathlib.Path) -> dict:
+    data = {
+        "pdfinfo_status": "unavailable",
+        "pages": None,
+        "caption_candidates": [],
+        "embedded_rasters": [],
+        "annotation_urls": [],
+        "attachments": [],
+        "capability_limits": [
+            "caption detection does not prove visual completeness",
+            "vector-only and captionless visuals require page-by-page attestation",
+        ],
+    }
+    if shutil.which("pdfinfo"):
+        status, stdout, _ = run_tool(["pdfinfo", str(path)])
+        data["pdfinfo_status"] = "ok" if status == 0 else "failed"
+        if status == 0:
+            match = re.search(r"^Pages:\s+(\d+)\s*$", stdout, re.MULTILINE)
+            if match:
+                data["pages"] = int(match.group(1))
+            encrypted = re.search(r"^Encrypted:\s+(.+)$", stdout, re.MULTILINE)
+            data["encrypted"] = encrypted.group(1).strip() if encrypted else "unknown"
+    if shutil.which("pdftotext"):
+        status, stdout, _ = run_tool(["pdftotext", "-layout", str(path), "-"], timeout=120)
+        data["text_extraction_status"] = "ok" if status == 0 else "failed"
+        if status == 0:
+            pages = stdout.split("\f")
+            for page_number, page_text in enumerate(pages, 1):
+                for line_number, line in enumerate(page_text.splitlines(), 1):
+                    match = CAPTION_RE.match(line)
+                    if match:
+                        data["caption_candidates"].append({
+                            "page": page_number,
+                            "line": line_number,
+                            "label": f"{match.group(1)} {match.group(2)}",
+                            "caption": match.group(3).strip()[:1000],
+                        })
+            data["text_urls"] = sorted(extract_urls(stdout))
+    if shutil.which("pdfimages"):
+        status, stdout, _ = run_tool(["pdfimages", "-list", str(path)], timeout=120)
+        data["pdfimages_status"] = "ok" if status == 0 else "failed"
+        if status == 0:
+            for line in stdout.splitlines():
+                fields = line.split()
+                if len(fields) >= 13 and fields[0].isdigit() and fields[1].isdigit():
+                    data["embedded_rasters"].append({
+                        "page": int(fields[0]), "number": int(fields[1]),
+                        "type": fields[2], "width": fields[3], "height": fields[4],
+                        "object": fields[10] if len(fields) > 10 else "",
+                    })
+    if shutil.which("mutool"):
+        status, pages_out, _ = run_tool(["mutool", "show", str(path), "pages"], timeout=60)
+        refs = re.findall(r"page\s+\d+\s*=\s*(\d+)\s+\d+\s+R", pages_out) if status == 0 else []
+        if refs:
+            args = ["mutool", "show", str(path)] + [f"{ref}/Annots" for ref in refs]
+            ann_status, ann_out, _ = run_tool(args, timeout=120)
+            data["annotation_scan_status"] = "ok" if ann_status == 0 else "failed"
+            if ann_status == 0:
+                data["annotation_urls"] = sorted(extract_urls(ann_out))
+    if shutil.which("pdfdetach"):
+        status, stdout, _ = run_tool(["pdfdetach", "-list", str(path)], timeout=60)
+        data["attachment_scan_status"] = "ok" if status == 0 else "failed"
+        if status == 0:
+            for line in stdout.splitlines():
+                match = re.match(r"\s*(\d+):\s+(.+)$", line)
+                if match:
+                    data["attachments"].append({
+                        "number": int(match.group(1)), "name": match.group(2).strip(),
+                    })
+    return data
+
+
+def quote_url_path_preserving_escapes(path: str) -> str:
+    """Quote a URL path while preserving the identity of encoded reserved bytes."""
+    result: list[str] = []
+    cursor = 0
+    for match in re.finditer(r"%([0-9A-Fa-f]{2})", path):
+        result.append(urllib.parse.quote(path[cursor:match.start()], safe="/:@!$&'()*+,;=-._~"))
+        result.append("%" + match.group(1).upper())
+        cursor = match.end()
+    result.append(urllib.parse.quote(path[cursor:], safe="/:@!$&'()*+,;=-._~"))
+    return "".join(result)
+
+
+def redact_and_canonicalize_url(raw: str) -> tuple[str, bool]:
+    raw = raw.rstrip(".,;:!?)]}、。，；：）】」』")
+    parsed = urllib.parse.urlsplit(raw)
+    scheme = parsed.scheme.lower()
+    host = (parsed.hostname or "").lower()
+    if scheme not in {"http", "https"} or not host:
+        return "", False
+    try:
+        parsed_port = parsed.port
+    except ValueError:
+        return "", False
+    port = f":{parsed_port}" if parsed_port and parsed_port not in {80, 443} else ""
+    host_for_url = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    netloc = host_for_url + port
+    query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    secret = bool(parsed.username or parsed.password) or any(name.lower() in SECRET_QUERY_NAMES for name, _ in query)
+    safe_query = [(name, "[REDACTED]" if name.lower() in SECRET_QUERY_NAMES else value) for name, value in query]
+    if parsed.username or parsed.password:
+        safe_query.insert(0, ("authorization", "[REDACTED]"))
+    safe_path = quote_url_path_preserving_escapes(parsed.path or "/")
+    canonical = urllib.parse.urlunsplit((scheme, netloc, safe_path, urllib.parse.urlencode(safe_query), ""))
+    return canonical, secret
+
+
+def extract_urls(text: str) -> set[str]:
+    urls: set[str] = set()
+    for match in URL_RE.finditer(text):
+        canonical, _ = redact_and_canonicalize_url(match.group(0))
+        if canonical:
+            urls.add(canonical)
+    for match in DOI_RE.finditer(text):
+        doi = match.group(0).rstrip(".,;:!?)]}、。，；：）】」』")
+        urls.add(f"https://doi.org/{doi}")
+    return urls
+
+
+def url_for_receipt(url: str) -> str:
+    canonical, _ = redact_and_canonicalize_url(url)
+    parsed = urllib.parse.urlsplit(canonical)
+    query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    redacted_query = urllib.parse.urlencode([(name, "[REDACTED]") for name, _ in query])
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, redacted_query, ""))
+
+
+def read_text_limited(path: pathlib.Path, limit: int = 20 * 1024 * 1024) -> str:
+    if path.stat().st_size > limit:
+        return ""
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def scan_file(
+    project: pathlib.Path, path: pathlib.Path, role: str, old_assets: dict,
+    scan_token: str = "", max_parse_bytes: int = 536870912,
+) -> dict:
+    relative = path.relative_to(project).as_posix()
+    if path.is_symlink():
+        material = f"symlink:{role}:{relative}:{os.readlink(path)}"
+        asset_id = short_id("ASSET", material)
+        return {
+            "id": asset_id, "state": "current", "role": role, "kind": "unsafe-symlink",
+            "locations": [relative], "symlink_target": os.readlink(path),
+            "security_status": "blocked", "annotations": merge_annotation(
+                old_assets.get(asset_id, {}).get("annotations"), "unsafe-symlink"
+            ),
+        }
+    snapshot = stable_file_snapshot(path, capture_limit=20 * 1024 * 1024)
+    digest = snapshot["sha256"]
+    stable = snapshot["stable"]
+    asset_id = short_id("ASSET", f"{role}:{digest}")
+    media_type = sniff_type(path, snapshot["head"])
+    guessed_value, guessed_encoding = mimetypes.guess_type(path.name)
+    guessed = guessed_value or "application/octet-stream"
+    if path.suffix.lower() == ".svg":
+        svg_valid = valid_svg_document(snapshot.get("data", b""))
+        media_type = "image/svg+xml" if svg_valid else "application/octet-stream"
+    kind = classify(path, role, media_type)
+    entry = {
+        "id": asset_id,
+        "state": "current" if stable else "pending-write",
+        "role": role,
+        "kind": kind,
+        "locations": [relative],
+        "size": snapshot["size"],
+        "mtime_ns": snapshot["mtime_ns"],
+        "sha256": digest,
+        "metadata_source_sha256": digest,
+        "metadata_status": "not-required",
+        "media_type": media_type,
+        "extension_media_type": guessed,
+        "extension_encoding": guessed_encoding or "",
+        "media_type_mismatch": (
+            (path.suffix.lower() in MAGIC_REQUIRED_SUFFIXES and media_type == "application/octet-stream")
+            or (
+                media_type != guessed
+                and media_type != "application/octet-stream"
+                and not (
+                    guessed_encoding in {"gzip", "bzip2", "xz"}
+                    and media_type in {"application/gzip", "application/x-bzip2", "application/x-xz"}
+                )
+            )
+        ),
+        "security_status": "pending" if stable else "blocked",
+        "annotations": merge_annotation(old_assets.get(asset_id, {}).get("annotations"), kind),
+    }
+    if path.suffix.lower() == ".svg":
+        entry["metadata_status"] = "parsed-bounded-memory" if svg_valid else "blocked"
+    observations = list(old_assets.get(asset_id, {}).get("stable_observations", []))
+    if stable and scan_token and not any(item.get("scan_token") == scan_token for item in observations):
+        observations.append({
+            "scan_token": scan_token, "observed_at": now_utc(),
+            "observed_ns": time.time_ns(),
+            "size": snapshot["size"], "mtime_ns": snapshot["mtime_ns"],
+            "sha256": digest, "before_after_stat_match": True,
+        })
+    entry["stable_observations"] = observations[-20:]
+    if path.suffix.lower() in TEXT_SUFFIXES and snapshot.get("data"):
+        entry["text_urls"] = sorted(extract_urls(snapshot["data"].decode("utf-8", errors="replace")))
+    if kind == "source-archive" and is_single_stream_compression(path):
+        entry["archive"] = inspect_single_stream_compression(path, snapshot)
+        entry["metadata_status"] = "bounded-header-only"
+    elif kind == "source-archive" or path.suffix.lower() in ZIP_CONTAINER_FORMATS or media_type == "application/pdf":
+        try:
+            with immutable_parse_snapshot(project, path, snapshot, max_parse_bytes) as parse_path:
+                if kind == "source-archive" or path.suffix.lower() in ZIP_CONTAINER_FORMATS:
+                    entry["archive"] = inspect_archive(parse_path)
+                    if path.suffix.lower() in ZIP_CONTAINER_FORMATS:
+                        entry["media_type_mismatch"] = not bool(entry["archive"].get("container_signature_valid"))
+                        entry["annotations"].setdefault("archive_review_status", "pending")
+                if media_type == "application/pdf":
+                    entry["pdf"] = pdf_metadata(parse_path)
+            entry["metadata_status"] = "parsed-bounded-snapshot"
+        except HarnessError as exc:
+            if "file changed" in str(exc):
+                raise
+            entry["metadata_status"] = "blocked"
+            entry["metadata_error"] = str(exc)
+            if kind == "source-archive" or path.suffix.lower() in ZIP_CONTAINER_FORMATS:
+                entry["archive"] = {
+                    "status": "blocked", "members": [], "unsafe_entries": [],
+                    "encrypted_entries": [], "total_uncompressed_bytes": 0,
+                    "nested_archives": 0, "limit_exceeded": str(exc),
+                }
+            if media_type == "application/pdf":
+                entry["pdf"] = {"inspection_status": "blocked", "error": str(exc)}
+    return entry
+
+
+def iter_scan_files(project: pathlib.Path, config: dict):
+    seen: set[pathlib.Path] = set()
+    for root_spec in config.get("scan_roots", []):
+        relative = root_spec.get("path")
+        role = root_spec.get("role")
+        if not isinstance(relative, str) or not isinstance(role, str):
+            raise HarnessError("invalid scan root configuration")
+        root = ensure_within(project / relative, project)
+        if not root.exists():
+            continue
+        if not root.is_dir() or root.is_symlink():
+            raise HarnessError(f"scan root is invalid: {relative}")
+        for path in sorted(root.rglob("*")):
+            if path.is_dir() and not path.is_symlink():
+                continue
+            if path.name == ".gitignore":
+                continue
+            lexical = pathlib.Path(os.path.abspath(path))
+            if lexical in seen:
+                continue
+            seen.add(lexical)
+            yield path, role
+    source_root = ensure_within(project / config["note_source"], project)
+    generated_root = managed_paths(project)["generated"]
+    for path in sorted(source_root.rglob("*")):
+        if path.is_dir() and not path.is_symlink():
+            continue
+        if generated_root in path.parents or path.suffix.lower() in TEXT_SUFFIXES:
+            continue
+        lexical = pathlib.Path(os.path.abspath(path))
+        if lexical not in seen:
+            seen.add(lexical)
+            yield path, "note-asset"
+
+
+def merge_duplicate_asset(existing: dict, new: dict) -> None:
+    existing["locations"] = sorted(set(existing.get("locations", []) + new.get("locations", [])))
+    if existing.get("state") != "pending-write":
+        existing["state"] = new.get("state", "current")
+
+
+def resource_kind(url: str) -> str:
+    parsed = urllib.parse.urlsplit(url)
+    host = (parsed.hostname or "").lower()
+    path = parsed.path.lower()
+    if host == "doi.org":
+        return "persistent-identifier"
+    if host in {"github.com", "www.github.com"}:
+        return "repository-link"
+    if any(path.endswith(suffix) for suffix in (".zip", ".tar", ".tgz", ".gz", ".csv", ".xlsx", ".pdf")):
+        return "downloadable-file"
+    return "web-resource"
+
+
+def github_repository(url: str) -> tuple[str, str, str, bool] | None:
+    parsed = urllib.parse.urlsplit(url)
+    if (parsed.hostname or "").lower() not in {"github.com", "www.github.com"}:
+        return None
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) < 2:
+        return None
+    owner, repository = parts[0], parts[1].removesuffix(".git")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", owner) or not re.fullmatch(r"[A-Za-z0-9_.-]+", repository):
+        return None
+    revision = ""
+    revision_requires_review = False
+    if len(parts) >= 4 and parts[2] == "commit":
+        if re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", parts[3]):
+            revision = parts[3].lower()
+        else:
+            revision_requires_review = True
+    elif len(parts) >= 5 and parts[2:4] == ["releases", "tag"]:
+        revision = "/".join(parts[4:])
+    elif len(parts) >= 4 and parts[2] == "tree":
+        # GitHub's tree URL does not delimit a branch containing slashes from a
+        # subdirectory. Only a full object ID is safe to infer automatically.
+        if re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", parts[3]):
+            revision = parts[3].lower()
+        else:
+            revision_requires_review = True
+    return owner, repository, revision, revision_requires_review
+
+
+def note_source_texts(project: pathlib.Path, config: dict):
+    source_root = ensure_within(project / config["note_source"], project)
+    generated_root = managed_paths(project)["generated"]
+    for path in sorted(source_root.rglob("*")):
+        if not path.is_file() or path.is_symlink() or generated_root in path.parents:
+            continue
+        if path.suffix.lower() in TEXT_SUFFIXES:
+            snapshot = stable_file_snapshot(path, capture_limit=20 * 1024 * 1024)
+            content = snapshot.get("data", b"").decode("utf-8", errors="replace")
+            yield path, content, snapshot
+
+
+def strip_tex_comments(content: str) -> str:
+    clean_lines: list[str] = []
+    for line in content.splitlines():
+        index = 0
+        while True:
+            percent = line.find("%", index)
+            if percent < 0:
+                break
+            backslashes = 0
+            cursor = percent - 1
+            while cursor >= 0 and line[cursor] == "\\":
+                backslashes += 1
+                cursor -= 1
+            if backslashes % 2 == 0:
+                line = line[:percent]
+                break
+            index = percent + 1
+        clean_lines.append(line)
+    return "\n".join(clean_lines)
+
+
+def collect_note_references(project: pathlib.Path, config: dict) -> tuple[list[dict], set[str], set[str], list[dict]]:
+    references: list[dict] = []
+    all_text: list[str] = []
+    source_files: list[dict] = []
+    for path, content, snapshot in note_source_texts(project, config):
+        relative = path.relative_to(project).as_posix()
+        if not snapshot["stable"]:
+            raise HarnessError(f"canonical source changed while hashing: {relative}")
+        source_files.append({
+            "path": relative, "size": snapshot["size"],
+            "mtime_ns": snapshot["mtime_ns"], "sha256": snapshot["sha256"],
+        })
+        if path.suffix.lower() == ".tex":
+            content = strip_tex_comments(content)
+        all_text.append(content)
+        for line_number, line in enumerate(content.splitlines(), 1):
+            for match in NOTE_REF_RE.finditer(line):
+                references.append({
+                    "kind": match.group(1).lower(), "id": match.group(2),
+                    "path": relative, "line": line_number,
+                })
+            for match in ORIGINAL_CAPTION_RE.finditer(line):
+                references.append({
+                    "kind": "original-caption", "id": match.group(1),
+                    "path": relative, "line": line_number,
+                })
+                references.append({
+                    "kind": "visual", "id": match.group(1),
+                    "path": relative, "line": line_number,
+                })
+    joined = "\n".join(all_text)
+    input_pattern = re.compile(r"\\(?:input|include)\s*\{([^}]*)\}")
+    inputs = [match.group(1).strip() for match in input_pattern.finditer(joined)]
+    integrations = {
+        "index" if any(pathlib.PurePosixPath(value).name == "evidence-index.tex" for value in inputs) else "",
+        "macros" if any(pathlib.PurePosixPath(value).name == "evidence-macros.tex" for value in inputs) else "",
+    } - {""}
+    return references, extract_urls(joined), integrations, source_files
+
+
+def discover(project: pathlib.Path, config: dict, previous: dict) -> dict:
+    registry = json.loads(json.dumps(previous))
+    old_assets = previous.get("assets", {})
+    assets: dict[str, dict] = {}
+    discovered_urls: dict[str, set[str]] = {}
+    scan_token = f"scan-{time.time_ns()}"
+    max_parse_bytes = int(config.get("parsing", {}).get("max_snapshot_bytes", 536870912))
+    if max_parse_bytes < 1024 * 1024:
+        raise HarnessError("configured parser snapshot limit must be at least 1 MiB")
+    for path, role in iter_scan_files(project, config):
+        entry = scan_file(project, path, role, old_assets, scan_token, max_parse_bytes)
+        if entry["id"] in assets:
+            merge_duplicate_asset(assets[entry["id"]], entry)
+        else:
+            assets[entry["id"]] = entry
+        if not path.is_symlink() and path.suffix.lower() in TEXT_SUFFIXES:
+            for url in entry.get("text_urls", []):
+                discovered_urls.setdefault(url, set()).add(path.relative_to(project).as_posix())
+        if entry.get("pdf"):
+            for url in entry["pdf"].get("text_urls", []) + entry["pdf"].get("annotation_urls", []):
+                discovered_urls.setdefault(url, set()).add(entry["id"])
+    for asset_id, old in old_assets.items():
+        if asset_id not in assets:
+            if old.get("locations") and all(pathlib.PurePosixPath(location).name == ".gitignore" for location in old["locations"]):
+                continue
+            missing = json.loads(json.dumps(old))
+            missing["state"] = "missing"
+            assets[asset_id] = missing
+    registry["assets"] = assets
+
+    visuals: dict[str, dict] = {}
+    old_visuals = previous.get("visuals", {})
+    for asset in assets.values():
+        if asset.get("state") != "current":
+            continue
+        annotations = asset.get("annotations", {})
+        if asset.get("kind") in {"source-visual", "note-visual", "software-output"}:
+            visual_id = short_id("VIS", asset["id"])
+            old = old_visuals.get(visual_id, {})
+            visuals[visual_id] = {
+                "id": visual_id, "state": "current", "source_asset": asset["id"],
+                "visual_type": "figure", "locator": {"path": asset["locations"][0]},
+                "candidate_basis": "standalone visual file",
+                "annotations": merge_annotation(old.get("annotations"), asset["kind"]),
+            }
+            if annotations.get("origin") != "pending" and visuals[visual_id]["annotations"].get("origin") == "pending":
+                visuals[visual_id]["annotations"]["origin"] = annotations["origin"]
+        pdf = asset.get("pdf", {})
+        for candidate in pdf.get("caption_candidates", []):
+            material = f"{asset['id']}:{candidate['page']}:{candidate['label']}:{candidate['caption']}"
+            visual_id = short_id("VIS", material)
+            old = old_visuals.get(visual_id, {})
+            label = candidate["label"].lower()
+            visual_type = "table" if "table" in label or "表" in label else "figure"
+            visuals[visual_id] = {
+                "id": visual_id, "state": "current", "source_asset": asset["id"],
+                "visual_type": visual_type,
+                "locator": {"page": candidate["page"], "label": candidate["label"]},
+                "caption_candidate": candidate["caption"],
+                "candidate_basis": "PDF caption heuristic; manual confirmation required",
+                "annotations": merge_annotation(old.get("annotations"), "source-visual"),
+            }
+        for raster in pdf.get("embedded_rasters", []):
+            material = f"{asset['id']}:raster:{raster['page']}:{raster['number']}:{raster['object']}"
+            visual_id = short_id("VIS", material)
+            old = old_visuals.get(visual_id, {})
+            visuals[visual_id] = {
+                "id": visual_id, "state": "current", "source_asset": asset["id"],
+                "visual_type": "embedded-raster-candidate",
+                "locator": raster,
+                "candidate_basis": "pdfimages object; may be a mask or part of a composite",
+                "annotations": merge_annotation(old.get("annotations"), "source-visual"),
+            }
+    for visual_id, old in old_visuals.items():
+        if visual_id not in visuals:
+            manual = old.get("candidate_basis") == "manual"
+            retained = json.loads(json.dumps(old))
+            retained["state"] = "current" if manual else "missing"
+            visuals[visual_id] = retained
+    registry["visuals"] = visuals
+
+    note_refs, note_urls, integrations, source_files = collect_note_references(project, config)
+    for url in note_urls:
+        discovered_urls.setdefault(url, set()).add("canonical-note-source")
+    resources: dict[str, dict] = {}
+    old_resources = previous.get("resources", {})
+    for url, found_in in sorted(discovered_urls.items()):
+        canonical, secret = redact_and_canonicalize_url(url)
+        if not canonical:
+            continue
+        resource_id = short_id("RES", canonical)
+        old = old_resources.get(resource_id, {})
+        resources[resource_id] = {
+            "id": resource_id, "state": "current", "canonical_url": canonical,
+            "secret_query_redacted": secret, "kind": resource_kind(canonical),
+            "discovered_in": sorted(found_in),
+            "annotations": merge_annotation(old.get("annotations"), "external-resource"),
+            "verification": old.get("verification", {}),
+            "retrieval": old.get("retrieval", {}),
+        }
+    for resource_id, old in old_resources.items():
+        if resource_id not in resources:
+            missing = json.loads(json.dumps(old))
+            missing["state"] = "current" if old.get("manual") else "missing"
+            resources[resource_id] = missing
+    registry["resources"] = resources
+
+    software: dict[str, dict] = {}
+    for software_id, old in previous.get("software", {}).items():
+        inferred_manual = bool(
+            old.get("source_type") == "artifact"
+            or software_id != short_id("SW", old.get("repository_url", "").lower())
+        )
+        retained = json.loads(json.dumps(old))
+        if old.get("manual", inferred_manual):
+            retained["manual"] = True
+            retained["state"] = "current"
+        else:
+            retained["manual"] = False
+            retained["state"] = "missing"
+        software[software_id] = retained
+    auto_relations = [r for r in registry.get("relations", []) if not r.get("automatic")]
+    repository_groups: dict[str, dict] = {}
+    for resource in resources.values():
+        if resource.get("state") != "current":
+            continue
+        repository = github_repository(resource["canonical_url"])
+        if not repository:
+            continue
+        owner, name, revision, revision_requires_review = repository
+        # GitHub owner/repository identity is case-insensitive.  Group and
+        # publish it in one canonical case so differently-cased source links
+        # cannot hide conflicting revision candidates under the same SW ID.
+        canonical_repo = f"https://github.com/{owner.lower()}/{name.lower()}"
+        group = repository_groups.setdefault(canonical_repo, {
+            "owner": owner.lower(), "name": name.lower(), "resources": [],
+            "revisions": set(), "ambiguous": False,
+        })
+        group["resources"].append(resource["id"])
+        if revision:
+            group["revisions"].add(revision)
+        group["ambiguous"] = group["ambiguous"] or revision_requires_review
+    for canonical_repo, group in sorted(repository_groups.items()):
+        software_id = short_id("SW", canonical_repo.lower())
+        old = software.get(software_id, {})
+        revisions = sorted(group["revisions"])
+        inferred_conflict = bool(group["ambiguous"] or len(revisions) > 1)
+        manual_revision = old.get("revision_source") == "manual" and bool(old.get("requested_revision"))
+        requested_revision = old.get("requested_revision", "") if manual_revision else (revisions[0] if len(revisions) == 1 and not inferred_conflict else "")
+        requires_review = False if manual_revision else inferred_conflict
+        keep_retrieval = bool(
+            old.get("retrieval", {}).get("ok")
+            and old.get("requested_revision", "") == requested_revision
+            and old.get("retrieval", {}).get("requested_revision") == requested_revision
+            and not requires_review
+        )
+        annotation = default_annotation("software")
+        annotation.update({
+            "title": f"{group['owner']}/{group['name']}", "purpose": "", "environment": "",
+            "usage": "", "no_output_reason": "",
+        })
+        annotation.update(old.get("annotations", {}))
+        software[software_id] = {
+            "id": software_id, "state": "current", "manual": False,
+            "repository_url": canonical_repo,
+            "source_type": "git",
+            "discovered_from": sorted(set(old.get("discovered_from", []) + group["resources"])),
+            "requested_revision": requested_revision,
+            "revision_source": "manual" if manual_revision else "inferred",
+            "revision_candidates": revisions,
+            "revision_requires_review": requires_review,
+            "revision_conflict": len(revisions) > 1,
+            "resolved_revision": old.get("resolved_revision", "") if keep_retrieval else "",
+            "annotations": annotation,
+            "retrieval": old.get("retrieval", {}) if keep_retrieval else {},
+        }
+        for resource_id in group["resources"]:
+            auto_relations.append({
+                "from": resource_id, "kind": "resource-identifies-software",
+                "to": software_id, "automatic": True,
+            })
+    registry["software"] = software
+    registry["relations"] = auto_relations
+    registry["note_references"] = note_refs
+    registry["scan"] = {
+        "completed_at": now_utc(), "integrations": sorted(integrations),
+        "note_source_files": source_files,
+        "source_fingerprint": manifest_fingerprint(source_files),
+        "asset_count": len([a for a in assets.values() if a.get("state") == "current"]),
+        "visual_count": len([v for v in visuals.values() if v.get("state") == "current"]),
+        "resource_count": len([r for r in resources.values() if r.get("state") == "current"]),
+        "software_count": len([s for s in software.values() if s.get("state") == "current"]),
+    }
+    registry["scan"]["discovery_fingerprint"] = discovery_fingerprint(registry)
+    return registry
+
+
+def discovery_fingerprint(registry: dict) -> str:
+    def cleaned(section: str, entry: dict) -> dict:
+        ignored = {"annotations", "stable_observations"}
+        if section == "resources":
+            ignored.update({"verification", "retrieval"})
+        if section == "software":
+            ignored.update({"requested_revision", "resolved_revision", "retrieval"})
+        return {key: value for key, value in entry.items() if key not in ignored}
+
+    view = {
+        section: {
+            entry_id: cleaned(section, entry)
+            for entry_id, entry in sorted(registry.get(section, {}).items())
+        }
+        for section in ("assets", "visuals", "resources", "software")
+    }
+    view["note_references"] = registry.get("note_references", [])
+    view["integrations"] = registry.get("scan", {}).get("integrations", [])
+    view["note_source_files"] = registry.get("scan", {}).get("note_source_files", [])
+    payload = json.dumps(view, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def manifest_fingerprint(entries: list[dict]) -> str:
+    payload = json.dumps(entries, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def load_ingestion_manifest(project: pathlib.Path) -> dict | None:
+    path = managed_paths(project)["ingestion"]
+    if not path.exists():
+        return None
+    reject_symlink_chain(path, project)
+    manifest = read_json(path)
+    if manifest.get("schema_version") != SCHEMA_VERSION or not isinstance(manifest.get("inputs"), dict):
+        raise HarnessError("unsupported ingestion manifest")
+    return manifest
+
+
+def ingestion_fingerprint(manifest: dict | None) -> str:
+    if not manifest:
+        return ""
+    entries = [
+        {
+            key: entry.get(key)
+            for key in ("asset_id", "path", "revision_id", "status", "size", "mtime_ns", "sha256")
+        }
+        for _, entry in sorted(manifest.get("inputs", {}).items())
+    ]
+    return manifest_fingerprint(entries)
+
+
+def stable_observation_tokens(asset: dict, min_interval_seconds: float) -> set[str]:
+    matching = [
+        item for item in asset.get("stable_observations", [])
+        if item.get("before_after_stat_match") is True
+        and item.get("sha256") == asset.get("sha256")
+        and item.get("size") == asset.get("size")
+        and isinstance(item.get("observed_ns"), int)
+        and item.get("scan_token")
+    ]
+    if len({item["scan_token"] for item in matching}) < 2:
+        return set()
+    observed = [item["observed_ns"] for item in matching]
+    if max(observed) - min(observed) < int(min_interval_seconds * 1_000_000_000):
+        return set()
+    return {item["scan_token"] for item in matching}
+
+
+def record_ingestion(project: pathlib.Path, config: dict, registry: dict, args: argparse.Namespace) -> dict:
+    section, asset = find_entry(registry, args.asset_id)
+    if section != "assets" or asset.get("role") != "external-input" or asset.get("state") != "current":
+        raise HarnessError("record-ingestion requires a current inbox asset")
+    if not args.reason.strip():
+        raise HarnessError("ingestion decision requires a reason")
+    min_interval = float(config.get("ingestion", {}).get("min_stability_interval_seconds", 1.0))
+    if min_interval < 0:
+        raise HarnessError("ingestion stability interval cannot be negative")
+    distinct_scans = stable_observation_tokens(asset, min_interval)
+    if args.status == "adopted" and len(distinct_scans) < 2:
+        raise HarnessError("adoption requires two stable observations from distinct scans")
+    manifest = load_ingestion_manifest(project) or {
+        "schema_version": SCHEMA_VERSION, "project": project.name, "inputs": {},
+    }
+    existing = manifest["inputs"].get(args.asset_id, {})
+    manifest["inputs"][args.asset_id] = {
+        "asset_id": args.asset_id,
+        "path": asset.get("locations", [""])[0],
+        "revision_id": args.revision_id,
+        "status": args.status,
+        "reason": args.reason.strip(),
+        "size": asset.get("size"), "mtime_ns": asset.get("mtime_ns"),
+        "sha256": asset.get("sha256"),
+        "first_recorded_at": existing.get("first_recorded_at", now_utc()),
+        "updated_at": now_utc(),
+        "snapshot_policy": "content hash revalidated at evidence gates",
+        "stable_observation_tokens": sorted(distinct_scans),
+    }
+    manifest["updated_at"] = now_utc()
+    manifest["snapshot_fingerprint"] = ingestion_fingerprint(manifest)
+    return manifest
+
+
+def status_fields(project: pathlib.Path) -> dict[str, str]:
+    preferred = project / "draft" / "STATUS.md"
+    candidates = [preferred] if preferred.is_file() else sorted((project / "draft").glob("STATUS*"))
+    if not candidates:
+        return {}
+    path = candidates[0]
+    if not path.is_file() or path.is_symlink():
+        raise HarnessError("draft STATUS path is invalid")
+    fields: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        match = re.match(r"^\s*-\s*([A-Za-z0-9_]+):\s*(.*?)\s*$", line)
+        if match:
+            fields[match.group(1)] = match.group(2).strip().strip("`")
+    fields["_path"] = path.relative_to(project).as_posix()
+    return fields
+
+
+def catalog_fingerprint(registry: dict) -> str:
+    view = {
+        key: registry.get(key)
+        for key in ("schema_version", "project", "scope", "scan", "assets", "visuals", "resources", "software", "runs", "relations")
+    }
+    payload = json.dumps(view, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def tex_escape(value: object) -> str:
+    text = str(value or "")
+    replacements = {
+        "\\": r"\textbackslash{}", "{": r"\{", "}": r"\}",
+        "$": r"\$", "&": r"\&", "#": r"\#", "_": r"\_",
+        "%": r"\%", "~": r"\textasciitilde{}", "^": r"\textasciicircum{}",
+    }
+    return "".join(replacements.get(char, char) for char in text)
+
+
+def tex_path(value: object) -> str:
+    text = str(value or "")
+    for delimiter in ("|", "+", "!", ";", "?"):
+        if delimiter not in text:
+            return rf"\path{delimiter}{text}{delimiter}"
+    return tex_escape(text)
+
+
+def annotation_summary(entry: dict) -> str:
+    annotation = entry.get("annotations", {})
+    if "command" in entry and "software" in entry:
+        return (
+            f"{annotation.get('public_summary') or '再現実行記録'} — "
+            f"実行状態={entry.get('status')}; software={entry.get('software')}@{entry.get('software_revision')}; "
+            f"inputs={','.join(entry.get('inputs', [])) or 'none'}; "
+            f"outputs={','.join(entry.get('outputs', [])) or 'none'}"
+        )
+    title = annotation.get("public_summary") or annotation.get("title") or entry.get("kind") or entry.get("visual_type") or ""
+    disposition = annotation.get("disposition", "pending")
+    disposition = {
+        "pending": "未採否", "include": "索引掲載", "explain": "本文解説", "exclude": "除外",
+    }.get(disposition, disposition)
+    origin = annotation.get("origin", "")
+    origin = {
+        "source-original": "原資料の図表", "permitted-copy": "許諾転載",
+        "faithful-redraw": "忠実再描画", "adapted": "改変図",
+        "note-original": "本ノート独自図", "software-output": "software 出力",
+        "pending": "由来未確定",
+    }.get(origin, origin)
+    result = f"{title} — 採用状態={disposition}" + (f", 由来={origin}" if origin else "")
+    if annotation.get("license"):
+        result += f", license={annotation['license']}"
+    if annotation.get("exclusion_reason"):
+        result += f", 除外理由={annotation['exclusion_reason']}"
+    return result
+
+
+def render(project: pathlib.Path, registry: dict) -> None:
+    paths = managed_paths(project)
+    fingerprint = catalog_fingerprint(registry)
+    macros = rf"""% Generated by .system/paper-evidence-harness. Do not edit.
+% evidence-fingerprint: {fingerprint}
+\providecommand{{\EvidenceAsset}}[1]{{\hyperlink{{evidence:#1}}{{\textsuperscript{{[asset: \texttt{{#1}}]}}}}}}
+\providecommand{{\EvidenceVisual}}[1]{{\hyperlink{{evidence:#1}}{{\textsuperscript{{[visual: \texttt{{#1}}]}}}}}}
+\providecommand{{\EvidenceResource}}[1]{{\hyperlink{{evidence:#1}}{{\textsuperscript{{[resource: \texttt{{#1}}]}}}}}}
+\providecommand{{\EvidenceSoftware}}[1]{{\hyperlink{{evidence:#1}}{{\textsuperscript{{[software: \texttt{{#1}}]}}}}}}
+\providecommand{{\EvidenceOriginalCaption}}[2]{{\caption{{【本ノート独自図】#2}}\label{{fig:#1}}}}
+"""
+    lines = [
+        "% Generated by .system/paper-evidence-harness. Do not edit.",
+        f"% evidence-fingerprint: {fingerprint}",
+        r"\ifdefined\chapter",
+        r"  \chapter*{図・外部資料・ソフトウェア索引}",
+        r"  \addcontentsline{toc}{chapter}{図・外部資料・ソフトウェア索引}",
+        r"\else",
+        r"  \section*{図・外部資料・ソフトウェア索引}",
+        r"  \addcontentsline{toc}{section}{図・外部資料・ソフトウェア索引}",
+        r"\fi",
+        "この索引は採用入力と講義ノート正本から機械生成した。採用状態が未採否の項目は、検証済みまたは配布可能であることを意味しない。",
+        r"\begingroup\raggedright",
+    ]
+    sections = (
+        ("assets", "外部ファイルと成果物"),
+        ("visuals", "図表"),
+        ("resources", "外部リンク"),
+        ("software", "ソフトウェア"),
+        ("runs", "再現実行記録"),
+    )
+    for key, title in sections:
+        lines.extend([rf"\section*{{{tex_escape(title)}}}", r"\begin{description}"])
+        current = [entry for entry in registry.get(key, {}).values() if entry.get("state", "current") == "current"]
+        if not current:
+            lines.append(r"\item[なし] 現在の走査範囲では検出されていない。")
+        for entry in sorted(current, key=lambda item: item["id"]):
+            annotation = entry.get("annotations", {})
+            if annotation.get("visibility") != "reader":
+                lines.append(
+                    rf"\item[] \hypertarget{{evidence:{entry['id']}}}{{\texttt{{{tex_escape(entry['id'])}}}}}\par "
+                    r"非公開項目（詳細は private evidence ledger に記録）"
+                )
+                continue
+            summary = annotation_summary(entry)
+            link = ""
+            if key == "assets":
+                if entry.get("pdf"):
+                    pdf = entry["pdf"]
+                    summary += (
+                        f"; PDF={pdf.get('pages')}頁, caption候補={len(pdf.get('caption_candidates', []))}, "
+                        f"埋込raster候補={len(pdf.get('embedded_rasters', []))}, 添付={len(pdf.get('attachments', []))}"
+                    )
+                if entry.get("archive"):
+                    archive = entry["archive"]
+                    summary += f"; archive member={len(archive.get('members', []))}件"
+            elif key == "resources":
+                summary += "; URL="
+                command = "nolinkurl" if entry.get("secret_query_redacted") or entry.get("annotations", {}).get("disposition") == "exclude" else "url"
+                link = rf"\{command}{{{entry.get('canonical_url', '')}}}"
+                if entry.get("retrieval", {}).get("ok"):
+                    retrieval = entry["retrieval"]
+                    summary += f"; 取得size={retrieval.get('size')} bytes（hash は private ledger に記録）"
+            elif key == "software":
+                summary += f"; revision={entry.get('resolved_revision') or entry.get('requested_revision') or 'unlocked'}"
+                if entry.get("repository_url"):
+                    link = rf"; \url{{{entry.get('repository_url', '')}}}"
+                elif entry.get("artifact_resource"):
+                    summary += f"; artifact-resource={entry['artifact_resource']}"
+            elif key == "visuals":
+                locator = entry.get("locator", {})
+                public_locator = ", ".join(
+                    f"{name}={value}" for name, value in locator.items()
+                    if name in {"page", "label"}
+                )
+                if public_locator:
+                    summary += f"; locator={public_locator}"
+            lines.append(
+                rf"\item[] \hypertarget{{evidence:{entry['id']}}}{{\texttt{{{tex_escape(entry['id'])}}}}}\par "
+                rf"{tex_escape(summary)}{link}"
+            )
+            if key == "assets":
+                for attachment in entry.get("pdf", {}).get("attachments", []):
+                    name = attachment.get("name") if isinstance(attachment, dict) else str(attachment)
+                    resolution = annotation.get("attachment_resolutions", {}).get(name, {})
+                    resolution_text = resolution.get("status", "unresolved")
+                    if resolution.get("reason"):
+                        resolution_text += f": {resolution['reason']}"
+                    if resolution.get("adopted_asset"):
+                        resolution_text += f"; asset={resolution['adopted_asset']}"
+                    lines.append(rf"\item[] 添付: {tex_path(name)}; resolution={tex_escape(resolution_text)}")
+                archive = entry.get("archive", {})
+                if archive.get("container_internals"):
+                    lines.append(
+                        rf"\item[] container internal components: {len(archive.get('members', []))}; "
+                        rf"format={tex_escape(archive.get('container_format', ''))}; "
+                        r"names and byte details are retained only in the private evidence ledger"
+                    )
+                for member in ([] if archive.get("container_internals") else archive.get("members", [])):
+                    name = str(member.get("path", ""))
+                    resolution = annotation.get("archive_member_resolutions", {}).get(name, {})
+                    resolution_text = resolution.get("status", "unresolved")
+                    if resolution.get("reason"):
+                        resolution_text += f": {resolution['reason']}"
+                    if resolution.get("adopted_asset"):
+                        resolution_text += f"; asset={resolution['adopted_asset']}"
+                    lines.append(
+                        rf"\item[] archive member: {tex_path(name)}; size={member.get('size', '')}; "
+                        rf"resolution={tex_escape(resolution_text)}"
+                    )
+        lines.append(r"\end{description}")
+    lines.extend([r"\section*{対応関係}", r"\begin{description}"])
+    if not registry.get("relations"):
+        lines.append(r"\item[なし] 対応関係は未登録である。")
+    reader_ids = {
+        entry_id for entry_id, (_, entry) in all_entries(registry).items()
+        if entry.get("state", "current") == "current"
+        and entry.get("annotations", {}).get("visibility") == "reader"
+    }
+    public_relations = [
+        relation for relation in registry.get("relations", [])
+        if relation.get("from") in reader_ids and relation.get("to") in reader_ids
+    ]
+    for index, relation in enumerate(public_relations, 1):
+        text = f"{relation.get('from')} --{relation.get('kind')}→ {relation.get('to')}"
+        lines.append(rf"\item[{index}] {tex_escape(text)}")
+    private_relation_count = len(registry.get("relations", [])) - len(public_relations)
+    if private_relation_count:
+        lines.append(rf"\item[] 非公開の対応関係 {private_relation_count} 件は private evidence ledger に記録。")
+    lines.append(r"\end{description}")
+    lines.append(r"\endgroup")
+    atomic_write(paths["generated"] / "evidence-macros.tex", macros)
+    atomic_write(paths["generated"] / "evidence-index.tex", "\n".join(lines) + "\n")
+
+    markdown = [
+        "# Evidence index", "", f"- catalog fingerprint: `{fingerprint}`",
+        "- state: generated WIP; pending entries are not reviewed", "",
+    ]
+    for key, title in sections:
+        markdown.extend([f"## {title}", ""])
+        current = [entry for entry in registry.get(key, {}).values() if entry.get("state", "current") == "current"]
+        if not current:
+            markdown.append("- none")
+        for entry in sorted(current, key=lambda item: item["id"]):
+            if entry.get("annotations", {}).get("visibility") != "reader":
+                markdown.append(f"- `{entry['id']}`: private entry; details are in the private evidence ledger")
+                continue
+            markdown.append(f"- `{entry['id']}`: {annotation_summary(entry)}")
+            if key == "assets":
+                annotation = entry.get("annotations", {})
+                for attachment in entry.get("pdf", {}).get("attachments", []):
+                    name = attachment.get("name") if isinstance(attachment, dict) else str(attachment)
+                    resolution = annotation.get("attachment_resolutions", {}).get(name, {})
+                    markdown.append(f"  - attachment `{name}`: {resolution.get('status', 'unresolved')} — {resolution.get('reason', '')}")
+                archive = entry.get("archive", {})
+                if archive.get("container_internals"):
+                    markdown.append(
+                        f"  - container internals: {len(archive.get('members', []))} components; "
+                        f"format={archive.get('container_format', '')}; names/details remain private"
+                    )
+                for member in ([] if archive.get("container_internals") else archive.get("members", [])):
+                    name = str(member.get("path", ""))
+                    resolution = annotation.get("archive_member_resolutions", {}).get(name, {})
+                    markdown.append(f"  - archive member `{name}` ({member.get('size', '')} bytes): {resolution.get('status', 'unresolved')} — {resolution.get('reason', '')}")
+        markdown.append("")
+    atomic_write(paths["generated"] / "evidence-index.md", "\n".join(markdown))
+
+
+def begin_catalog_transaction(paths: dict[str, pathlib.Path], operation: str, registry: dict) -> None:
+    write_json(paths["transaction"], {
+        "started_at": now_utc(), "operation": operation,
+        "intended_catalog_fingerprint": catalog_fingerprint(registry),
+        "state": "in-progress; rerun scan to recover before any gate",
+    })
+
+
+def commit_catalog_transaction(project: pathlib.Path, paths: dict[str, pathlib.Path], registry: dict) -> None:
+    render(project, registry)
+    write_json(paths["registry"], registry)
+    paths["transaction"].unlink()
+
+
+def all_entries(registry: dict) -> dict[str, tuple[str, dict]]:
+    entries: dict[str, tuple[str, dict]] = {}
+    for section in ("assets", "visuals", "resources", "software", "runs"):
+        for entry_id, entry in registry.get(section, {}).items():
+            if entry_id in entries:
+                raise HarnessError(f"duplicate registry ID: {entry_id}")
+            entries[entry_id] = (section, entry)
+    return entries
+
+
+def relation_type_error(relation: dict, entries: dict[str, tuple[str, dict]]) -> str | None:
+    source = relation.get("from")
+    target = relation.get("to")
+    kind = relation.get("kind")
+    if kind not in RELATION_TYPES:
+        return f"unknown relation kind: {kind}"
+    if source == target:
+        return f"self relation is not allowed: {source}"
+    if source not in entries or target not in entries:
+        return f"broken relation: {source} -> {target}"
+    allowed_sources, allowed_targets = RELATION_TYPES[kind]
+    source_section = entries[source][0]
+    target_section = entries[target][0]
+    if source_section not in allowed_sources or target_section not in allowed_targets:
+        return f"relation type mismatch: {source_section} --{kind}→ {target_section}"
+    return None
+
+
+def relation_cycle(registry: dict) -> list[str] | None:
+    graph: dict[str, list[str]] = {}
+    for relation in registry.get("relations", []):
+        graph.setdefault(str(relation.get("from")), []).append(str(relation.get("to")))
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(node: str, path: list[str]) -> list[str] | None:
+        if node in visiting:
+            return path[path.index(node):] + [node]
+        if node in visited:
+            return None
+        visiting.add(node)
+        path.append(node)
+        for target in graph.get(node, []):
+            found = visit(target, path)
+            if found:
+                return found
+        path.pop()
+        visiting.remove(node)
+        visited.add(node)
+        return None
+
+    for node in graph:
+        found = visit(node, [])
+        if found:
+            return found
+    return None
+
+
+def reference_ids(registry: dict, kind: str | None = None) -> set[str]:
+    return {
+        item["id"] for item in registry.get("note_references", [])
+        if kind is None or item.get("kind") == kind
+    }
+
+
+def inspect_reader_visibility(entry: dict, strict: bool, errors: list[str], warnings: list[str]) -> None:
+    if entry.get("state", "current") != "current":
+        return
+    annotation = entry.get("annotations", {})
+    entry_id = entry.get("id", "unknown")
+    visibility = annotation.get("visibility", "pending")
+    disposition = annotation.get("disposition", "pending")
+    if visibility == "pending":
+        (errors if strict else warnings).append(f"reader visibility is pending: {entry_id}")
+    if disposition in {"include", "explain"} and visibility != "reader":
+        errors.append(f"included/explained entry is not reader-visible: {entry_id}")
+    if visibility == "reader":
+        if annotation.get("privacy_review_status") != "complete":
+            (errors if strict else warnings).append(f"reader-visible entry lacks privacy review: {entry_id}")
+        if not str(annotation.get("public_summary", "") or "").strip():
+            (errors if strict else warnings).append(f"reader-visible entry lacks a public summary: {entry_id}")
+
+
+def inspect_gate(project: pathlib.Path, config: dict, registry: dict, phase: str) -> tuple[list[str], list[str]]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    entries = all_entries(registry)
+    strict = phase in {"shared-draft", "promotion"}
+    promotion = phase == "promotion"
+    note_refs = reference_ids(registry)
+    original_caption_refs = reference_ids(registry, "original-caption")
+    integrations = set(registry.get("scan", {}).get("integrations", []))
+    for _, entry in entries.values():
+        inspect_reader_visibility(entry, strict, errors, warnings)
+    if managed_paths(project)["transaction"].exists():
+        errors.append("an interrupted catalog transaction must be recovered with scan")
+    manifest = load_ingestion_manifest(project)
+    current_ingestion_fingerprint = ingestion_fingerprint(manifest)
+    min_stability_interval = float(config.get("ingestion", {}).get("min_stability_interval_seconds", 1.0))
+
+    inbox_assets = {
+        entry_id: entry for entry_id, entry in registry.get("assets", {}).items()
+        if entry.get("role") == "external-input" and entry.get("state") == "current"
+    }
+    manifest_inputs = manifest.get("inputs", {}) if manifest else {}
+    if not manifest:
+        (errors if strict else warnings).append("machine-readable paper ingestion manifest is missing")
+    for asset_id, asset in inbox_assets.items():
+        decision = manifest_inputs.get(asset_id)
+        if not decision:
+            (errors if strict else warnings).append(f"inbox asset lacks an ingestion decision: {asset_id}")
+            continue
+        if any(decision.get(key) != asset.get(asset_key) for key, asset_key in (
+            ("size", "size"), ("mtime_ns", "mtime_ns"), ("sha256", "sha256"),
+        )) or decision.get("path") not in asset.get("locations", []):
+            errors.append(f"ingestion manifest does not match current asset bytes: {asset_id}")
+        status = decision.get("status")
+        if status not in {"adopted", "excluded", "deferred"}:
+            errors.append(f"unknown ingestion decision: {asset_id}")
+        if not decision.get("revision_id") or not decision.get("reason"):
+            errors.append(f"ingestion decision lacks revision or reason: {asset_id}")
+        if strict and status == "deferred":
+            errors.append(f"inbox asset ingestion remains deferred: {asset_id}")
+        if status == "adopted":
+            matching_tokens = stable_observation_tokens(asset, min_stability_interval)
+            recorded_tokens = set(decision.get("stable_observation_tokens", []))
+            if len(matching_tokens) < 2 or len(recorded_tokens) < 2 or not recorded_tokens <= matching_tokens:
+                errors.append(f"adopted inbox asset lacks two matching stable observations: {asset_id}")
+        disposition = asset.get("annotations", {}).get("disposition", "pending")
+        if status == "adopted" and disposition not in {"include", "explain"}:
+            errors.append(f"adopted inbox asset is not included/explained: {asset_id}")
+        if status == "excluded" and disposition != "exclude":
+            errors.append(f"excluded inbox asset does not have exclude disposition: {asset_id}")
+
+    if "index" not in integrations:
+        (errors if strict else warnings).append("canonical note source does not input evidence-index.tex")
+    if "macros" not in integrations:
+        (errors if strict else warnings).append("canonical note source does not input evidence-macros.tex")
+    fingerprint = catalog_fingerprint(registry)
+    for name in ("evidence-index.tex", "evidence-macros.tex"):
+        path = managed_paths(project)["generated"] / name
+        if not path.is_file() or f"evidence-fingerprint: {fingerprint}" not in path.read_text(encoding="utf-8", errors="replace"):
+            errors.append(f"generated artifact is missing or stale: {name}")
+
+    for reference in registry.get("note_references", []):
+        if reference["id"] not in entries:
+            errors.append(f"unknown note reference: {reference['id']}")
+        elif entries[reference["id"]][0] != REFERENCE_SECTIONS.get(reference.get("kind")):
+            errors.append(f"note reference kind does not match registry section: {reference.get('kind')} {reference['id']}")
+    for relation in registry.get("relations", []):
+        relation_error = relation_type_error(relation, entries)
+        if relation_error:
+            errors.append(relation_error)
+        elif entries[relation["from"]][1].get("state", "current") != "current" or entries[relation["to"]][1].get("state", "current") != "current":
+            errors.append(f"relation endpoint is not current: {relation.get('from')} -> {relation.get('to')}")
+    cycle = relation_cycle(registry)
+    if cycle:
+        errors.append(f"relation graph contains a cycle: {' -> '.join(cycle)}")
+
+    for asset in registry.get("assets", {}).values():
+        annotation = asset.get("annotations", {})
+        disposition = annotation.get("disposition", "pending")
+        if asset.get("state") == "missing":
+            if disposition != "exclude":
+                errors.append(f"adopted or pending asset is missing: {asset['id']}")
+            continue
+        if asset.get("state") != "current" or asset.get("security_status") == "blocked":
+            errors.append(f"asset is not stable/safe: {asset['id']}")
+        if asset.get("metadata_status") == "blocked" and disposition in {"include", "explain"}:
+            errors.append(f"included asset metadata inspection is blocked: {asset['id']}")
+        if asset.get("metadata_source_sha256") != asset.get("sha256"):
+            errors.append(f"asset metadata is not bound to its hashed bytes: {asset['id']}")
+        if asset.get("media_type_mismatch"):
+            errors.append(f"asset media type does not match its extension: {asset['id']}")
+        pdf = asset.get("pdf")
+        if pdf and disposition in {"include", "explain"} and str(pdf.get("encrypted", "unknown")).lower() not in {"no", "false"}:
+            errors.append(f"encrypted or unconfirmed PDF is blocking: {asset['id']}")
+        if not strict and disposition == "pending":
+            warnings.append(f"asset disposition is pending: {asset['id']}")
+        if strict and disposition == "pending":
+            errors.append(f"asset disposition is pending: {asset['id']}")
+        if disposition == "exclude" and not annotation.get("exclusion_reason"):
+            errors.append(f"excluded asset lacks a reason: {asset['id']}")
+        if disposition in {"include", "explain"} and annotation.get("rights_status") not in ({"cleared", "not-applicable"} if strict else {"cleared", "not-applicable", "restricted-internal"}):
+            errors.append(f"included asset rights are unresolved: {asset['id']}")
+        if disposition == "explain" and asset["id"] not in note_refs:
+            errors.append(f"explained asset lacks a body reference: {asset['id']}")
+        if asset.get("kind") in {"source-document", "source-supplement", "source-archive"} and strict and disposition in {"include", "explain"}:
+            for field in ("visual_review_status", "link_review_status", "attachment_review_status"):
+                if annotation.get(field) not in {"complete", "not-applicable"}:
+                    errors.append(f"{field} is incomplete for {asset['id']}")
+            if not annotation.get("reviewer") or not annotation.get("reviewed_at"):
+                errors.append(f"manual completeness review lacks reviewer metadata: {asset['id']}")
+        attachment_names = [
+            item.get("name") if isinstance(item, dict) else str(item)
+            for item in asset.get("pdf", {}).get("attachments", [])
+        ]
+        member_names = [str(item.get("path", "")) for item in asset.get("archive", {}).get("members", [])]
+        container_internals = bool(asset.get("archive", {}).get("container_internals"))
+        if len(member_names) != len(set(member_names)):
+            errors.append(f"archive has duplicate member paths that cannot be resolved safely: {asset['id']}")
+        for category, names, resolution_field in (
+            ("attachment", attachment_names, "attachment_resolutions"),
+            ("archive member", member_names, "archive_member_resolutions"),
+        ):
+            resolutions = annotation.get(resolution_field, {})
+            if not isinstance(resolutions, dict):
+                errors.append(f"{category} resolutions are malformed: {asset['id']}")
+                resolutions = {}
+            for unknown_name in set(resolutions) - set(names):
+                errors.append(f"{category} resolution has no current source item: {asset['id']} {unknown_name}")
+            for name in names:
+                resolution = resolutions.get(name, {})
+                status = resolution.get("status")
+                if category == "archive member" and container_internals and not status:
+                    continue
+                if not status and strict and disposition in {"include", "explain"}:
+                    errors.append(f"{category} is unresolved: {asset['id']} {name}")
+                    continue
+                if not status:
+                    warnings.append(f"{category} is unresolved: {asset['id']} {name}")
+                    continue
+                if status not in {"adopted", "excluded", "deferred"} or not resolution.get("reason"):
+                    errors.append(f"{category} resolution is invalid: {asset['id']} {name}")
+                if strict and status == "deferred":
+                    errors.append(f"{category} remains deferred: {asset['id']} {name}")
+                if status == "adopted":
+                    adopted_id = resolution.get("adopted_asset")
+                    adopted = registry.get("assets", {}).get(adopted_id, {})
+                    decision = manifest_inputs.get(adopted_id, {})
+                    if adopted.get("state") != "current" or adopted.get("role") != "external-input" or decision.get("status") != "adopted":
+                        errors.append(f"adopted {category} is not a current adopted inbox asset: {asset['id']} {name}")
+                    if not any(
+                        relation.get("from") == adopted_id and relation.get("kind") == "supplements" and relation.get("to") == asset["id"]
+                        for relation in registry.get("relations", [])
+                    ):
+                        errors.append(f"adopted {category} lacks supplements lineage: {asset['id']} {name}")
+        archive = asset.get("archive")
+        if archive:
+            expanded = archive.get("total_uncompressed_bytes", 0)
+            ratio = expanded / max(asset.get("size", 1), 1)
+            unsafe_archive = (
+                bool(archive.get("unsafe_entries"))
+                or archive.get("encrypted_entries")
+                or archive.get("nested_archives")
+                or expanded > 5 * 1024 * 1024 * 1024
+                or ratio > 1000
+            )
+            if unsafe_archive:
+                errors.append(f"archive inspection is blocking: {asset['id']}")
+            elif archive.get("status") != "inspected" and disposition in {"include", "explain"}:
+                errors.append(f"archive inspection is blocking: {asset['id']}")
+            if strict and disposition in {"include", "explain"} and annotation.get("archive_review_status") != "complete":
+                errors.append(f"archive review is incomplete: {asset['id']}")
+
+    relations = registry.get("relations", [])
+    for visual in registry.get("visuals", {}).values():
+        if visual.get("state") != "current":
+            continue
+        annotation = visual.get("annotations", {})
+        disposition = annotation.get("disposition", "pending")
+        source_asset = registry.get("assets", {}).get(visual.get("source_asset"))
+        if not source_asset or source_asset.get("state") != "current":
+            errors.append(f"visual source asset is missing or stale: {visual['id']}")
+        locator_page = visual.get("locator", {}).get("page")
+        if locator_page is not None:
+            if not isinstance(locator_page, int) or locator_page < 1:
+                errors.append(f"visual page locator is invalid: {visual['id']}")
+            pdf_pages = (source_asset or {}).get("pdf", {}).get("pages")
+            if isinstance(pdf_pages, int) and isinstance(locator_page, int) and locator_page > pdf_pages:
+                errors.append(f"visual page locator exceeds source PDF: {visual['id']}")
+        if not strict and disposition == "pending":
+            warnings.append(f"visual disposition is pending: {visual['id']}")
+        if strict and disposition == "pending":
+            errors.append(f"visual disposition is pending: {visual['id']}")
+        if disposition == "exclude" and not annotation.get("exclusion_reason"):
+            errors.append(f"excluded visual lacks a reason: {visual['id']}")
+        if disposition in {"include", "explain"}:
+            if annotation.get("rights_status") not in ({"cleared", "not-applicable"} if strict else {"cleared", "not-applicable", "restricted-internal"}):
+                errors.append(f"visual rights are unresolved: {visual['id']}")
+            if not annotation.get("alt_text"):
+                errors.append(f"visual alt text is missing: {visual['id']}")
+            if visual["id"] not in note_refs:
+                errors.append(f"visual lacks a body reference: {visual['id']}")
+            origin = annotation.get("origin", "pending")
+            if origin == "pending":
+                errors.append(f"visual origin is pending: {visual['id']}")
+            if origin == "note-original" and visual["id"] not in original_caption_refs:
+                errors.append(f"note-original visual lacks EvidenceOriginalCaption: {visual['id']}")
+            if origin in {"faithful-redraw", "adapted"} and not any(
+                rel.get("from") == visual["id"] and rel.get("kind") == "derived-from" for rel in relations
+            ):
+                errors.append(f"redrawn/adapted visual lacks source lineage: {visual['id']}")
+            if origin == "software-output" and not any(
+                rel.get("from") == visual["id"] and rel.get("kind") == "generated-by" for rel in relations
+            ):
+                errors.append(f"software visual lacks generator lineage: {visual['id']}")
+
+    for resource in registry.get("resources", {}).values():
+        if resource.get("state") != "current":
+            continue
+        annotation = resource.get("annotations", {})
+        disposition = annotation.get("disposition", "pending")
+        if resource.get("secret_query_redacted"):
+            errors.append(f"resource URL contains a secret-like query: {resource['id']}")
+        retrieval = resource.get("retrieval", {})
+        if retrieval.get("ok"):
+            try:
+                cache_path = ensure_within(project / retrieval.get("cache_path", ""), managed_paths(project)["external_cache"])
+                reject_symlink_chain(cache_path, project)
+                cache_snapshot = stable_file_snapshot(cache_path)
+                if (
+                    not cache_snapshot["stable"]
+                    or cache_snapshot["size"] != retrieval.get("size")
+                    or cache_snapshot["sha256"] != retrieval.get("sha256")
+                ):
+                    errors.append(f"resource cache receipt does not match bytes: {resource['id']}")
+            except (HarnessError, OSError):
+                errors.append(f"resource cache receipt is missing or unsafe: {resource['id']}")
+        if not strict and disposition == "pending":
+            warnings.append(f"resource disposition is pending: {resource['id']}")
+        if strict and disposition == "pending":
+            errors.append(f"resource disposition is pending: {resource['id']}")
+        if disposition == "exclude" and not annotation.get("exclusion_reason"):
+            errors.append(f"excluded resource lacks a reason: {resource['id']}")
+        if disposition in {"include", "explain"}:
+            allowed_rights = {"cleared", "not-applicable"} if strict else {"cleared", "not-applicable", "restricted-internal"}
+            if annotation.get("rights_status") not in allowed_rights:
+                errors.append(f"resource rights are unresolved: {resource['id']}")
+            if resource.get("kind") == "downloadable-file" or resource.get("retrieval", {}).get("ok"):
+                if annotation.get("rights_status") != "cleared" or not annotation.get("license"):
+                    errors.append(f"downloadable resource license is unresolved: {resource['id']}")
+            verification = resource.get("verification", {})
+            if annotation.get("link_review_status") != "complete" or not verification.get("ok"):
+                errors.append(f"resource is not link-verified: {resource['id']}")
+            if disposition == "explain" and resource["id"] not in note_refs:
+                errors.append(f"explained resource lacks a body reference: {resource['id']}")
+
+    for software in registry.get("software", {}).values():
+        if software.get("state") != "current":
+            continue
+        annotation = software.get("annotations", {})
+        disposition = annotation.get("disposition", "pending")
+        retrieval = software.get("retrieval", {})
+        if retrieval.get("ok"):
+            try:
+                if retrieval.get("requested_revision") != software.get("requested_revision", ""):
+                    raise HarnessError("software retrieval is bound to a different requested revision")
+                if software.get("source_type", "git") == "artifact":
+                    cache_path = ensure_within(project / retrieval.get("cache_path", ""), managed_paths(project)["external_cache"])
+                    reject_symlink_chain(cache_path, project)
+                    snapshot = stable_file_snapshot(cache_path)
+                    if (
+                        snapshot["sha256"] != retrieval.get("sha256")
+                        or snapshot["size"] != retrieval.get("size")
+                        or software.get("resolved_revision") != f"sha256:{snapshot['sha256']}"
+                    ):
+                        errors.append(f"software artifact receipt does not match bytes: {software['id']}")
+                else:
+                    cache_path = ensure_within(project / retrieval.get("cache_path", ""), managed_paths(project)["software_cache"])
+                    reject_symlink_chain(cache_path, project)
+                    if not cache_path.is_dir() or cache_path.is_symlink():
+                        raise HarnessError("software cache is not a regular directory")
+                    revision = software.get("resolved_revision", "")
+                    if retrieval.get("resolved_commit") != revision:
+                        raise HarnessError("software retrieval is bound to a different resolved commit")
+                    commit_check = git_run(["git", f"--git-dir={cache_path}", "cat-file", "-e", f"{revision}^{{commit}}"])
+                    origin_check = git_run(["git", f"--git-dir={cache_path}", "config", "--get", "remote.origin.url"])
+                    cache_entry_count, cache_size = validate_git_cache_budget(cache_path)
+                    current_inventory = git_tree_inventory(cache_path, revision)
+                    if commit_check.returncode != 0 or origin_check.returncode != 0 or origin_check.stdout.strip() != software.get("repository_url"):
+                        errors.append(f"software cache receipt does not match repository/commit: {software['id']}")
+                    if (
+                        cache_entry_count != retrieval.get("cache_entry_count")
+                        or cache_size != retrieval.get("cache_size")
+                    ):
+                        errors.append(f"software cache budget receipt does not match current content: {software['id']}")
+                    inventory_fields = (
+                        "file_count", "inventory_bytes", "top_level", "license_candidates",
+                        "submodules_present", "lfs_review_required",
+                    )
+                    if any(current_inventory.get(field) != retrieval.get(field) for field in inventory_fields):
+                        errors.append(f"software tree inventory receipt does not match current content: {software['id']}")
+            except (HarnessError, OSError):
+                errors.append(f"software cache receipt is missing or unsafe: {software['id']}")
+        if not strict and disposition == "pending":
+            warnings.append(f"software disposition is pending: {software['id']}")
+        if strict and disposition not in {"explain", "exclude"}:
+            errors.append(f"software must be explained or excluded: {software['id']}")
+        if software.get("revision_requires_review") and disposition != "exclude":
+            errors.append(f"software revision candidates require explicit resolution: {software['id']}")
+        if disposition == "exclude" and not annotation.get("exclusion_reason"):
+            errors.append(f"excluded software lacks a reason: {software['id']}")
+        if disposition == "explain":
+            if software["id"] not in note_refs:
+                errors.append(f"software lacks a body reference: {software['id']}")
+            allowed_software_rights = {"cleared"} if strict else {"cleared", "restricted-internal"}
+            if annotation.get("rights_status") not in allowed_software_rights or not annotation.get("license"):
+                errors.append(f"software license is unresolved: {software['id']}")
+            for field in ("purpose", "environment", "usage"):
+                if not annotation.get(field):
+                    errors.append(f"software {field} is missing: {software['id']}")
+            if not retrieval.get("ok") or not software.get("resolved_revision"):
+                errors.append(f"software is not pinned and fetched: {software['id']}")
+            if retrieval.get("submodules_present") and not annotation.get("submodule_resolution"):
+                errors.append(f"software submodules are unresolved: {software['id']}")
+            if retrieval.get("lfs_review_required") and not annotation.get("lfs_resolution"):
+                errors.append(f"software Git LFS status is unresolved: {software['id']}")
+            linked_outputs = [
+                rel for rel in relations
+                if rel.get("to") == software["id"] and rel.get("kind") == "generated-by"
+            ]
+            if not linked_outputs and not annotation.get("no_output_reason"):
+                errors.append(f"software has neither linked output nor no-output reason: {software['id']}")
+            for relation in linked_outputs:
+                output_id = relation.get("from")
+                if output_id in registry.get("visuals", {}):
+                    output_id = registry["visuals"][output_id].get("source_asset")
+                if not any(
+                    run.get("software") == software["id"] and output_id in run.get("outputs", [])
+                    and run.get("status") == "success"
+                    and run.get("software_revision") == software.get("resolved_revision")
+                    for run in registry.get("runs", {}).values()
+                ):
+                    errors.append(f"software output lacks a successful run receipt: {relation.get('from')}")
+
+    for run in registry.get("runs", {}).values():
+        annotation = run.get("annotations", {})
+        disposition = annotation.get("disposition", "pending")
+        if strict and disposition == "pending":
+            errors.append(f"run disposition is pending: {run.get('id')}")
+        elif not strict and disposition == "pending":
+            warnings.append(f"run disposition is pending: {run.get('id')}")
+        if disposition == "exclude" and not annotation.get("exclusion_reason"):
+            errors.append(f"excluded run lacks a reason: {run.get('id')}")
+        dependency_lock = run.get("dependency_lock", "")
+        lock_receipt = run.get("dependency_lock_receipt", {})
+        if dependency_lock:
+            try:
+                lock_path = ensure_within(project / lock_receipt.get("path", ""), project)
+                if not lock_path.is_file() or lock_path.is_symlink():
+                    raise HarnessError("dependency lock is missing or unsafe")
+                lock_snapshot = stable_file_snapshot(lock_path)
+                expected_lock = f"{lock_receipt.get('path')}@sha256:{lock_receipt.get('sha256')}"
+                if (
+                    not lock_snapshot["stable"]
+                    or lock_snapshot["size"] != lock_receipt.get("size")
+                    or lock_snapshot["sha256"] != lock_receipt.get("sha256")
+                    or dependency_lock != expected_lock
+                ):
+                    raise HarnessError("dependency lock receipt does not match current bytes")
+            except (HarnessError, OSError, AttributeError, TypeError):
+                errors.append(f"run dependency lock receipt is stale or unsafe: {run.get('id')}")
+        elif lock_receipt:
+            errors.append(f"run has an orphan dependency lock receipt: {run.get('id')}")
+        for endpoint in (
+            [run.get("software")] + run.get("inputs", []) + run.get("outputs", [])
+            + run.get("output_visuals", [])
+        ):
+            if endpoint not in entries or entries[endpoint][1].get("state", "current") != "current":
+                errors.append(f"run endpoint is missing or stale: {run.get('id')} -> {endpoint}")
+        for visual_id in run.get("output_visuals", []):
+            visual = registry.get("visuals", {}).get(visual_id, {})
+            if visual.get("source_asset") not in run.get("outputs", []):
+                errors.append(f"run output visual is not derived from a recorded output: {run.get('id')} -> {visual_id}")
+        expected_run_edges = {
+            (input_id, "input-to", run.get("id")) for input_id in run.get("inputs", [])
+        }
+        expected_run_edges.update({
+            (output_id, "generated-by", run.get("id")) for output_id in run.get("outputs", [])
+        })
+        expected_run_edges.add((run.get("id"), "uses", run.get("software")))
+        expected_run_edges.update({
+            (visual_id, "generated-by", run.get("id"))
+            for visual_id in run.get("output_visuals", [])
+        })
+        actual_run_edges = [
+            (relation.get("from"), relation.get("kind"), relation.get("to"))
+            for relation in relations
+            if (
+                relation.get("to") == run.get("id")
+                and relation.get("kind") in {"input-to", "generated-by"}
+            ) or (
+                relation.get("from") == run.get("id")
+                and relation.get("kind") == "uses"
+                and entries.get(relation.get("to"), (None,))[0] == "software"
+            )
+        ]
+        if set(actual_run_edges) != expected_run_edges or len(actual_run_edges) != len(expected_run_edges):
+            errors.append(f"run lineage edges do not exactly match the immutable receipt: {run.get('id')}")
+        if run.get("status") == "success":
+            software = registry.get("software", {}).get(run.get("software"), {})
+            if not run.get("software_revision") or run.get("software_revision") != software.get("resolved_revision"):
+                errors.append(f"successful run is not bound to the current software revision: {run.get('id')}")
+            for field in ("command", "environment", "seed"):
+                if not run.get(field):
+                    errors.append(f"successful run lacks {field}: {run.get('id')}")
+            if run.get("outputs") and not (run.get("dependency_lock") or run.get("container_digest")):
+                errors.append(f"successful output-producing run lacks an environment lock/digest: {run.get('id')}")
+            if run.get("container_digest") and not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", run["container_digest"]):
+                errors.append(f"successful run has an invalid container digest: {run.get('id')}")
+            if run.get("outputs") and not run.get("inputs") and not run.get("notes"):
+                errors.append(f"successful output-producing run lacks inputs or a no-input explanation: {run.get('id')}")
+
+    if strict:
+        builds = registry.get("receipts", {}).get("builds", [])
+        current_builds = [build for build in builds if build.get("catalog_fingerprint") == fingerprint]
+        valid_builds = []
+        for build in current_builds:
+            try:
+                fls = ensure_within(project / build.get("fls", ""), project)
+                pdf = ensure_within(project / build.get("pdf", ""), project)
+                valid = (
+                    fls.is_file() and not fls.is_symlink()
+                    and pdf.is_file() and not pdf.is_symlink()
+                    and sha256_file(fls) == build.get("fls_sha256")
+                    and sha256_file(pdf) == build.get("pdf_sha256")
+                    and build.get("source_fingerprint") == registry.get("scan", {}).get("source_fingerprint")
+                    and build.get("ingestion_fingerprint") == current_ingestion_fingerprint
+                )
+                if valid:
+                    expected_ids = {
+                        entry_id for entry_id, (_, entry) in entries.items()
+                        if entry.get("state", "current") == "current"
+                    }
+                    pages, _ = validate_pdf_file(pdf, expected_ids)
+                    valid = pages == build.get("pdf_pages") and sorted(expected_ids) == build.get("evidence_ids")
+            except (HarnessError, OSError):
+                valid = False
+            if valid:
+                valid_builds.append(build)
+            else:
+                warnings.append(f"current-catalog build receipt no longer matches its files: {build.get('recorded_at')}")
+        if not valid_builds:
+            errors.append("no build receipt matches the current catalog")
+        elif promotion and not any(build.get("offline") is True for build in valid_builds):
+            errors.append("promotion requires a current offline build receipt")
+        fields = status_fields(project)
+        if not fields:
+            errors.append("draft STATUS is missing")
+        else:
+            state = fields.get("state", "").lower()
+            if not state or any(word in state for word in ("stale", "failed", "building")):
+                errors.append("draft STATUS does not describe a current readable result")
+            if promotion and any(word in state for word in ("wip", "blocked")):
+                errors.append("promotion STATUS still declares WIP or blocked work")
+            if promotion:
+                for key in ("WIP_units", "blocked_units"):
+                    value = fields.get(key, "").strip().lower()
+                    if value and value not in {"0", "none", "なし", "[]"}:
+                        errors.append(f"promotion STATUS has unresolved {key}")
+            expected_fields = {
+                "evidence_catalog_fingerprint": fingerprint,
+                "evidence_source_fingerprint": registry.get("scan", {}).get("source_fingerprint", ""),
+                "evidence_ingestion_fingerprint": current_ingestion_fingerprint,
+            }
+            for key, expected in expected_fields.items():
+                if not expected or fields.get(key) != expected:
+                    errors.append(f"draft STATUS {key} is missing or stale")
+            try:
+                draft_pdf = ensure_within(project / "draft" / fields.get("evidence_pdf", ""), project / "draft")
+                pdf_hash = sha256_file(draft_pdf) if draft_pdf.is_file() and not draft_pdf.is_symlink() else ""
+                if not pdf_hash or pdf_hash != fields.get("evidence_pdf_sha256"):
+                    errors.append("draft STATUS PDF/hash is missing or stale")
+                elif not any(build.get("pdf_sha256") == pdf_hash for build in valid_builds):
+                    errors.append("draft STATUS PDF does not match a current build receipt")
+            except (HarnessError, OSError):
+                errors.append("draft STATUS PDF path is invalid")
+    if promotion:
+        for section in ("assets", "visuals", "resources", "software", "runs"):
+            for entry in registry.get(section, {}).values():
+                if entry.get("state") == "current" and entry.get("annotations", {}).get("disposition") == "pending":
+                    errors.append(f"promotion has pending entry: {entry['id']}")
+                if entry.get("state") == "current" and entry.get("annotations", {}).get("rights_status") == "restricted-internal":
+                    errors.append(f"promotion contains restricted-internal material: {entry['id']}")
+    return sorted(set(errors)), sorted(set(warnings))
+
+
+def find_entry(registry: dict, entry_id: str) -> tuple[str, dict]:
+    if not ENTRY_ID.fullmatch(entry_id):
+        raise HarnessError("invalid entry ID")
+    entries = all_entries(registry)
+    if entry_id not in entries:
+        raise HarnessError(f"entry does not exist: {entry_id}")
+    return entries[entry_id]
+
+
+def annotate_entry(registry: dict, args: argparse.Namespace) -> None:
+    section, entry = find_entry(registry, args.entry_id)
+    annotation = entry.setdefault("annotations", {})
+    mapping = {
+        "disposition": args.disposition, "title": args.title,
+        "visibility": args.visibility,
+        "privacy_review_status": args.privacy_review,
+        "public_summary": args.public_summary,
+        "description": args.description, "rights_status": args.rights_status,
+        "license": args.license, "exclusion_reason": args.exclusion_reason,
+        "origin": args.origin, "alt_text": args.alt_text, "creator": args.creator,
+        "visual_review_status": args.visual_review,
+        "link_review_status": args.link_review,
+        "attachment_review_status": args.attachment_review,
+        "archive_review_status": args.archive_review,
+        "attachment_resolution": args.attachment_resolution,
+        "purpose": args.purpose, "environment": args.environment,
+        "usage": args.usage, "no_output_reason": args.no_output_reason,
+        "submodule_resolution": args.submodule_resolution,
+        "lfs_resolution": args.lfs_resolution,
+    }
+    for key, value in mapping.items():
+        if value is not None:
+            annotation[key] = value
+    for category, resolutions in (
+        ("attachment", args.resolve_attachment),
+        ("archive_member", args.resolve_archive_member),
+    ):
+        field = f"{category}_resolutions"
+        available: set[str]
+        if category == "attachment":
+            available = {
+                item.get("name") if isinstance(item, dict) else str(item)
+                for item in entry.get("pdf", {}).get("attachments", [])
+            }
+        else:
+            available = {str(item.get("path", "")) for item in entry.get("archive", {}).get("members", [])}
+        for name, status, adopted_asset, reason in resolutions:
+            if section != "assets" or name not in available:
+                raise HarnessError(f"unknown {category} locator for {args.entry_id}: {name}")
+            if status not in {"adopted", "excluded", "deferred"} or not reason.strip():
+                raise HarnessError(f"{category} resolution requires status and reason")
+            adopted_id = "" if adopted_asset == "none" else adopted_asset
+            if status == "adopted":
+                adopted_section, adopted_entry = find_entry(registry, adopted_id)
+                if (
+                    adopted_section != "assets" or adopted_id == args.entry_id
+                    or adopted_entry.get("state") != "current"
+                    or adopted_entry.get("role") != "external-input"
+                ):
+                    raise HarnessError(f"adopted {category} must point to a distinct current inbox asset")
+                relation = {"from": adopted_id, "kind": "supplements", "to": args.entry_id, "automatic": False}
+                if relation not in registry["relations"]:
+                    registry["relations"].append(relation)
+            elif adopted_id:
+                raise HarnessError(f"non-adopted {category} resolution must use asset ID 'none'")
+            annotation.setdefault(field, {})[name] = {
+                "status": status, "reason": reason.strip(), "adopted_asset": adopted_id,
+                "resolved_at": now_utc(),
+            }
+    review_values = (args.visual_review, args.link_review, args.attachment_review, args.archive_review)
+    if any(value == "complete" for value in review_values):
+        if not args.reviewer and not annotation.get("reviewer"):
+            raise HarnessError("manual completeness review requires --reviewer")
+        annotation["reviewer"] = args.reviewer or annotation["reviewer"]
+        annotation["reviewed_at"] = now_utc()
+    if args.revision is not None:
+        if section != "software":
+            raise HarnessError("--revision applies only to software")
+        if args.revision != entry.get("requested_revision", ""):
+            entry["resolved_revision"] = ""
+            entry["retrieval"] = {}
+        entry["requested_revision"] = args.revision
+        entry["revision_requires_review"] = not bool(args.revision)
+        entry["revision_source"] = "manual"
+
+
+def add_visual(registry: dict, args: argparse.Namespace) -> None:
+    if not ENTRY_ID.fullmatch(args.visual_id) or not args.visual_id.startswith("VIS-"):
+        raise HarnessError("manual visual ID must match VIS-[A-Z0-9-]+")
+    if args.visual_id in all_entries(registry):
+        raise HarnessError("entry ID already exists")
+    source_section, _ = find_entry(registry, args.source_asset)
+    if source_section != "assets":
+        raise HarnessError("manual visual source must be an asset")
+    annotation = merge_annotation(None, "source-visual")
+    annotation["origin"] = args.origin
+    annotation["title"] = args.caption
+    registry["visuals"][args.visual_id] = {
+        "id": args.visual_id, "state": "current", "source_asset": args.source_asset,
+        "visual_type": args.visual_type,
+        "locator": {"page": args.page, "label": args.label},
+        "caption_candidate": args.caption, "candidate_basis": "manual",
+        "annotations": annotation,
+    }
+
+
+def add_relation(registry: dict, args: argparse.Namespace) -> None:
+    entries = all_entries(registry)
+    if args.from_id not in entries or args.to_id not in entries:
+        raise HarnessError("relation endpoint does not exist")
+    relation = {"from": args.from_id, "kind": args.kind, "to": args.to_id, "automatic": False}
+    relation_error = relation_type_error(relation, entries)
+    if relation_error:
+        raise HarnessError(relation_error)
+    protected_run_lineage = (
+        args.to_id in registry.get("runs", {}) and args.kind in {"input-to", "generated-by"}
+    ) or (
+        args.from_id in registry.get("runs", {}) and args.kind == "uses"
+        and entries[args.to_id][0] == "software"
+    )
+    if protected_run_lineage:
+        raise HarnessError("run execution lineage is immutable and can only be created by record-run")
+    if relation not in registry["relations"]:
+        registry["relations"].append(relation)
+    cycle = relation_cycle(registry)
+    if cycle:
+        registry["relations"].remove(relation)
+        raise HarnessError(f"relation would create a cycle: {' -> '.join(cycle)}")
+
+
+def add_resource(registry: dict, args: argparse.Namespace) -> None:
+    canonical, secret = redact_and_canonicalize_url(args.url)
+    if not canonical:
+        raise HarnessError("resource URL is invalid")
+    if args.discovered_from:
+        find_entry(registry, args.discovered_from)
+    resource_id = short_id("RES", canonical)
+    old = registry["resources"].get(resource_id, {})
+    registry["resources"][resource_id] = {
+        "id": resource_id, "state": "current", "manual": True,
+        "canonical_url": canonical, "secret_query_redacted": secret,
+        "kind": args.kind or resource_kind(canonical),
+        "discovered_in": sorted(set(old.get("discovered_in", []) + ([args.discovered_from] if args.discovered_from else ["manual-review"]))),
+        "annotations": merge_annotation(old.get("annotations"), "external-resource"),
+        "verification": old.get("verification", {}), "retrieval": old.get("retrieval", {}),
+    }
+    print(resource_id)
+
+
+def add_software(registry: dict, args: argparse.Namespace) -> None:
+    if not ENTRY_ID.fullmatch(args.software_id) or not args.software_id.startswith("SW-"):
+        raise HarnessError("software ID must match SW-[A-Z0-9-]+")
+    if args.software_id in all_entries(registry):
+        raise HarnessError("entry ID already exists")
+    if bool(args.repository_url) == bool(args.artifact_resource):
+        raise HarnessError("choose exactly one repository URL or artifact resource")
+    annotation = default_annotation("software")
+    annotation.update({
+        "title": args.name, "purpose": "", "environment": "",
+        "usage": "", "no_output_reason": "",
+    })
+    entry = {
+        "id": args.software_id, "state": "current", "manual": True,
+        "annotations": annotation,
+        "requested_revision": args.revision, "revision_source": "manual",
+        "revision_candidates": [], "revision_requires_review": False,
+        "revision_conflict": False,
+        "resolved_revision": "", "retrieval": {},
+        "discovered_from": [],
+    }
+    if args.repository_url:
+        canonical = validate_network_url(args.repository_url, git_host_only=True)
+        parsed = urllib.parse.urlsplit(canonical)
+        if (parsed.hostname or "").lower() == "github.com":
+            repository = github_repository(canonical)
+            if not repository:
+                raise HarnessError("GitHub software URL must identify an owner and repository")
+            owner, name, _, _ = repository
+            canonical = f"https://github.com/{owner.lower()}/{name.lower()}"
+        entry.update({"source_type": "git", "repository_url": canonical.rstrip("/").removesuffix(".git")})
+    else:
+        section, resource = find_entry(registry, args.artifact_resource)
+        if section != "resources" or resource.get("state") != "current":
+            raise HarnessError("artifact software requires a current resource")
+        entry.update({"source_type": "artifact", "artifact_resource": args.artifact_resource})
+        entry["discovered_from"] = [args.artifact_resource]
+        registry["relations"].append({
+            "from": args.artifact_resource, "kind": "resource-identifies-software",
+            "to": args.software_id, "automatic": False,
+        })
+    registry["software"][args.software_id] = entry
+
+
+def public_addresses(host: str) -> list[str]:
+    try:
+        addresses = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise HarnessError(f"DNS resolution failed for {host}") from exc
+    if not addresses:
+        raise HarnessError(f"DNS resolution returned no addresses for {host}")
+    result: list[str] = []
+    for address in addresses:
+        ip = ipaddress.ip_address(address[4][0])
+        if not ip.is_global:
+            raise HarnessError("URL does not resolve exclusively to public addresses")
+        if str(ip) not in result:
+            result.append(str(ip))
+    return result
+
+
+def validate_network_url(url: str, git_host_only: bool = False) -> str:
+    canonical, secret = redact_and_canonicalize_url(url)
+    if not canonical or secret:
+        raise HarnessError("URLs with credentials or secret-like query parameters are not allowed")
+    parsed = urllib.parse.urlsplit(canonical)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise HarnessError("only credential-free HTTPS URLs are allowed")
+    if parsed.port not in {None, 443}:
+        raise HarnessError("non-default network ports are not allowed")
+    if git_host_only and parsed.hostname.lower() not in SUPPORTED_GIT_HOSTS:
+        raise HarnessError("git software fetch permits only the configured GitHub/GitLab/Bitbucket hosts")
+    public_addresses(parsed.hostname)
+    return canonical
+
+
+class PinnedHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, hostname: str, pinned_ip: str, timeout: int):
+        super().__init__(hostname, port=443, timeout=timeout, context=ssl.create_default_context())
+        self.pinned_ip = pinned_ip
+
+    def connect(self) -> None:
+        raw = socket.create_connection((self.pinned_ip, 443), self.timeout)
+        try:
+            self.sock = self._context.wrap_socket(raw, server_hostname=self.host)
+        except BaseException:
+            raw.close()
+            raise
+
+
+class SafeResponse:
+    def __init__(self, connection: PinnedHTTPSConnection, response: http.client.HTTPResponse, final_url: str):
+        self.connection = connection
+        self.response = response
+        self.status = response.status
+        self.headers = response.headers
+        self.final_url = final_url
+
+    def read(self, amount: int | None = None) -> bytes:
+        return self.response.read(amount)
+
+    def geturl(self) -> str:
+        return self.final_url
+
+    def getcode(self) -> int:
+        return self.status
+
+    def close(self) -> None:
+        try:
+            self.response.close()
+        finally:
+            self.connection.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        self.close()
+
+
+def one_pinned_request(url: str, method: str, timeout: int) -> SafeResponse:
+    parsed = urllib.parse.urlsplit(url)
+    target = urllib.parse.urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
+    last_error: OSError | ssl.SSLError | None = None
+    for address in public_addresses(parsed.hostname or ""):
+        connection = PinnedHTTPSConnection(parsed.hostname or "", address, timeout)
+        try:
+            connection.request(method, target, headers={
+                "User-Agent": "paper-evidence-harness/1", "Accept": "*/*",
+                "Connection": "close",
+            })
+            return SafeResponse(connection, connection.getresponse(), url)
+        except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
+            connection.close()
+            last_error = exc
+    raise HarnessError(f"HTTPS connection failed for {parsed.hostname}") from last_error
+
+
+def safe_open(url: str, method: str = "HEAD", timeout: int = 20) -> SafeResponse:
+    current = validate_network_url(url)
+    visited: set[str] = set()
+    for _ in range(6):
+        if current in visited:
+            raise HarnessError("redirect loop detected")
+        visited.add(current)
+        response = one_pinned_request(current, method, timeout)
+        if response.status not in {301, 302, 303, 307, 308}:
+            return response
+        location = response.headers.get("Location", "")
+        response.close()
+        if not location:
+            raise HarnessError("redirect response lacks Location")
+        current = validate_network_url(urllib.parse.urljoin(current, location))
+    raise HarnessError("redirect limit exceeded")
+
+
+def verify_resource(entry: dict) -> None:
+    url = entry.get("canonical_url", "")
+    if "[REDACTED]" in url:
+        raise HarnessError("redacted secret URL cannot be fetched")
+    checked_at = now_utc()
+    try:
+        response = safe_open(url, "HEAD")
+        if response.status in {400, 405, 501}:
+            response.close()
+            response = safe_open(url, "GET")
+        with response:
+            if response.status in {401, 403}:
+                entry["verification"] = {
+                    "ok": True, "checked_at": checked_at, "status": response.status,
+                    "final_url": url_for_receipt(response.geturl()), "access_limited": True,
+                    "note": "server denied automated access; identifier/redirect resolution succeeded",
+                }
+                return
+            if response.status >= 400:
+                raise HarnessError(f"HTTP status {response.status}")
+            if response.headers.get("Content-Length") and int(response.headers["Content-Length"]) < 0:
+                raise HarnessError("invalid Content-Length")
+            if response.getcode() == 200 and response.headers.get("Content-Length") is None:
+                response.read(1)
+            entry["verification"] = {
+                "ok": True, "checked_at": checked_at, "status": response.getcode(),
+                "final_url": url_for_receipt(response.geturl()), "content_type": response.headers.get("Content-Type", ""),
+                "content_length": response.headers.get("Content-Length", ""),
+                "etag": response.headers.get("ETag", ""),
+                "last_modified": response.headers.get("Last-Modified", ""),
+            }
+    except (HarnessError, OSError, ValueError) as exc:
+        entry["verification"] = {"ok": False, "checked_at": checked_at, "error": str(exc)}
+        raise HarnessError(f"resource verification failed: {entry['id']}") from exc
+
+
+def fetch_resource(project: pathlib.Path, entry: dict, max_bytes: int) -> None:
+    url = entry.get("canonical_url", "")
+    if "[REDACTED]" in url:
+        raise HarnessError("redacted secret URL cannot be fetched")
+    cache = managed_paths(project)["external_cache"] / entry["id"]
+    secure_directory(cache, project)
+    with safe_open(url, "GET") as response:
+        if response.status >= 400:
+            raise HarnessError(f"resource download returned HTTP status {response.status}")
+        final_url = response.geturl()
+        validate_network_url(final_url)
+        content_length = response.headers.get("Content-Length")
+        if content_length and int(content_length) > max_bytes:
+            raise HarnessError("resource exceeds configured size limit")
+        parsed = urllib.parse.urlsplit(final_url)
+        basename = pathlib.PurePosixPath(parsed.path).name or "download.bin"
+        basename = re.sub(r"[^A-Za-z0-9._-]+", "-", basename)[:120] or "download.bin"
+        fd, temp_name = tempfile.mkstemp(prefix=".download-", dir=cache)
+        digest = hashlib.sha256()
+        size = 0
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > max_bytes:
+                        raise HarnessError("resource exceeded configured size limit while downloading")
+                    digest.update(chunk)
+                    handle.write(chunk)
+                handle.flush()
+                os.fsync(handle.fileno())
+            destination = cache / f"{digest.hexdigest()}-{basename}"
+            reject_symlink_chain(cache, project)
+            if destination.exists():
+                if destination.is_symlink() or not destination.is_file() or sha256_file(destination) != digest.hexdigest():
+                    raise HarnessError("content-addressed resource cache is invalid")
+                pathlib.Path(temp_name).unlink(missing_ok=True)
+            else:
+                os.replace(temp_name, destination)
+        finally:
+            pathlib.Path(temp_name).unlink(missing_ok=True)
+        entry["retrieval"] = {
+            "ok": True, "retrieved_at": now_utc(), "final_url": url_for_receipt(final_url),
+            "cache_path": destination.relative_to(project).as_posix(),
+            "size": size, "sha256": digest.hexdigest(),
+            "content_type": response.headers.get("Content-Type", ""),
+            "archive_policy": "not extracted; adopt into inbox only after inspection",
+        }
+
+
+def git_environment() -> dict[str, str]:
+    environment = {
+        "PATH": os.environ.get("PATH", os.defpath),
+        "LANG": "C", "LC_ALL": "C",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_SYSTEM": "/dev/null",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_COUNT": "0",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_PROTOCOL_FROM_USER": "0",
+        "GIT_LFS_SKIP_SMUDGE": "1",
+    }
+    return environment
+
+
+def git_process_limits() -> None:
+    import resource
+    resource.setrlimit(resource.RLIMIT_AS, (2 * 1024 * 1024 * 1024, 2 * 1024 * 1024 * 1024))
+    resource.setrlimit(resource.RLIMIT_CPU, (300, 300))
+    resource.setrlimit(resource.RLIMIT_FSIZE, (2 * 1024 * 1024 * 1024, 2 * 1024 * 1024 * 1024))
+    resource.setrlimit(resource.RLIMIT_NOFILE, (128, 128))
+
+
+def hardened_git_argv(argv: list[str]) -> list[str]:
+    if not argv or argv[0] != "git":
+        raise HarnessError("git runner accepts git commands only")
+    return [
+        "git", "-c", "protocol.allow=never", "-c", "protocol.https.allow=always",
+        *argv[1:],
+    ]
+
+
+def git_run(
+    argv: list[str], timeout: int = 300, max_output_bytes: int = 16 * 1024 * 1024,
+) -> subprocess.CompletedProcess:
+    hardened_argv = hardened_git_argv(argv)
+    try:
+        process = subprocess.Popen(
+            hardened_argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=git_environment(), preexec_fn=git_process_limits, start_new_session=True,
+        )
+    except OSError as exc:
+        raise HarnessError(f"git command failed to start: {argv[0]}") from exc
+    assert process.stdout is not None and process.stderr is not None
+    stdout_fd = process.stdout.fileno()
+    stderr_fd = process.stderr.fileno()
+    buffers = {stdout_fd: bytearray(), stderr_fd: bytearray()}
+    open_streams = {stdout_fd, stderr_fd}
+    deadline = time.monotonic() + timeout
+    try:
+        while open_streams:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise HarnessError("git command timed out")
+            ready, _, _ = select.select(list(open_streams), [], [], min(1.0, remaining))
+            if not ready:
+                continue
+            for descriptor in ready:
+                chunk = os.read(descriptor, 65536)
+                if not chunk:
+                    open_streams.remove(descriptor)
+                    continue
+                buffers[descriptor].extend(chunk)
+                if len(buffers[descriptor]) > max_output_bytes:
+                    raise HarnessError("git command output exceeded the configured capture limit")
+        return_code = process.wait(timeout=max(1.0, deadline - time.monotonic()))
+    except (HarnessError, subprocess.TimeoutExpired):
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, 9)
+        process.wait()
+        raise
+    return subprocess.CompletedProcess(
+        hardened_argv, return_code,
+        bytes(buffers[stdout_fd]).decode("utf-8", errors="replace"),
+        bytes(buffers[stderr_fd]).decode("utf-8", errors="replace"),
+    )
+
+
+def git_network_run(argv: list[str], url: str, timeout: int = 300) -> subprocess.CompletedProcess:
+    canonical = validate_network_url(url, git_host_only=True)
+    parsed = urllib.parse.urlsplit(canonical)
+    address = public_addresses(parsed.hostname or "")[0]
+    curl_address = f"[{address}]" if ":" in address else address
+    hardened = [
+        "git", "-c", f"http.curloptResolve={parsed.hostname}:443:{curl_address}",
+        *argv[1:],
+    ]
+    return git_run(hardened, timeout=timeout)
+
+
+def validate_git_cache_budget(path: pathlib.Path) -> tuple[int, int]:
+    """Bound a bare repository by inode count and allocated logical bytes."""
+    file_count = 0
+    total_size = 0
+    for root, directories, files in os.walk(path, followlinks=False):
+        root_path = pathlib.Path(root)
+        for name in directories + files:
+            item = root_path / name
+            info = item.lstat()
+            if stat.S_ISLNK(info.st_mode) or not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
+                raise HarnessError("software cache contains a symlink or special file")
+            file_count += 1
+            if file_count > 200000:
+                raise HarnessError("software cache exceeds 200000 filesystem entries")
+            if stat.S_ISREG(info.st_mode):
+                total_size += info.st_size
+                if total_size > 2 * 1024 * 1024 * 1024:
+                    raise HarnessError("software cache exceeds 2 GiB")
+    return file_count, total_size
+
+
+def git_tree_inventory(git_dir: pathlib.Path, revision: str) -> dict:
+    """Stream a NUL-delimited tree listing under explicit byte/entry limits."""
+    argv = hardened_git_argv([
+        "git", f"--git-dir={git_dir}", "ls-tree", "-r", "-z", "--name-only", revision,
+    ])
+    try:
+        process = subprocess.Popen(
+            argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            env=git_environment(), preexec_fn=git_process_limits,
+        )
+    except OSError as exc:
+        raise HarnessError("software tree inventory could not start") from exc
+    assert process.stdout is not None
+    count = 0
+    byte_count = 0
+    pending = b""
+    top_level: set[str] = set()
+    licenses: list[str] = []
+    submodules_present = False
+    lfs_review_required = False
+    deadline = time.monotonic() + 300
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise HarnessError("software tree inventory timed out")
+            ready, _, _ = select.select([process.stdout], [], [], min(1.0, remaining))
+            if not ready:
+                if process.poll() is not None:
+                    chunk = process.stdout.read(1024 * 1024)
+                    if not chunk:
+                        break
+                else:
+                    continue
+            else:
+                chunk = os.read(process.stdout.fileno(), 1024 * 1024)
+            if not chunk:
+                break
+            byte_count += len(chunk)
+            if byte_count > 16 * 1024 * 1024:
+                raise HarnessError("software tree inventory exceeds 16 MiB")
+            pending += chunk
+            items = pending.split(b"\0")
+            pending = items.pop()
+            for raw_name in items:
+                if not raw_name:
+                    continue
+                count += 1
+                if count > 100000:
+                    raise HarnessError("software tree exceeds 100000 files")
+                name = raw_name.decode("utf-8", errors="replace")
+                top_level.add(name.split("/", 1)[0])
+                basename = pathlib.PurePosixPath(name).name.lower()
+                if basename.startswith(("license", "copying", "notice")) and len(licenses) < 50:
+                    licenses.append(name)
+                submodules_present = submodules_present or name == ".gitmodules"
+                lfs_review_required = lfs_review_required or name.endswith(".gitattributes")
+        if pending:
+            raise HarnessError("software tree inventory is not NUL terminated")
+        return_code = process.wait(timeout=30)
+        if return_code != 0:
+            raise HarnessError("software tree could not be indexed")
+    except (HarnessError, subprocess.TimeoutExpired):
+        process.kill()
+        process.wait()
+        raise
+    return {
+        "file_count": count, "inventory_bytes": byte_count,
+        "top_level": sorted(top_level)[:200], "license_candidates": licenses,
+        "submodules_present": submodules_present,
+        "lfs_review_required": lfs_review_required,
+    }
+
+
+def resolve_git_revision(url: str, revision: str) -> str:
+    if re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", revision):
+        return revision.lower()
+    query = revision or "HEAD"
+    if (
+        len(query) > 255
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", query)
+        or query.endswith(("/", "."))
+        or ".." in query
+        or "//" in query
+        or any(part.startswith(".") or part.endswith(".lock") for part in query.split("/"))
+    ):
+        raise HarnessError("git revision must be one exact ref name or a full object ID")
+    result = git_network_run([
+        "git", "-c", "protocol.file.allow=never", "ls-remote", url,
+        query, f"{query}^{{}}",
+    ], url)
+    if result.returncode != 0:
+        raise HarnessError("git revision lookup failed")
+    logical_refs: dict[str, dict[str, str]] = {}
+    for line in result.stdout.splitlines():
+        match = re.fullmatch(r"((?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64}))\s+([^\s]+)", line.strip())
+        if not match:
+            raise HarnessError("git revision lookup returned malformed output")
+        object_id, ref_name = match.groups()
+        peeled = ref_name.endswith("^{}")
+        logical_name = ref_name[:-3] if peeled else ref_name
+        values = logical_refs.setdefault(logical_name, {})
+        field = "peeled" if peeled else "direct"
+        if field in values and values[field] != object_id.lower():
+            raise HarnessError("git revision lookup returned conflicting object IDs")
+        values[field] = object_id.lower()
+    if not logical_refs:
+        raise HarnessError("requested git revision was not found")
+    if len(logical_refs) != 1:
+        raise HarnessError("requested git revision resolves to multiple refs")
+    values = next(iter(logical_refs.values()))
+    return values.get("peeled") or values.get("direct") or ""
+
+
+def fetch_artifact_software(project: pathlib.Path, registry: dict, entry: dict, resource_id: str, revision_override: str | None) -> None:
+    resource = registry.get("resources", {}).get(resource_id, {})
+    retrieval = resource.get("retrieval", {})
+    if resource.get("state") != "current" or not retrieval.get("ok"):
+        raise HarnessError("artifact software requires a fetched current resource")
+    cache_path = ensure_within(project / retrieval.get("cache_path", ""), managed_paths(project)["external_cache"])
+    reject_symlink_chain(cache_path, project)
+    snapshot = stable_file_snapshot(cache_path)
+    if snapshot["sha256"] != retrieval.get("sha256") or snapshot["size"] != retrieval.get("size"):
+        raise HarnessError("artifact resource cache receipt does not match bytes")
+    requested = revision_override if revision_override is not None else entry.get("requested_revision", "")
+    if not requested:
+        raise HarnessError("artifact software requires an explicit package/release version")
+    entry["requested_revision"] = requested
+    if revision_override is not None:
+        entry["revision_source"] = "manual"
+    entry["resolved_revision"] = f"sha256:{snapshot['sha256']}"
+    entry["retrieval"] = {
+        "ok": True, "retrieved_at": now_utc(), "source_type": "artifact",
+        "source_resource": resource_id, "version_label": requested,
+        "requested_revision": requested,
+        "cache_path": retrieval.get("cache_path"), "size": snapshot["size"],
+        "sha256": snapshot["sha256"],
+        "storage": "content-addressed resource artifact; not unpacked or executed",
+    }
+
+
+def fetch_software(project: pathlib.Path, registry: dict, entry: dict, revision_override: str | None) -> None:
+    if entry.get("source_type", "git") == "artifact":
+        resource_id = entry.get("artifact_resource")
+        return fetch_artifact_software(project, registry, entry, resource_id, revision_override)
+    url = entry.get("repository_url", "")
+    requested = revision_override if revision_override is not None else entry.get("requested_revision", "")
+    if entry.get("revision_requires_review") and not requested:
+        raise HarnessError("ambiguous repository page requires an explicit --revision")
+    validate_network_url(url, git_host_only=True)
+    resolved = resolve_git_revision(url, requested)
+    cache_root = managed_paths(project)["software_cache"]
+    software_root = cache_root / entry["id"]
+    secure_directory(cache_root, project)
+    secure_directory(software_root, project)
+    destination = software_root / f"{resolved}.git"
+    if destination.exists():
+        if destination.is_symlink() or not destination.is_dir():
+            raise HarnessError("software cache path is invalid")
+        verify = git_run(["git", f"--git-dir={destination}", "cat-file", "-e", f"{resolved}^{{commit}}"])
+        if verify.returncode != 0:
+            raise HarnessError("content-addressed software cache is invalid")
+        validate_git_cache_budget(destination)
+    else:
+        reject_symlink_chain(cache_root, project)
+        temp = pathlib.Path(tempfile.mkdtemp(prefix=f".{entry['id']}.", dir=cache_root))
+        try:
+            result = git_network_run([
+                "git", "-c", "protocol.file.allow=never", "clone", "--bare",
+                "--filter=blob:none", "--no-tags", url, str(temp),
+            ], url)
+            if result.returncode != 0:
+                raise HarnessError("bare software clone failed")
+            verify = git_run(["git", f"--git-dir={temp}", "cat-file", "-e", f"{resolved}^{{commit}}"])
+            if verify.returncode != 0 and requested:
+                result = git_network_run([
+                    "git", f"--git-dir={temp}", "-c", "protocol.file.allow=never",
+                    "fetch", "--depth=1", "origin", requested,
+                ], url)
+                if result.returncode != 0:
+                    raise HarnessError("requested software revision could not be fetched")
+                verify = git_run(["git", f"--git-dir={temp}", "cat-file", "-e", f"{resolved}^{{commit}}"])
+            if verify.returncode != 0:
+                raise HarnessError("resolved software commit is absent after fetch")
+            validate_git_cache_budget(temp)
+            reject_symlink_chain(software_root, project)
+            os.replace(temp, destination)
+        finally:
+            if temp.exists():
+                shutil.rmtree(temp)
+    cache_entries, cache_size = validate_git_cache_budget(destination)
+    inventory = git_tree_inventory(destination, resolved)
+    entry["requested_revision"] = requested
+    if revision_override is not None:
+        entry["revision_source"] = "manual"
+    entry["revision_requires_review"] = False
+    entry["resolved_revision"] = resolved
+    entry["retrieval"] = {
+        "ok": True, "retrieved_at": now_utc(), "resolved_commit": resolved,
+        "requested_revision": requested,
+        "cache_path": destination.relative_to(project).as_posix(),
+        "storage": "content-addressed bare partial clone; no checkout, hooks, submodules, or LFS objects executed/fetched",
+        "cache_entry_count": cache_entries, "cache_size": cache_size,
+        **inventory,
+    }
+
+
+def record_run(project: pathlib.Path, registry: dict, args: argparse.Namespace) -> None:
+    if not ENTRY_ID.fullmatch(args.run_id) or not args.run_id.startswith("RUN-"):
+        raise HarnessError("run ID must match RUN-[A-Z0-9-]+")
+    if args.run_id in registry.get("runs", {}):
+        raise HarnessError("run IDs are immutable; record a new run ID for a new receipt")
+    section, software_entry = find_entry(registry, args.software)
+    if section != "software":
+        raise HarnessError("run software ID is invalid")
+    software_revision = software_entry.get("resolved_revision", "")
+    retrieval = software_entry.get("retrieval", {})
+    if args.status == "success" and (not software_revision or not retrieval.get("ok")):
+        raise HarnessError("successful run requires software pinned by fetch-software")
+    if args.container_digest and not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", args.container_digest):
+        raise HarnessError("container digest must be sha256 followed by 64 hexadecimal digits")
+    entries = all_entries(registry)
+    if len(args.input) != len(set(args.input)):
+        raise HarnessError("run input IDs must be unique")
+    for input_id in args.input:
+        if input_id not in entries or entries[input_id][0] not in {"assets", "resources"}:
+            raise HarnessError(f"run input ID does not exist: {input_id}")
+        relation = {"from": input_id, "kind": "input-to", "to": args.run_id, "automatic": False}
+        if relation not in registry["relations"]:
+            registry["relations"].append(relation)
+    outputs: list[str] = []
+    output_visuals: list[str] = []
+    for relative in args.output:
+        path = ensure_within(project / relative, project)
+        allowed = managed_paths(project)["outputs"]
+        if allowed not in path.parents or not path.is_file() or path.is_symlink():
+            raise HarnessError("run outputs must be regular files under .workspace/source/software-output")
+        digest = sha256_file(path)
+        asset_id = short_id("ASSET", f"software-output:{digest}")
+        asset = registry["assets"].get(asset_id)
+        if not asset:
+            asset = scan_file(project, path, "software-output", registry["assets"])
+            registry["assets"][asset_id] = asset
+        if asset_id in outputs:
+            raise HarnessError("run output files must have distinct content")
+        outputs.append(asset_id)
+        relation = {"from": asset_id, "kind": "generated-by", "to": args.software, "automatic": False}
+        if relation not in registry["relations"]:
+            registry["relations"].append(relation)
+        run_relation = {"from": asset_id, "kind": "generated-by", "to": args.run_id, "automatic": False}
+        if run_relation not in registry["relations"]:
+            registry["relations"].append(run_relation)
+        if asset.get("media_type", "").startswith("image/") or path.suffix.lower() == ".pdf":
+            visual_id = short_id("VIS", asset_id)
+            old_visual = registry["visuals"].get(visual_id, {})
+            visual_annotation = merge_annotation(old_visual.get("annotations"), "software-output")
+            if visual_annotation.get("origin") == "pending":
+                visual_annotation["origin"] = "software-output"
+            registry["visuals"][visual_id] = {
+                "id": visual_id, "state": "current", "source_asset": asset_id,
+                "visual_type": "figure", "locator": {"path": path.relative_to(project).as_posix()},
+                "candidate_basis": "recorded software visual output",
+                "annotations": visual_annotation,
+            }
+            visual_relation = {"from": visual_id, "kind": "generated-by", "to": args.software, "automatic": False}
+            if visual_relation not in registry["relations"]:
+                registry["relations"].append(visual_relation)
+            visual_run_relation = {"from": visual_id, "kind": "generated-by", "to": args.run_id, "automatic": False}
+            if visual_run_relation not in registry["relations"]:
+                registry["relations"].append(visual_run_relation)
+            output_visuals.append(visual_id)
+    dependency_lock = ""
+    dependency_lock_receipt: dict = {}
+    if args.dependency_lock:
+        lock_path = ensure_within(project / args.dependency_lock, project)
+        if not lock_path.is_file() or lock_path.is_symlink():
+            raise HarnessError("dependency lock path is invalid")
+        lock_snapshot = stable_file_snapshot(lock_path)
+        if not lock_snapshot["stable"]:
+            raise HarnessError("dependency lock changed while being recorded")
+        relative_lock = lock_path.relative_to(project).as_posix()
+        dependency_lock = f"{relative_lock}@sha256:{lock_snapshot['sha256']}"
+        dependency_lock_receipt = {
+            "path": relative_lock, "size": lock_snapshot["size"],
+            "mtime_ns": lock_snapshot["mtime_ns"], "sha256": lock_snapshot["sha256"],
+        }
+    registry["runs"][args.run_id] = {
+        "id": args.run_id, "state": "current", "software": args.software, "status": args.status,
+        "software_revision": software_revision,
+        "software_cache_path": retrieval.get("cache_path", ""),
+        "recorded_at": now_utc(), "command": args.run_command,
+        "environment": args.environment, "container_digest": args.container_digest or "",
+        "dependency_lock": dependency_lock,
+        "dependency_lock_receipt": dependency_lock_receipt, "seed": args.seed,
+        "inputs": args.input, "outputs": outputs, "output_visuals": output_visuals,
+        "notes": args.notes or "",
+        "execution_policy": "receipt only; harness did not execute external code",
+        "annotations": merge_annotation(None, "run"),
+    }
+    uses_relation = {"from": args.run_id, "kind": "uses", "to": args.software, "automatic": False}
+    if uses_relation not in registry["relations"]:
+        registry["relations"].append(uses_relation)
+
+
+def validate_pdf_file(path: pathlib.Path, evidence_ids: set[str] | None = None) -> tuple[int, str]:
+    if sniff_type(path) != "application/pdf":
+        raise HarnessError("build receipt PDF does not have a PDF signature")
+    if not shutil.which("pdfinfo"):
+        raise HarnessError("pdfinfo is required to validate a build receipt")
+    status_code, stdout, stderr = run_tool(["pdfinfo", str(path)])
+    if status_code != 0:
+        raise HarnessError(f"build receipt PDF is structurally invalid: {stderr.strip()[:300]}")
+    pages_match = re.search(r"^Pages:\s+(\d+)\s*$", stdout, re.MULTILINE)
+    encrypted_match = re.search(r"^Encrypted:\s+(.+)$", stdout, re.MULTILINE)
+    if not pages_match or int(pages_match.group(1)) < 1:
+        raise HarnessError("build receipt PDF has no readable pages")
+    encrypted = encrypted_match.group(1).strip() if encrypted_match else "unknown"
+    if encrypted.lower() not in {"no", "false"}:
+        raise HarnessError("encrypted build PDFs are not accepted")
+    if not shutil.which("pdftotext"):
+        raise HarnessError("pdftotext is required to validate the rendered evidence index")
+    text_status, pdf_text, text_error = run_tool(["pdftotext", "-layout", str(path), "-"], timeout=120)
+    if text_status != 0:
+        raise HarnessError(f"build receipt PDF text could not be inspected: {text_error.strip()[:300]}")
+    missing_ids = sorted((evidence_ids or set()) - set(re.findall(r"(?:ASSET|VIS|RES|SW|RUN)-[A-Z0-9-]+", pdf_text)))
+    if missing_ids:
+        raise HarnessError(f"rendered evidence index is missing IDs: {', '.join(missing_ids)}")
+    return int(pages_match.group(1)), encrypted
+
+
+def fls_input_paths(project: pathlib.Path, fls_text: str) -> set[pathlib.Path]:
+    pwd_line = next((line[4:] for line in fls_text.splitlines() if line.startswith("PWD ")), "")
+    base = pathlib.Path(pwd_line) if pwd_line else project
+    if not base.is_absolute():
+        base = project / base
+    result: set[pathlib.Path] = set()
+    for line in fls_text.splitlines():
+        if not line.startswith("INPUT "):
+            continue
+        raw = line[6:].strip()
+        candidate = pathlib.Path(raw)
+        try:
+            resolved = (candidate if candidate.is_absolute() else base / candidate).resolve()
+        except OSError:
+            continue
+        result.add(resolved)
+    return result
+
+
+def record_build(project: pathlib.Path, config: dict, registry: dict, args: argparse.Namespace) -> None:
+    fls = ensure_within(project / args.fls, project)
+    pdf = ensure_within(project / args.pdf, project)
+    if not fls.is_file() or fls.is_symlink() or not pdf.is_file() or pdf.is_symlink():
+        raise HarnessError("build receipt inputs are invalid")
+    current_evidence_ids = {
+        entry_id for entry_id, (_, entry) in all_entries(registry).items()
+        if entry.get("state", "current") == "current"
+    }
+    pages, encrypted = validate_pdf_file(pdf, current_evidence_ids)
+    _, _, _, live_source_files = collect_note_references(project, config)
+    source_fingerprint = manifest_fingerprint(live_source_files)
+    if source_fingerprint != registry.get("scan", {}).get("source_fingerprint"):
+        raise HarnessError("canonical source changed after the last scan")
+    fls_text = fls.read_text(encoding="utf-8", errors="replace")
+    input_paths = fls_input_paths(project, fls_text)
+    required_paths = {
+        (managed_paths(project)["generated"] / "evidence-index.tex").resolve(),
+        (managed_paths(project)["generated"] / "evidence-macros.tex").resolve(),
+    }
+    missing = sorted(path.name for path in required_paths - input_paths)
+    if missing:
+        raise HarnessError(f"build recorder did not find generated input in .fls: {', '.join(missing)}")
+    missing_source = []
+    for item in live_source_files:
+        if pathlib.PurePosixPath(item["path"]).suffix.lower() == ".tex":
+            expected = (project / item["path"]).resolve()
+            if expected not in input_paths:
+                missing_source.append(item["path"])
+    if missing_source:
+        raise HarnessError(f"build recorder did not find canonical TeX input in .fls: {', '.join(missing_source)}")
+    newest_source_mtime = max((item["mtime_ns"] for item in live_source_files), default=0)
+    if fls.stat().st_mtime_ns < newest_source_mtime or pdf.stat().st_mtime_ns < newest_source_mtime:
+        raise HarnessError("build files predate the current canonical source")
+    registry.setdefault("receipts", {}).setdefault("builds", []).append({
+        "recorded_at": now_utc(), "catalog_fingerprint": catalog_fingerprint(registry),
+        "source_fingerprint": source_fingerprint,
+        "ingestion_fingerprint": ingestion_fingerprint(load_ingestion_manifest(project)),
+        "fls": fls.relative_to(project).as_posix(), "fls_sha256": sha256_file(fls),
+        "pdf": pdf.relative_to(project).as_posix(), "pdf_sha256": sha256_file(pdf),
+        "pdf_pages": pages, "pdf_encrypted": encrypted,
+        "evidence_ids": sorted(current_evidence_ids),
+        "offline": args.offline == "yes", "source_revision_label": args.source_revision or "",
+    })
+
+
+def status_summary(registry: dict) -> str:
+    lines = [f"catalog={catalog_fingerprint(registry)}"]
+    for section in ("assets", "visuals", "resources", "software", "runs"):
+        entries = [entry for entry in registry.get(section, {}).values() if entry.get("state", "current") == "current"]
+        pending = sum(1 for entry in entries if entry.get("annotations", {}).get("disposition") == "pending")
+        lines.append(f"{section}={len(entries)} pending={pending}")
+    return "\n".join(lines)
+
+
+def add_common_parser(subparsers, name: str, help_text: str):
+    parser = subparsers.add_parser(name, help=help_text)
+    parser.add_argument("project")
+    return parser
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog=".system/paper-evidence-harness")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    add_common_parser(subparsers, "init", "initialize the private project ledger")
+    add_common_parser(subparsers, "scan", "scan accepted inputs and canonical source")
+    add_common_parser(subparsers, "status", "summarize the current catalog")
+    add_common_parser(subparsers, "render-index", "regenerate TeX and Markdown indexes")
+
+    annotate = add_common_parser(subparsers, "annotate", "annotate a catalog entry")
+    annotate.add_argument("entry_id")
+    annotate.add_argument("--disposition", choices=("pending", "include", "explain", "exclude"))
+    annotate.add_argument("--visibility", choices=("pending", "reader", "internal"))
+    annotate.add_argument("--privacy-review", choices=("pending", "complete", "not-applicable"))
+    annotate.add_argument("--public-summary")
+    annotate.add_argument("--title")
+    annotate.add_argument("--description")
+    annotate.add_argument("--rights-status", choices=("pending", "cleared", "restricted-internal", "blocked", "not-applicable"))
+    annotate.add_argument("--license")
+    annotate.add_argument("--exclusion-reason")
+    annotate.add_argument("--origin", choices=("pending", "source-original", "permitted-copy", "faithful-redraw", "adapted", "note-original", "software-output"))
+    annotate.add_argument("--alt-text")
+    annotate.add_argument("--creator")
+    annotate.add_argument("--visual-review", choices=("pending", "complete", "not-applicable"))
+    annotate.add_argument("--link-review", choices=("pending", "complete", "not-applicable"))
+    annotate.add_argument("--attachment-review", choices=("pending", "complete", "not-applicable"))
+    annotate.add_argument("--archive-review", choices=("pending", "complete", "not-applicable"))
+    annotate.add_argument("--attachment-resolution")
+    annotate.add_argument(
+        "--resolve-attachment", nargs=4, action="append", default=[],
+        metavar=("NAME", "STATUS", "ASSET_ID_OR_NONE", "REASON"),
+    )
+    annotate.add_argument(
+        "--resolve-archive-member", nargs=4, action="append", default=[],
+        metavar=("PATH", "STATUS", "ASSET_ID_OR_NONE", "REASON"),
+    )
+    annotate.add_argument("--reviewer")
+    annotate.add_argument("--purpose")
+    annotate.add_argument("--environment")
+    annotate.add_argument("--usage")
+    annotate.add_argument("--no-output-reason")
+    annotate.add_argument("--submodule-resolution")
+    annotate.add_argument("--lfs-resolution")
+    annotate.add_argument("--revision")
+
+    visual = add_common_parser(subparsers, "add-visual", "add a manually reviewed visual")
+    visual.add_argument("visual_id")
+    visual.add_argument("--source-asset", required=True)
+    visual.add_argument("--type", dest="visual_type", choices=("figure", "table", "panel", "diagram", "plot"), required=True)
+    visual.add_argument("--page", type=int, required=True)
+    visual.add_argument("--label", required=True)
+    visual.add_argument("--caption", required=True)
+    visual.add_argument("--origin", choices=("source-original", "permitted-copy", "faithful-redraw", "adapted", "note-original", "software-output"), required=True)
+
+    relation = add_common_parser(subparsers, "relate", "add a typed provenance edge")
+    relation.add_argument("from_id")
+    relation.add_argument("kind", choices=sorted(RELATION_KINDS))
+    relation.add_argument("to_id")
+
+    resource = add_common_parser(subparsers, "add-resource", "register one manually discovered direct URL")
+    resource.add_argument("--url", required=True)
+    resource.add_argument("--kind", choices=("persistent-identifier", "repository-link", "downloadable-file", "web-resource"))
+    resource.add_argument("--discovered-from")
+
+    ingestion = add_common_parser(subparsers, "record-ingestion", "bind an inbox asset to an adoption decision")
+    ingestion.add_argument("asset_id")
+    ingestion.add_argument("--revision-id", required=True)
+    ingestion.add_argument("--status", choices=("adopted", "excluded", "deferred"), required=True)
+    ingestion.add_argument("--reason", required=True)
+
+    add_sw = add_common_parser(subparsers, "add-software", "register a Git repository or package/release artifact")
+    add_sw.add_argument("software_id")
+    add_sw.add_argument("--name", required=True)
+    source_group = add_sw.add_mutually_exclusive_group(required=True)
+    source_group.add_argument("--repository-url")
+    source_group.add_argument("--artifact-resource")
+    add_sw.add_argument("--revision", required=True, help="commit/tag request or package/release version label")
+
+    verify = add_common_parser(subparsers, "verify-links", "verify selected direct URLs")
+    verify.add_argument("ids", nargs="+")
+
+    fetch = add_common_parser(subparsers, "fetch-resource", "download one reviewed resource into quarantine")
+    fetch.add_argument("entry_id")
+    fetch.add_argument("--max-bytes", type=int, default=104857600)
+
+    software = add_common_parser(subparsers, "fetch-software", "pin and fetch a GitHub repository without checkout")
+    software.add_argument("entry_id")
+    software.add_argument("--revision")
+
+    run = add_common_parser(subparsers, "record-run", "record an externally isolated software run")
+    run.add_argument("run_id")
+    run.add_argument("--software", required=True)
+    run.add_argument("--status", choices=("success", "failed", "non-reproducible"), required=True)
+    run.add_argument("--command", dest="run_command", required=True)
+    run.add_argument("--environment", required=True)
+    run.add_argument("--container-digest")
+    run.add_argument("--dependency-lock")
+    run.add_argument("--seed", required=True)
+    run.add_argument("--input", action="append", default=[])
+    run.add_argument("--output", action="append", default=[])
+    run.add_argument("--notes")
+
+    build = add_common_parser(subparsers, "record-build", "bind a PDF build to the current catalog")
+    build.add_argument("--fls", required=True)
+    build.add_argument("--pdf", required=True)
+    build.add_argument("--offline", choices=("yes", "no"), required=True)
+    build.add_argument("--source-revision", help="optional human-readable label; source hashes are recorded automatically")
+
+    gate = add_common_parser(subparsers, "gate", "run a phase-specific fail-closed audit")
+    gate.add_argument("--phase", choices=("internal-wip", "shared-draft", "promotion"), required=True)
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    try:
+        project = project_path(args.project)
+        with project_lock(project):
+            config, registry = initialize(project)
+            paths = managed_paths(project)
+            if paths["transaction"].exists() and args.command not in {"scan", "gate", "status"}:
+                raise HarnessError("interrupted catalog transaction detected; run scan to recover")
+            if args.command == "init":
+                begin_catalog_transaction(paths, args.command, registry)
+                commit_catalog_transaction(project, paths, registry)
+                print("paper-evidence-harness: init ok")
+                return 0
+            if args.command == "scan":
+                registry = discover(project, config, registry)
+                begin_catalog_transaction(paths, args.command, registry)
+                commit_catalog_transaction(project, paths, registry)
+                print("paper-evidence-harness: scan ok")
+                print(status_summary(registry))
+                return 0
+            if args.command == "status":
+                print(status_summary(registry))
+                return 0
+            if args.command == "render-index":
+                begin_catalog_transaction(paths, args.command, registry)
+                commit_catalog_transaction(project, paths, registry)
+                print("paper-evidence-harness: render-index ok")
+                return 0
+            pending_ingestion_manifest = None
+            if args.command == "annotate":
+                annotate_entry(registry, args)
+            elif args.command == "add-visual":
+                add_visual(registry, args)
+            elif args.command == "relate":
+                add_relation(registry, args)
+            elif args.command == "add-resource":
+                add_resource(registry, args)
+            elif args.command == "record-ingestion":
+                pending_ingestion_manifest = record_ingestion(project, config, registry, args)
+            elif args.command == "add-software":
+                add_software(registry, args)
+            elif args.command == "verify-links":
+                for entry_id in args.ids:
+                    section, entry = find_entry(registry, entry_id)
+                    if section != "resources":
+                        raise HarnessError(f"not a resource ID: {entry_id}")
+                    verify_resource(entry)
+                    entry.setdefault("annotations", {})["link_review_status"] = "complete"
+            elif args.command == "fetch-resource":
+                section, entry = find_entry(registry, args.entry_id)
+                if section != "resources":
+                    raise HarnessError("fetch-resource requires a resource ID")
+                fetch_resource(project, entry, args.max_bytes)
+            elif args.command == "fetch-software":
+                section, entry = find_entry(registry, args.entry_id)
+                if section != "software":
+                    raise HarnessError("fetch-software requires a software ID")
+                fetch_software(project, registry, entry, args.revision)
+            elif args.command == "record-run":
+                record_run(project, registry, args)
+            elif args.command == "record-build":
+                record_build(project, config, registry, args)
+            elif args.command == "gate":
+                fresh = discover(project, config, registry)
+                stored_discovery = registry.get("scan", {}).get("discovery_fingerprint")
+                current_discovery = fresh.get("scan", {}).get("discovery_fingerprint")
+                errors, warnings = inspect_gate(project, config, registry, args.phase)
+                if not stored_discovery or stored_discovery != current_discovery:
+                    errors.append("discovery inputs changed after the last scan; run scan again")
+                    errors = sorted(set(errors))
+                audit = {
+                    "checked_at": now_utc(), "phase": args.phase,
+                    "catalog_fingerprint": catalog_fingerprint(registry),
+                    "errors": errors, "warnings": warnings,
+                    "result": "fail" if errors else "pass",
+                }
+                write_json(paths["audit"], audit)
+                for warning in warnings:
+                    print(f"WARNING: {warning}", file=sys.stderr)
+                for error in errors:
+                    print(f"ERROR: {error}", file=sys.stderr)
+                if errors:
+                    print(f"paper-evidence-harness: gate {args.phase} failed ({len(errors)} errors)", file=sys.stderr)
+                    return 1
+                print(f"paper-evidence-harness: gate {args.phase} ok")
+                return 0
+            else:
+                raise HarnessError("unsupported command")
+            begin_catalog_transaction(paths, args.command, registry)
+            if pending_ingestion_manifest is not None:
+                write_json(paths["ingestion"], pending_ingestion_manifest)
+            commit_catalog_transaction(project, paths, registry)
+            print(f"paper-evidence-harness: {args.command} ok")
+            return 0
+    except HarnessError as exc:
+        fail(str(exc))
+    return 1
+
+
+if __name__ == "__main__":
+    if len(sys.argv) == 3 and sys.argv[1] == "--archive-worker":
+        try:
+            worker_path = pathlib.Path(sys.argv[2])
+            print(json.dumps(inspect_archive_worker(worker_path), ensure_ascii=False))
+        except Exception as exc:
+            print(json.dumps({"status": "error", "error": type(exc).__name__}))
+            raise SystemExit(1)
+        raise SystemExit(0)
+    raise SystemExit(main())

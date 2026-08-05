@@ -8,9 +8,26 @@
 
 ## 目的
 
-論文を自分で説明・検証できる水準まで咀嚼し、主張、仮定、定義、手法、証明・導出、実験、限界、関連研究を教育的な順序に再構成した講義ノート PDF を作る。原論文、執筆者の解釈、外部知識、未解決の疑問を区別し、各説明を原論文または追加出典まで追跡可能にする。
+論文を自分で説明・検証できる水準まで咀嚼し、主張、仮定、定義、手法、証明・導出、実験、限界、関連研究を教育的な順序に再構成した講義ノート PDF を作る。対象分野を数学に限定せず、統計、生命科学、計算科学、実験科学等では、図の各 panel、データ、統計解析、実験条件、supplement、外部 software まで説明対象に含める。原論文、執筆者の解釈、外部知識、未解決の疑問を区別し、各説明を原論文または追加出典まで追跡可能にする。
 
-想定成果物は、学習目標を備え、合意した前提知識と範囲に対して自己完結し、必要な推論・導出・計算を本文中で完結させた講義ノート PDF、再現可能な編集ソース、書誌・権利台帳、主張・式・図表の追跡表、解釈・疑問・再計算の記録である。原論文の単なる和訳や節順の写しではなく理解のための再構成物とするが、原論文の主張範囲を変えない。
+想定成果物は、学習目標を備え、合意した前提知識と範囲に対して自己完結し、必要な推論・導出・計算・図解・再現条件を本文中で完結させた講義ノート PDF、再現可能な編集ソース、書誌・権利台帳、主張・式・図表・外部資源・software・実行結果の追跡表、解釈・疑問・再計算の記録である。原論文の単なる和訳や節順の写しではなく理解のための再構成物とするが、原論文の主張範囲を変えない。
+
+## evidence harness と発見範囲
+
+図、表、supplement、dataset、外部 file、URL、repository、software、実行結果を自由形式の台帳だけで管理しない。repository 共通の `.system/paper-evidence-harness` と、その project が持つ機械可読 catalog を使い、発見、採否、取得、固定、説明、本文参照、生成物の lineage、build snapshot を閉じる。
+
+「すべての外部資源」の自動発見範囲は、採用した `inbox/` の local input と canonical note source、その PDF text・PDF annotation・添付、およびそこに直接現れる URL の一段までとする。DOI landing page や repository README からさらに見つけた公式 supplement、data、code、release は、agent が内容と関連性を確認して `add-resource` で直接資源として登録する。取得物を無制限に再帰 crawl せず、次の段を調べる必要がある場合は新たな採用単位として明示する。発見した各項目は `include`、`explain`、`exclude`、または WIP 中の `pending` のいずれかとし、`exclude` には理由を必須とする。
+
+catalog の ID と relation は少なくとも次の対象を結ぶ。
+
+- asset: 原論文、supplement、dataset、archive、画像、note asset、software output と content hash
+- visual: figure、table、plot、diagram、panel、PDF 内 raster candidate と source locator
+- resource: DOI、公式 page、download、repository、license 等の direct URL
+- software: repository、requested revision、resolved commit、license、環境、利用法、取得 receipt
+- run: software、実行 command、環境・container、dependency lock、seed、input、output hash、成否
+- relation: `derived-from`、`generated-by`、`input-to`、`reproduces`、`explains`、`uses` 等の型付き edge
+
+自動抽出は完全性の証明ではない。caption のない vector drawing、複合 panel、scan 画像内の図、shading、PDF object として分離されない図、リンク文字列と異なる PDF annotation、外部 page の動的内容は漏れ得る。採用 PDF ごとに全ページを実際に render して確認し、caption・table・panel・annotation・添付の完全性を source hash に対して人が確認した後だけ、該当 review status を `complete` とする。自動候補の誤検出は理由付きで `exclude` にし、漏れた図は `add-visual` で登録する。
 
 ## ワークスペースの契約
 
@@ -54,9 +71,13 @@ repository mode は親の規則と `../.system/repository-mode` に従う。
 - `.workspace/records/figure-trace.*`: 図表、実験値、データ、元番号、扱い、権利、再描画・再現条件の対応。
 - `.workspace/records/interpretation-questions.*`: 解釈、外部知識、未解決の疑問、反例、再現不能、次の確認方法。
 - `.workspace/records/recalculations.*`: 次元、符号、境界、特殊例、数値、小規模再現等の独立検証。
-- `.workspace/records/paper-ingestion-manifest.*`: `inbox/` の検出履歴と、採用した入力スナップショット。
+- `.workspace/records/paper-ingestion-manifest.*`: `inbox/` の検出履歴と、採用した入力スナップショット。人向け履歴を Markdown に残してよいが、gate と build receipt が読む現行判断は harness の `record-ingestion` が管理する JSON に記録する。
+- `.workspace/records/evidence/registry.json`: harness が管理する asset、visual、resource、software、run、relation、本文参照、build receipt の機械可読正本。手作業で構造を書き換えず、harness の command で更新する。
+- `.workspace/records/evidence/last-audit.json`: 最新 phase gate の対象 catalog fingerprint、finding、結果。過去 cycle の review record の代用にはしない。
 - `.workspace/records/` のその他の用途別台帳: 学習スコープ、QA、公開判定等。台帳名と形式は案件開始時に決める。
 - `.workspace/tools/`: 採用後の案件固有のビルド設定、adapter、依存 lockfile。再利用可能な prompt、template、script、build/QA tool、test、fix の正本はここに置かず public shared system へ upstream する。
+
+生成される `.workspace/source/generated/evidence-macros.tex` と `evidence-index.tex` は canonical catalog から作る reader-safe view であり、人が編集する正本ではない。note source は両方を `\input` し、asset、visual、resource、software、run の全 current ID を索引に載せる。ただし local path、cache path、command、environment、未公開 URL、hash、添付名・archive member 名等の private ledger field は自動公開しない。各項目は `visibility=reader|internal`、`privacy_review_status`、`public_summary` を持ち、reader 表示は privacy review 完了後の field だけ、internal 項目は ID と非公開表示だけにする。本文の実質的な説明では `\EvidenceAsset`、`\EvidenceVisual`、`\EvidenceResource`、`\EvidenceSoftware` で ID を参照する。独自図の caption は `\EvidenceOriginalCaption` を使い、「本ノート独自図」の表示を caption から外さない。
 
 ## inbox 受け入れプロトコル
 
@@ -72,13 +93,14 @@ ingestion と読解・執筆を分離し、受け入れが確定したスナッ�
 8. 並行処理では担当 snapshot を分け、同じ manifest や canonical source を競合更新しない。更新の所有者を一つにするか、直列に統合する。
 9. `draft/` への公開時に、採用した manifest の snapshot/revision を `STATUS` または変更要約へ記録する。
 10. `out/` 昇格直前の再走査で、未評価の安定ファイル、変更 revision、`pending`、新規 `missing`、採用 revision の欠落、読み取り失敗、hash の計算または再検証そのものの失敗、または記録済み hash との不一致があれば停止して報告する。例外進行は、影響評価とユーザー合意を manifest に記録した場合だけ認める。
+11. manifest の走査と同じ accepted snapshot に対して evidence harness の `scan` を行う。manifest と catalog の asset ID、hash、採用状態に差があれば、どちらかを黙って正本扱いせず不整合を解消する。
 
 ## draft と out
 
 - `draft/` の PDF は途中成果であり final と呼ばない。`out/` への移動・複製は、完了条件を確認した明示的な promotion とする。
 - 公開済み draft を何らかの変更後に再公開する場合は、affected work unit の再 review を完了し、変更後 snapshot に対する gate と `draft/STATUS.*` の review 状態を更新する。
 - 各制作・レビュー cycle の終了時に、その時点の完成 unit と WIP を含む通読可能な draft PDF を作る。WIP は本文中で開始・終了と未完了範囲を明示し、欠落した証明や未検証の主張を完成済みに見せない。
-- 公開状態を `draft/STATUS.*` 等へ記録し、少なくともビルド日時、成功・失敗・陳腐化、source revision または commit、採用した inbox snapshot、work unit ごとの `reviewed` / `WIP` / `blocked`、検証状態、残件、対応する PDF 名を含める。`reviewed` は該当 unit の必須 review gate を満たした場合だけ付与する。
+- 公開状態を `draft/STATUS.*` 等へ記録し、少なくともビルド日時、成功・失敗・陳腐化、source revision または commit、採用した inbox snapshot、work unit ごとの `reviewed` / `WIP` / `blocked`、検証状態、残件、対応する PDF 名を含める。harness 用に `evidence_catalog_fingerprint`、`evidence_source_fingerprint`、`evidence_ingestion_fingerprint`、`evidence_pdf`、`evidence_pdf_sha256` を一行一 field で併記する。`reviewed` は該当 unit の必須 review gate を満たした場合だけ付与する。
 - 新しいビルドを開始した時、inbox revision や canonical source が変わった時、またはビルドが失敗した時は、残っている古い成功 PDF を最新版と誤認しないよう `STATUS` を先に `building`、`failed` または `stale` に更新する。
 - `out/` の既存成果を直接上書きする前に、対象名、版、検証結果、承認を確認する。可能なら成果物と共にビルド日時、source revision/commit、採用 inbox snapshot、検証状態を記録する。`out/` に含める work unit の WIP は 0 件でなければならず、WIP 表示を外すだけで promotion gate を通過したことにはしない。
 - ビルド失敗時は `out/` を変更しない。`draft/` と `out/` の公開物を clean 対象にしない。
@@ -95,19 +117,45 @@ ingestion と読解・執筆を分離し、受け入れが確定したスナッ�
 - clean は `.workspace/build/` 等の再生成領域に限定する。相対パス、`-cd`、BibTeX、MakeIndex、glossary、画像参照は案件の実文書で検証する。
 - 現時点では実文書がなく未検証のため、latexmkrc や build script は作らない。案件開始時に採用方式を確定し、`.workspace/tools/` に最小設定を作って実ビルドで検証する。
 
+## paper evidence harness の運用契約
+
+project root から相対 path を渡して、agent が次の command を実行する。ユーザーに内部 command の暗記や JSON の手編集を要求しない。
+
+```sh
+.system/paper-evidence-harness init paper-lecture-notes
+.system/paper-evidence-harness scan paper-lecture-notes
+.system/paper-evidence-harness status paper-lecture-notes
+.system/paper-evidence-harness gate paper-lecture-notes --phase internal-wip
+```
+
+- `init`: private な catalog、config、asset/figure/software-output 用 canonical directory、quarantine cache、生成 index を初期化する。既存 source や input を上書きしない。
+- `scan`: `inbox/` と canonical source を content hash で再走査する。通常の大容量 dataset は一回の bounded streaming hash だけで inventory し、text は上限以下だけを memory capture する。走査開始時 size を read loop の hard limit とし、走査中の増大・短縮を不安定状態として拒否する。PDF と複数 member archive だけを設定上限・空き容量確認後の private immutable parse snapshot に掛け、解析前後の SHA-256 を一致させ、外部 parser 自体にも memory、CPU、file size、stdout/stderr capture の上限を課す。既知の binary 画像、PDF、圧縮形式は拡張子だけでなく magic を照合し、SVG は外部 entity を取得・展開しない bounded XML parse で文書全体と root 要素を検査する。単一 stream の gzip/bzip2/xz は magic header を検証してから、展開せず一 member として header-only index する。7z/rar 等の未対応形式は自動展開せず、採用するなら対応可能な安全な形式へ別 asset として固定し、除外するなら理由を記録する。PDF metadata、caption 候補、raster object、annotation URL、添付名、archive member、source URL、repository 候補、本文の evidence macro を catalog に統合する。同一 size・mtime を同一 revision と仮定しない。
+- `record-ingestion`: current inbox asset の ID、revision ID、採用・除外・保留と理由を、走査済み size、mtime、SHA-256 に結合して機械可読 manifest に記録する。採用には、config の最小間隔以上離れた別 scan による同一 hash の安定観測を二回以上要求する。JSON を手編集しない。
+- `annotate` / `add-visual` / `add-resource` / `add-software` / `relate`: 採否、rights、reader/internal visibility、privacy review、読者向け要約、由来、alt text、完全性確認、手動発見項目、lineage を型付き field と edge で記録する。PDF 添付と通常 archive member は private ledger に名称・sizeを全件残し、個別に `adopted` / `excluded` / `deferred` と理由を解決する。XLSX、NPZ、DOCX 等の署名検証済み container は一つの asset として完全性 review し、内部 member は全件を private ledger に索引するが、個別解決を強制せず名称も reader index に出さない。採用した通常 member は別の current inbox asset、ingestion decision、`supplements` edgeへ結ぶ。manual completeness review を `complete` にするときは reviewer を記録する。caption のない図や landing page から手動発見した公式資源を catalog 外に残さない。
+- `verify-links`: 選択した direct URL だけを検査する。credential を含む URL、HTTP、非標準 port、localhost、private・link-local address、過剰 redirect は拒否し、secret らしい query は catalog で redaction して blocking finding にする。初回と各 redirect の宛先を検査し、検査済み public IP に TLS hostname verification 付きで接続する。
+- `fetch-resource`: 選択した一資源だけを size 制限付きで content-addressed quarantine cache に取得し、最終 URL、media type、size、SHA-256 を記録する。archive を自動展開せず、検査後に採用する場合だけユーザー入力を変更しない形で新しい accepted snapshot とする。
+- `fetch-software`: GitHub、GitLab、Bitbucket の HTTPS Git repository を exact commit に解決し、checkout、hook、submodule、Git LFS object、外部 code の実行を行わない content-addressed bare partial clone として cache に保存する。Git環境は allowlist から構築し、外部 helper へ書き換える環境設定を継承しない。revision は wildcard・rev 式を含まない exact ref 名または full object ID に限り、ref lookup の論理候補が一意でなければ拒否する。clone/cache は時間・memory・file size・総量・entry 数、tree inventory は出力 byte・file 数の上限を持ち、gate ごとに取得時の cache entry/size、requested/resolved revision、対象 commit の tree inventory receipt と再照合する。GitHub の repository identity は大文字小文字を統一し、`releases/tag/<tag>` は tag だけを解釈し、`tree/<branch>/<path>` と短縮 commit は曖昧なため explicit revision が与えられるまで取得しない。同一 repository から異なる revision が発見された場合も一つへ黙って折り畳まず、全候補を記録して explicit revision が指定されるまで取得しない。自動発見元が全て消えた software は missing とし、手動登録した software だけを発見元なしでも保持する。revision 指定を変えたときは旧取得 receipt を無効にして再取得する。PyPI、CRAN、Bioconductor、Zenodo release 等は、公式 download を resource として size/hash固定した後、artifact 型 software と version label に結ぶ。license candidate、submodule/LFS の要確認状態、tree の file inventory を記録し、採用時は submodule/LFS の利用・除外を解決する。mutable branch 名や release 名だけを最終再現条件にしない。
+- `record-run`: harness 外で明示的に隔離・承認して行った実行の receipt だけを記録する。harness は外部 code を自動実行しない。run ID は immutable とし、再実行は新しい ID で記録して古い execution lineage を改変しない。環境、command、exact software revision、dependency lock または container digest、seed、input ID、output hash と、記録時に直接生成した visual ID を固定し、dependency lock は path、size、hash を gate ごとに再照合する。input→run、output/direct-output-visual→run、run→software の execution relation を生成する。後続 scan の visual 候補や手動 panel は run 直結を自動要求せず、resource→run の `documents` 等、execution receipt でない型付き関係は追加できる。入力がない生成処理はその理由を記録する。
+- `render-index`: catalog fingerprint 付きの TeX/Markdown view を再生成する。source または catalog が変わった後の古い生成 index を共有しない。
+- `record-build`: `.fls` の exact path で生成 macro、index、全 canonical TeX source が実際に読まれたこと、構造検証済み PDF の hash・頁数、自動計算した source fingerprint、ingestion fingerprint、offline build の成否を current catalog fingerprint に束縛する。任意の revision label や、単に source に `\input` があることだけでは build receipt としない。
+- `gate`: `internal-wip`、`shared-draft`、`promotion` の順に fail-closed 検査を行う。interrupted transaction、input の same-size 差し替え、二回安定観測、ingestion/status/build の同一 fingerprint、orphan ID・型違い・cycle edge、stale index、未分類項目、由来・rights・alt text・本文参照の欠落、未固定 software、cache bytes/commit/tree inventory、生成物と exact run の断線、危険 archive、未解決 attachment/member、secret URL、current build receipt の欠落を検査する。
+
+`internal-wip` は pending を warning として許すが、安全・参照整合性・snapshot freshness の error は許さない。`shared-draft` は読者に見える全項目の採否、権利、由来、説明、current build receipt を要求する。`promotion` はさらに pending 0、current catalog に対する offline build receipt を要求する。tool の pass は図の科学的意味、統計の妥当性、生命科学上の解釈、ライセンス判断を保証しないため、内容 review を省略しない。
+
 ## 標準ワークフロー
 
 1. `inbox/` を受け入れプロトコルどおり走査し、対象論文と版、目的、読者、前提知識、範囲、深さ、公開範囲、既存ツールチェーンを確認する。
 2. 原論文に Paper ID を付け、書誌、版・改訂、ページ方式、権利を bibliography と各 trace に登録する。補助資料は別 ID とする。
-3. 問題設定、主要主張、前提、定義、手法、証明・導出、実験、限界、関連研究、著者の未解決点を分解する。
-4. ノートの項目を原論文の節、ページ、式・定理・図表番号、付録へ対応させる。
-5. 途中式、次元、符号、極限、境界条件、数値例、特殊例、反例、実験条件を検討し、可能なら独立に再計算・小規模再現する。
-6. 学習目標と前提知識を示し、動機、直観、定義、主張、導出、例、限界、節末要約の順に教育的に再構成する。
-7. 原論文、解釈、外部知識、未解決の疑問を識別し、不確かな点を推測で埋めない。
-8. 引用精度、主張の強さ、仮定、式・図表対応、理解検証、および途中の推論・導出・計算に欠落がないことをレビューする。
-9. 数学を含む範囲では、work unit 完成時と semantic change 後の checkpoint で `../MATH_PROSE_REVIEW.md` の affected phase を authoring 担当とは分けた read-only review phase として実施し、finding と再検証結果を private records に保存する。structural change と editorial change は親 `AGENTS.md` の分類に従って検査範囲を絞る。
-10. WIP 制作中は変更箇所を incremental build し、checkpoint で受け入れ snapshot と影響範囲を再確認する。読者へ共有する draft または `out/` 候補ではログと全ページ表示を検証して公開する。
-11. 権利、ライセンス、配布範囲、不要物混入、直前の inbox 状態を確認し、承認後にだけ `out/` へ昇格する。
+3. evidence harness を `init`、`scan` し、原論文、supplement、全 local file、図表候補、直接 URL、repository/software 候補を ID 化する。全ページ render と manual completeness review で自動抽出漏れを補い、採否と権利を記録する。
+4. 問題設定、主要主張、前提、定義、手法、証明・導出、実験、限界、関連研究、著者の未解決点を分解する。
+5. ノートの項目を原論文の節、ページ、式・定理・図表番号、付録、asset、resource、software、run ID へ対応させる。
+6. 途中式、次元、符号、極限、境界条件、数値例、特殊例、反例、実験条件を検討し、可能なら独立に再計算・小規模再現する。
+7. 学習目標と前提知識を示し、動機、直観、定義、主張、導出、図解、例、限界、節末要約の順に教育的に再構成する。
+8. 原論文、解釈、外部知識、未解決の疑問を識別し、不確かな点を推測で埋めない。
+9. 引用精度、主張の強さ、仮定、式・図表対応、理解検証、および途中の推論・導出・計算・図の読み方・software 再現条件に欠落がないことをレビューする。
+10. 数学を含む範囲では、work unit 完成時と semantic change 後の checkpoint で `../MATH_PROSE_REVIEW.md` の affected phase を authoring 担当とは分けた read-only review phase として実施し、finding と再検証結果を private records に保存する。structural change と editorial change は親 `AGENTS.md` の分類に従って検査範囲を絞る。
+11. WIP 制作中は変更箇所を incremental build し、checkpoint で受け入れ snapshot、catalog fingerprint、影響範囲を再確認する。読者へ共有する draft または `out/` 候補ではログ、evidence build receipt、全ページ表示を検証して公開する。
+12. 権利、ライセンス、配布範囲、不要物混入、直前の inbox と catalog 状態を確認し、承認後にだけ `out/` へ昇格する。
 
 ## work unit と review cycle
 
@@ -137,6 +185,9 @@ ingestion と読解・執筆を分離し、受け入れが確定したスナッ�
 - 原論文由来の主張、式、定義、数値、図表を Paper ID、版、ページ、節、番号まで追跡する。式を変形・改番した場合は元番号と変更内容を記録する。
 - 導出を次元、符号、境界値、極限、簡単な入力、既知の特殊例で検算する。条件を外した反例や適用範囲外も検討する。
 - 実験値を再計算できる場合は式と丸めを確認する。再現不能なら不足情報、試行条件、次の確認方法を記録し、滑らかな文章で隠さない。
+- 統計的結果は estimand、sample、欠測・除外、前処理、model、検定、multiple comparison、effect size、不確実性、乱数、software/version を必要な粒度で示す。図の error bar、band、asterisk、色、shape、facet、normalization、aggregation を本文で読めるようにし、相関・予測・因果を混同しない。
+- 生命科学の図は species、strain、cell line、sample 数、replicate、対照、処置、時間、濃度、assay、stain/marker、scale bar、画像処理、panel 間の関係を原資料に応じて説明する。模式図と測定像、代表像と集計、technical replicate と biological replicate を区別する。
+- 原図だけでは理解に必要な関係が見えにくい場合、権利と忠実性を確認した再描画、または講義ノート独自図を追加してよい。独自図は原論文由来に見せず caption に「本ノート独自図」と明示し、使った source/data/software と relation を登録する。忠実再描画と改変図も origin を分け、改変点を説明する。
 - 原論文と外部資料の書誌、版、DOI/URL、ページ、参照日、ライセンス・利用条件、権利を bibliography に記録する。直接引用、要約、翻訳に出典を示し、孫引きなら明示する。
 - 図表、付録データ、コード、非公開査読資料、個人情報、契約制限データには別の利用条件があり得る。判定を bibliography、figure trace またはQAへ記録し、秘密情報、権利不明素材と共にコミット・公開しない。
 
@@ -150,6 +201,8 @@ ingestion と読解・執筆を分離し、受け入れが確定したスナッ�
 - 記号は初出で定義し、型、次元、定義域、添字範囲、確率変数か実現値かを必要に応じて示す。原論文と記号を変える場合は対応表と理由を残す。
 - 式変形の仮定、定理、近似、極限操作を明記し、近似と等号を混同しない。式番号、本文参照、演算子、書体を統一する。
 - 図表ごとに出典、元番号、ページ、引用・再描画・改変・新規作成の別、権利を figure trace に記録する。値、軸、単位、凡例、集計条件、番号、キャプション、本文参照、白黒・縮小時の可読性、アクセシビリティ、画像解像度を確認する。
+- 原論文・supplement の全 figure/table/panel に disposition を与え、本文で扱うものは図の目的、読み順、各 panel、軸、単位、符号、色・線・記号、sample、統計、比較対象、結論と限界を説明する。省略する場合も index から消さず、理由を表示する。
+- note visual は全て catalog、caption、本文参照、origin、rights、alt text を持つ。`source-original`、`permitted-copy`、`faithful-redraw`、`adapted`、`note-original`、`software-output` を混同せず、redraw/adapted は元 visual、software output は exact software/run/input へ edge を持たせる。
 - ビルド成功だけで完成としない。エラー、警告、未解決参照、重複ラベル、欠落引用、参考文献、目次、索引、しおり、式・図表番号を確認し、索引の全ページ参照が PDF 内リンクとして機能して正しいページへ移動することを検証する。
 - 日本語・欧文・数式・コードのフォント、埋め込み、文字化け、行送り、禁則、長い URL、脚注、余白、ページ番号、はみ出しを確認する。最終候補は全ページを目視またはレンダリング検査する。
 - 検証記録には実施日、対象 source revision、採用 inbox snapshot、引用・文体・権利・図表を含む実施項目、結果、残件を残す。Git 差分に原資料、中間物、秘密情報、権利不明素材、無関係な変更がないことを確認し、台帳またはQAに未解決の不備があれば `out/` へ promotion しない。
@@ -173,6 +226,8 @@ ingestion と読解・執筆を分離し、受け入れが確定したスナッ�
 - 専門用語・記号の索引が本文と一致し、すべてのページ参照が正しい参照先への PDF 内リンクになっている。
 - 引用精度と理解検証が確認済みで、未解決事項と再現上の制約が明示されている。
 - 全 work unit について作成・最終修正後の affected-unit review が記録され、成果物に含まれる unit がすべて `reviewed` で WIP が 0 件である。数学を含む場合は `../MATH_PROSE_REVIEW.md` の独立 read-only review が完了し、definition-before-use violation、unlabeled formal claim、broken reference、未追跡依存、open blocking finding が 0 件である。
+- 全 current asset、visual、resource、software が講義ノートの evidence index に載り、採否が確定している。説明対象は本文の evidence reference を持ち、全 source visual の完全性確認、全 note visual の origin・rights・alt text、全 software の exact revision・license・環境・利用法・出力 lineage が確定している。
+- evidence catalog、生成 index、source revision、software/run receipt、PDF build receipt、`draft/STATUS` が同じ fingerprint/snapshot を指し、`shared-draft` または `promotion` の該当 gate を通過している。`out/` は pending 0 かつ offline build receipt を持つ promotion gate の pass を必須とする。
 - 合意した手順で再生成でき、警告、参照、目次、数式、フォント、全ページのレイアウト検証を通過し、参照成果物がある場合は house style を一組として actual-size と fit-width の両方で比較済みである。
 - 採用 inbox snapshot、source revision、検証結果、承認が記録され、最終成果だけが `out/` に明示的に昇格されている。
 - 配布物に秘密情報や権利不明素材がなく、公開・配布条件が確認されている。

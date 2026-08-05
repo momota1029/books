@@ -37,7 +37,9 @@ required_scripts=(
   .system/test-repository-mode
   .system/new-book-project
   .system/new-paper-project
+  .system/paper-evidence-harness
   .system/test-new-paper-project
+  .system/test-paper-evidence-harness
 )
 
 required_public_paths=(
@@ -57,7 +59,12 @@ done
 
 for script_path in "${required_scripts[@]}"; do
   [[ -x "$script_path" ]] || fail "script executable check failed"
-  bash -n -- "$script_path" >/dev/null 2>&1 || fail "script syntax check failed"
+  if head -n 1 -- "$script_path" | grep -Fq 'python3'; then
+    python3 -c 'import pathlib, sys; compile(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"), sys.argv[1], "exec")' \
+      "$script_path" >/dev/null 2>&1 || fail "script syntax check failed"
+  else
+    bash -n -- "$script_path" >/dev/null 2>&1 || fail "script syntax check failed"
+  fi
 done
 
 # The offline suite must operate only on its temporary repository and leave
@@ -68,6 +75,8 @@ done
   fail "offline instruction refresh test failed"
 .system/test-new-paper-project >/dev/null 2>&1 || \
   fail "offline new paper project test failed"
+.system/test-paper-evidence-harness >/dev/null 2>&1 || \
+  fail "offline paper evidence harness test failed"
 
 hooks_path="$(git config --local --get core.hooksPath 2>/dev/null)" && \
   hooks_status=0 || hooks_status=$?
