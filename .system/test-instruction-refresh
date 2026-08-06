@@ -45,9 +45,11 @@ repo_dir=$test_root/repository
 mkdir -p "$repo_dir/.system" "$repo_dir/.githooks" \
   "$repo_dir/papers/writing/example"
 cp -- "$source_root/.system/instruction-refresh" "$repo_dir/.system/"
+cp -- "$source_root/.system/standards-migration" "$repo_dir/.system/"
 cp -- "$source_root/.githooks/post-merge" "$repo_dir/.githooks/"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$repo_dir/.system/sync-mode-excludes"
 chmod +x "$repo_dir/.system/instruction-refresh" \
+  "$repo_dir/.system/standards-migration" \
   "$repo_dir/.system/sync-mode-excludes" "$repo_dir/.githooks/post-merge"
 
 printf 'root instructions\n' >"$repo_dir/AGENTS.md"

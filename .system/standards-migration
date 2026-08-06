@@ -1,0 +1,1154 @@
+#!/usr/bin/env python3
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import hashlib
+import json
+import os
+import pathlib
+import re
+import stat
+import subprocess
+import sys
+import tempfile
+from typing import Any
+
+
+SCHEMA_VERSION = 1
+BASE_INSTRUCTIONS = (
+    "AGENTS.md",
+    "WORKFLOW_ROUTING.md",
+    "JAPANESE_WRITING.md",
+    "MATH_PROSE_REVIEW.md",
+    ".system/instruction-refresh",
+    ".system/standards-migration",
+    ".githooks/post-merge",
+)
+DECISIONS = {"retain", "reconstruct", "retire"}
+OPERATIONS = {"inspect", "extend", "reconstruct", "promotion"}
+STATUS_MARKERS = {
+    "retain": "standards-migration: current",
+    "reconstruct": "standards-migration: reconstructing",
+    "retire": "standards-migration: retired",
+}
+REQUIRED_GATE_IDS = (
+    "artifact-identity",
+    "scope-coverage",
+    "dependency-order",
+    "quality-review",
+    "build-and-render",
+    "rights-and-privacy",
+)
+HASH_PATTERN = re.compile(r"[0-9a-f]{64}")
+REQUIRED_WORKSPACE_DIRECTORIES = {
+    "source",
+    "records",
+    "tools",
+    "build",
+    "cache",
+    "tmp",
+    "logs",
+    "locks",
+}
+OPTIONAL_WORKSPACE_DIRECTORIES = {"review"}
+ALLOWED_WORKSPACE_FILES = {"system-version", "project-id"}
+
+
+class MigrationError(Exception):
+    pass
+
+
+def fail(message: str, status_code: int = 1) -> None:
+    print(f"standards-migration: {message}", file=sys.stderr)
+    raise SystemExit(status_code)
+
+
+def run_git(repo_root: pathlib.Path, *args: str, check: bool = True) -> bytes:
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), *args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if check and result.returncode != 0:
+        raise MigrationError("Git metadata is unavailable")
+    return result.stdout
+
+
+def resolve_repository() -> pathlib.Path:
+    script_path = pathlib.Path(__file__)
+    if script_path.is_symlink():
+        raise MigrationError("script path is unsafe")
+    script_real = script_path.resolve(strict=True)
+    repo_text = subprocess.run(
+        ["git", "-C", str(script_real.parent.parent), "rev-parse", "--show-toplevel"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        text=True,
+    )
+    if repo_text.returncode != 0:
+        raise MigrationError("repository root is unavailable")
+    repo_root = pathlib.Path(repo_text.stdout.strip()).resolve(strict=True)
+    if script_real.parent != repo_root / ".system":
+        raise MigrationError("script path is unsafe")
+    return repo_root
+
+
+def ensure_regular(path: pathlib.Path, description: str) -> None:
+    try:
+        metadata = path.lstat()
+    except OSError as exc:
+        raise MigrationError(f"{description} is unavailable") from exc
+    if not stat.S_ISREG(metadata.st_mode) or path.is_symlink():
+        raise MigrationError(f"{description} is unsafe")
+
+
+def ensure_directory(path: pathlib.Path, description: str) -> None:
+    lexical = pathlib.Path(os.path.abspath(path))
+    try:
+        metadata = lexical.lstat()
+        resolved = lexical.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise MigrationError(f"{description} is unavailable") from exc
+    if not stat.S_ISDIR(metadata.st_mode) or lexical.is_symlink() or lexical != resolved:
+        raise MigrationError(f"{description} is unsafe")
+
+
+def atomic_json_write(destination: pathlib.Path, value: dict[str, Any], prefix: str) -> None:
+    ensure_directory(destination.parent, "record parent directory")
+    encoded = (
+        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    fd, temporary_name = tempfile.mkstemp(prefix=prefix, dir=destination.parent)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_name, destination)
+    except BaseException:
+        try:
+            os.unlink(temporary_name)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def resolve_scope(repo_root: pathlib.Path, raw_scope: str) -> tuple[pathlib.Path, str]:
+    candidate = pathlib.Path(raw_scope)
+    if not candidate.is_absolute():
+        candidate = repo_root / candidate
+    candidate = pathlib.Path(os.path.abspath(candidate))
+    try:
+        scope = candidate.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise MigrationError("scope cannot be resolved") from exc
+    if candidate != scope:
+        raise MigrationError("scope is unsafe")
+    try:
+        relative = scope.relative_to(repo_root).as_posix()
+    except ValueError as exc:
+        raise MigrationError("scope is outside this repository") from exc
+    if not scope.is_dir() or scope.is_symlink():
+        raise MigrationError("scope is unsafe")
+    workspace = scope / ".workspace"
+    try:
+        ensure_directory(workspace, "project workspace")
+    except MigrationError as exc:
+        raise MigrationError("scope is not a project root with a safe .workspace") from exc
+    records_root = workspace / "records"
+    try:
+        ensure_directory(records_root, "project records directory")
+        validate_snapshot_tree(records_root, "project records directory")
+    except MigrationError as exc:
+        raise MigrationError(
+            "scope is not a project root with a safe .workspace/records"
+        ) from exc
+    return scope, relative
+
+
+def current_instruction_paths(repo_root: pathlib.Path, scope: pathlib.Path) -> list[str]:
+    paths = list(BASE_INSTRUCTIONS)
+    cursor = repo_root
+    relative_scope = scope.relative_to(repo_root)
+    for part in relative_scope.parts:
+        cursor = cursor / part
+        instruction = cursor / "AGENTS.md"
+        if instruction.exists():
+            ensure_regular(instruction, "instruction source")
+            relative = instruction.relative_to(repo_root).as_posix()
+            if relative not in paths:
+                paths.append(relative)
+    for relative in paths:
+        ensure_regular(repo_root / relative, "instruction source")
+    return paths
+
+
+def manifest_fingerprint(entries: list[dict[str, str]]) -> str:
+    encoded = json.dumps(
+        entries, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def current_manifest(repo_root: pathlib.Path, scope: pathlib.Path) -> tuple[list[dict[str, str]], str]:
+    entries: list[dict[str, str]] = []
+    for relative in current_instruction_paths(repo_root, scope):
+        content = (repo_root / relative).read_bytes()
+        entries.append({"path": relative, "sha256": hashlib.sha256(content).hexdigest()})
+    return entries, manifest_fingerprint(entries)
+
+
+def load_json(path: pathlib.Path, description: str) -> dict[str, Any]:
+    ensure_regular(path, description)
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise MigrationError(f"{description} is invalid") from exc
+    if not isinstance(value, dict):
+        raise MigrationError(f"{description} is invalid")
+    return value
+
+
+def safe_project_path(
+    project_root: pathlib.Path, raw_path: str, description: str
+) -> pathlib.Path:
+    if not isinstance(raw_path, str) or not raw_path:
+        raise MigrationError(f"{description} path is invalid")
+    pure_path = pathlib.PurePosixPath(raw_path)
+    if pure_path.is_absolute() or ".." in pure_path.parts:
+        raise MigrationError(f"{description} path is invalid")
+    candidate = pathlib.Path(os.path.abspath(project_root / pure_path))
+    try:
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(project_root)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise MigrationError(f"{description} path is unavailable") from exc
+    if candidate != resolved or candidate.is_symlink():
+        raise MigrationError(f"{description} path is unsafe")
+    metadata = candidate.lstat()
+    if not (stat.S_ISREG(metadata.st_mode) or stat.S_ISDIR(metadata.st_mode)):
+        raise MigrationError(f"{description} path is unsafe")
+    return candidate
+
+
+def validate_snapshot_tree(path: pathlib.Path, description: str) -> None:
+    metadata = path.lstat()
+    if stat.S_ISREG(metadata.st_mode):
+        return
+    if not stat.S_ISDIR(metadata.st_mode) or path.is_symlink():
+        raise MigrationError(f"{description} path is unsafe")
+    for entry in path.rglob("*"):
+        entry_metadata = entry.lstat()
+        if entry.is_symlink() or not (
+            stat.S_ISDIR(entry_metadata.st_mode)
+            or stat.S_ISREG(entry_metadata.st_mode)
+        ):
+            raise MigrationError(f"{description} path contains an unsafe entry")
+
+
+def path_digest(path: pathlib.Path) -> str:
+    validate_snapshot_tree(path, "snapshot")
+    digest = hashlib.sha256()
+    metadata = path.lstat()
+    if stat.S_ISREG(metadata.st_mode):
+        digest.update(b"file\0")
+        digest.update(path.read_bytes())
+        return digest.hexdigest()
+    if not stat.S_ISDIR(metadata.st_mode) or path.is_symlink():
+        raise MigrationError("snapshot path is unsafe")
+    digest.update(b"directory\0")
+    for entry in sorted(path.rglob("*"), key=lambda item: item.relative_to(path).as_posix()):
+        relative = entry.relative_to(path).as_posix().encode("utf-8")
+        entry_metadata = entry.lstat()
+        if entry.is_symlink():
+            raise MigrationError("snapshot path contains a symlink")
+        if stat.S_ISDIR(entry_metadata.st_mode):
+            digest.update(b"directory-entry\0" + relative + b"\0")
+        elif stat.S_ISREG(entry_metadata.st_mode):
+            digest.update(b"file-entry\0" + relative + b"\0")
+            digest.update(entry.read_bytes())
+        else:
+            raise MigrationError("snapshot path contains an unsafe entry")
+    return digest.hexdigest()
+
+
+def validate_snapshot(
+    value: Any,
+    field: str,
+    project_root: pathlib.Path,
+    verify_live_path: bool,
+) -> tuple[str, str]:
+    if not isinstance(value, dict):
+        raise MigrationError(f"audit field {field} is invalid")
+    raw_path = nonempty_text(value.get("path"), f"{field}.path")
+    expected_hash = nonempty_text(value.get("sha256"), f"{field}.sha256")
+    if HASH_PATTERN.fullmatch(expected_hash) is None:
+        raise MigrationError(f"audit field {field}.sha256 is invalid")
+    pure_path = pathlib.PurePosixPath(raw_path)
+    if pure_path.is_absolute() or ".." in pure_path.parts:
+        raise MigrationError(f"audit field {field}.path is unsafe")
+    snapshot_path = safe_project_path(project_root, raw_path, field)
+    validate_snapshot_tree(snapshot_path, field)
+    if verify_live_path and path_digest(snapshot_path) != expected_hash:
+        raise MigrationError(f"audit field {field}.sha256 does not match its path")
+    return raw_path, expected_hash
+
+
+def safe_project_file(
+    project_root: pathlib.Path,
+    raw_path: str,
+    required_parent: pathlib.Path,
+    description: str,
+) -> pathlib.Path:
+    if (
+        not isinstance(raw_path, str)
+        or not raw_path
+        or pathlib.PurePosixPath(raw_path).is_absolute()
+    ):
+        raise MigrationError(f"{description} path is invalid")
+    ensure_directory(required_parent, f"{description} parent directory")
+    candidate = pathlib.Path(
+        os.path.abspath(project_root / pathlib.PurePosixPath(raw_path))
+    )
+    try:
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(required_parent.resolve(strict=True))
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise MigrationError(f"{description} path is outside its required directory") from exc
+    if candidate != resolved:
+        raise MigrationError(f"{description} path is unsafe")
+    ensure_regular(resolved, description)
+    return resolved
+
+
+def nonempty_text(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise MigrationError(f"audit field {field} must be non-empty text")
+    return value.strip()
+
+
+def validate_text_list(value: Any, field: str, allow_empty: bool = False) -> list[str]:
+    if not isinstance(value, list) or (not value and not allow_empty):
+        raise MigrationError(f"audit field {field} must be a non-empty list")
+    result: list[str] = []
+    for index, item in enumerate(value):
+        result.append(nonempty_text(item, f"{field}[{index}]"))
+    return result
+
+
+def expected_review_universe(project_root: pathlib.Path) -> list[str]:
+    expected: list[str] = []
+    workspace = project_root / ".workspace"
+    ensure_directory(workspace, "project workspace")
+    for entry in project_root.iterdir():
+        if entry.name == ".workspace":
+            continue
+        expected.append(entry.name)
+    for entry in workspace.iterdir():
+        if entry.name == "records":
+            continue
+        expected.append(f".workspace/{entry.name}")
+    if not expected:
+        raise MigrationError("project review universe is empty")
+    return sorted(expected)
+
+
+def validate_current_project_roots(project_root: pathlib.Path) -> None:
+    for index, raw_path in enumerate(expected_review_universe(project_root)):
+        description = f"current_project_roots[{index}]"
+        root = safe_project_path(project_root, raw_path, description)
+        validate_snapshot_tree(root, description)
+
+
+def validate_review_universe(
+    value: Any, project_root: pathlib.Path, verify_live_snapshots: bool
+) -> list[str]:
+    if not isinstance(value, list) or not value:
+        raise MigrationError("audit review_universe must be a non-empty list")
+    paths: list[str] = []
+    for index, snapshot in enumerate(value):
+        path, _ = validate_snapshot(
+            snapshot,
+            f"review_universe[{index}]",
+            project_root,
+            verify_live_snapshots,
+        )
+        paths.append(path)
+    if len(paths) != len(set(paths)):
+        raise MigrationError("audit review_universe contains duplicate paths")
+    if sorted(paths) != expected_review_universe(project_root):
+        raise MigrationError(
+            "audit review_universe does not cover every project artifact root"
+        )
+    return paths
+
+
+def validate_audit(
+    audit: dict[str, Any],
+    project_root: pathlib.Path,
+    project_relative: str,
+    fingerprint: str,
+    verify_live_snapshots: bool = True,
+) -> tuple[str, pathlib.Path, list[str], list[str]]:
+    if audit.get("schema_version") != SCHEMA_VERSION:
+        raise MigrationError("audit schema_version is unsupported")
+    if audit.get("project_root") != project_relative:
+        raise MigrationError("audit project_root does not match the scope")
+    if audit.get("standards_fingerprint") != fingerprint:
+        raise MigrationError("audit standards_fingerprint is stale")
+    review_universe_paths = validate_review_universe(
+        audit.get("review_universe"), project_root, verify_live_snapshots
+    )
+    revisions = audit.get("evaluated_revisions")
+    if not isinstance(revisions, dict):
+        raise MigrationError("audit evaluated_revisions is invalid")
+    for revision_name in ("artifact", "input", "canonical_source"):
+        validate_snapshot(
+            revisions.get(revision_name),
+            f"evaluated_revisions.{revision_name}",
+            project_root,
+            verify_live_snapshots,
+        )
+    decision = audit.get("decision")
+    if decision not in DECISIONS:
+        raise MigrationError("audit decision is invalid")
+    nonempty_text(audit.get("disposition_reason"), "disposition_reason")
+
+    requirements = audit.get("current_requirements")
+    if not isinstance(requirements, list) or not requirements:
+        raise MigrationError("audit current_requirements must be a non-empty list")
+    requirement_statuses: list[str] = []
+    requirement_ids: list[str] = []
+    for index, requirement in enumerate(requirements):
+        if not isinstance(requirement, dict):
+            raise MigrationError(f"audit current_requirements[{index}] is invalid")
+        gate_id = nonempty_text(
+            requirement.get("gate_id"), f"current_requirements[{index}].gate_id"
+        )
+        requirement_ids.append(gate_id)
+        nonempty_text(
+            requirement.get("requirement"),
+            f"current_requirements[{index}].requirement",
+        )
+        nonempty_text(
+            requirement.get("evidence"),
+            f"current_requirements[{index}].evidence",
+        )
+        requirement_status = requirement.get("status")
+        if requirement_status not in {"pass", "fail", "not-applicable"}:
+            raise MigrationError(f"audit current_requirements[{index}].status is invalid")
+        requirement_statuses.append(requirement_status)
+    if sorted(requirement_ids) != sorted(REQUIRED_GATE_IDS):
+        raise MigrationError(
+            "audit current_requirements must contain every required gate exactly once"
+        )
+
+    artifacts = audit.get("legacy_artifacts")
+    if not isinstance(artifacts, list) or not artifacts:
+        raise MigrationError("audit legacy_artifacts must be a non-empty list")
+    artifact_paths: list[str] = []
+    artifact_dispositions: list[str] = []
+    for index, artifact in enumerate(artifacts):
+        if not isinstance(artifact, dict):
+            raise MigrationError(f"audit legacy_artifacts[{index}] is invalid")
+        artifact_path = nonempty_text(
+            artifact.get("path"), f"legacy_artifacts[{index}].path"
+        )
+        artifact_paths.append(artifact_path)
+        artifact_hash = nonempty_text(
+            artifact.get("sha256"), f"legacy_artifacts[{index}].sha256"
+        )
+        validate_snapshot(
+            {"path": artifact_path, "sha256": artifact_hash},
+            f"legacy_artifacts[{index}]",
+            project_root,
+            verify_live_snapshots,
+        )
+        artifact_disposition = artifact.get("disposition")
+        if artifact_disposition not in {"reuse", "rework", "retire"}:
+            raise MigrationError(
+                f"audit legacy_artifacts[{index}].disposition is invalid"
+            )
+        artifact_dispositions.append(artifact_disposition)
+        nonempty_text(artifact.get("reason"), f"legacy_artifacts[{index}].reason")
+    if len(artifact_paths) != len(set(artifact_paths)):
+        raise MigrationError("audit legacy_artifacts contains duplicate paths")
+    if sorted(artifact_paths) != sorted(review_universe_paths):
+        raise MigrationError(
+            "audit legacy_artifacts must assign a disposition to every review_universe root"
+        )
+
+    units = audit.get("legacy_units")
+    if not isinstance(units, list):
+        raise MigrationError("audit legacy_units must be a list")
+    if not units:
+        nonempty_text(audit.get("legacy_units_empty_reason"), "legacy_units_empty_reason")
+    unit_ids: list[str] = []
+    unit_dispositions: list[str] = []
+    for index, unit in enumerate(units):
+        if not isinstance(unit, dict):
+            raise MigrationError(f"audit legacy_units[{index}] is invalid")
+        unit_ids.append(
+            nonempty_text(unit.get("unit_id"), f"legacy_units[{index}].unit_id")
+        )
+        validate_snapshot(
+            {
+                "path": unit.get("source_path"),
+                "sha256": unit.get("source_sha256"),
+            },
+            f"legacy_units[{index}].source",
+            project_root,
+            verify_live_snapshots,
+        )
+        unit_disposition = unit.get("disposition")
+        if unit_disposition not in {"reuse", "rework", "retire"}:
+            raise MigrationError(f"audit legacy_units[{index}].disposition is invalid")
+        unit_dispositions.append(unit_disposition)
+        nonempty_text(unit.get("reason"), f"legacy_units[{index}].reason")
+    if len(unit_ids) != len(set(unit_ids)):
+        raise MigrationError("audit legacy_units contains duplicate unit_id values")
+
+    findings = audit.get("systemic_findings")
+    if not isinstance(findings, list):
+        raise MigrationError("audit systemic_findings must be a list")
+    for index, finding in enumerate(findings):
+        if not isinstance(finding, dict):
+            raise MigrationError(f"audit systemic_findings[{index}] is invalid")
+        nonempty_text(finding.get("finding"), f"systemic_findings[{index}].finding")
+        nonempty_text(finding.get("scope"), f"systemic_findings[{index}].scope")
+        if finding.get("severity") not in {"blocking", "major"}:
+            raise MigrationError(f"audit systemic_findings[{index}].severity is invalid")
+
+    review = audit.get("independent_review")
+    if not isinstance(review, dict):
+        raise MigrationError("audit independent_review is invalid")
+    nonempty_text(review.get("reviewer"), "independent_review.reviewer")
+    nonempty_text(review.get("evidence"), "independent_review.evidence")
+    if review.get("independent_from_legacy_authoring") is not True:
+        raise MigrationError("audit independent review is not independent from legacy authoring")
+    if review.get("decision_confirmed") is not True:
+        raise MigrationError("audit independent review did not confirm the decision")
+
+    if audit.get("whole_artifact_review") is not True:
+        raise MigrationError("every migration decision requires whole_artifact_review=true")
+    if decision == "retain":
+        if findings:
+            raise MigrationError("retain is forbidden while systemic_findings are present")
+        if "fail" in requirement_statuses:
+            raise MigrationError("retain is forbidden while a current requirement fails")
+        if any(
+            disposition != "reuse"
+            for disposition in artifact_dispositions + unit_dispositions
+        ):
+            raise MigrationError(
+                "retain requires every artifact and unit disposition to be reuse"
+            )
+    if decision == "reconstruct":
+        if "rework" not in artifact_dispositions + unit_dispositions:
+            raise MigrationError(
+                "reconstruct requires at least one rework disposition"
+            )
+        validate_text_list(audit.get("replacement_plan"), "replacement_plan")
+        legacy_roots = validate_source_roots(
+            audit.get("legacy_roots"), "legacy_roots", project_root
+        )
+        replacement_roots = validate_source_roots(
+            audit.get("replacement_roots"), "replacement_roots", project_root
+        )
+        for legacy_root in legacy_roots:
+            for replacement_root in replacement_roots:
+                legacy_path = project_root / legacy_root
+                replacement_path = project_root / replacement_root
+                if (
+                    legacy_path == replacement_path
+                    or legacy_path in replacement_path.parents
+                    or replacement_path in legacy_path.parents
+                ):
+                    raise MigrationError(
+                        "reconstruction legacy_roots and replacement_roots overlap"
+                    )
+    elif decision == "retire":
+        if any(
+            disposition != "retire"
+            for disposition in artifact_dispositions + unit_dispositions
+        ):
+            raise MigrationError(
+                "retire requires every artifact and unit disposition to be retire"
+            )
+        legacy_roots = []
+        replacement_roots = []
+    else:
+        legacy_roots = []
+        replacement_roots = []
+    deletion = audit.get("physical_deletion")
+    if not isinstance(deletion, dict) or not isinstance(deletion.get("requested"), bool):
+        raise MigrationError("audit physical_deletion is invalid")
+    if deletion["requested"]:
+        nonempty_text(deletion.get("user_approval_reference"), "physical_deletion.user_approval_reference")
+
+    status_record = audit.get("draft_status")
+    if not isinstance(status_record, dict):
+        raise MigrationError("audit draft_status is invalid")
+    status_path = safe_project_file(
+        project_root,
+        nonempty_text(status_record.get("path"), "draft_status.path"),
+        project_root / "draft",
+        "draft status",
+    )
+    status_lines = [
+        line.strip() for line in status_path.read_text(encoding="utf-8").splitlines()
+    ]
+    required_marker = STATUS_MARKERS[decision]
+    fingerprint_marker = f"standards-fingerprint: {fingerprint}"
+    migration_lines = [
+        line for line in status_lines if line.startswith("standards-migration:")
+    ]
+    fingerprint_lines = [
+        line for line in status_lines if line.startswith("standards-fingerprint:")
+    ]
+    if migration_lines != [required_marker] or fingerprint_lines != [fingerprint_marker]:
+        raise MigrationError("draft status does not contain the required migration marker and fingerprint")
+    retirement_lines = [
+        line for line in status_lines if line.startswith("standards-retirement:")
+    ]
+    successor_lines = [
+        line for line in status_lines if line.startswith("standards-successor:")
+    ]
+    if decision == "retire":
+        if retirement_lines != ["standards-retirement: no-restart"]:
+            raise MigrationError("retired status must prohibit restart")
+        if len(successor_lines) != 1 or not successor_lines[0].removeprefix(
+            "standards-successor:"
+        ).strip():
+            raise MigrationError("retired status must identify a successor or none")
+    elif retirement_lines or successor_lines:
+        raise MigrationError("non-retired status contains retirement markers")
+    return decision, status_path, legacy_roots, replacement_roots
+
+
+def validate_source_roots(
+    value: Any, field: str, project_root: pathlib.Path
+) -> list[str]:
+    roots = validate_text_list(value, field)
+    normalized: list[str] = []
+    source_root = project_root / ".workspace" / "source"
+    ensure_directory(source_root, "canonical source directory")
+    for index, raw_root in enumerate(roots):
+        root_path = safe_project_path(project_root, raw_root, f"{field}[{index}]")
+        ensure_directory(root_path, f"{field}[{index}]")
+        try:
+            root_path.relative_to(source_root)
+        except ValueError as exc:
+            raise MigrationError(f"audit field {field}[{index}] is outside canonical source") from exc
+        normalized.append(root_path.relative_to(project_root).as_posix())
+    if len(normalized) != len(set(normalized)):
+        raise MigrationError(f"audit field {field} contains duplicate roots")
+    return normalized
+
+
+def adoption_path(project_root: pathlib.Path) -> pathlib.Path:
+    return project_root / ".workspace" / "records" / "standards-adoption.json"
+
+
+def initialization_path(project_root: pathlib.Path) -> pathlib.Path:
+    return project_root / ".workspace" / "records" / "standards-initialization.json"
+
+
+def attestation_path(
+    repo_root: pathlib.Path, project_relative: str, create: bool = False
+) -> pathlib.Path:
+    try:
+        git_dir = pathlib.Path(
+            run_git(repo_root, "rev-parse", "--absolute-git-dir")
+            .decode("utf-8")
+            .strip()
+        ).resolve(strict=True)
+    except (MigrationError, UnicodeError, OSError, RuntimeError) as exc:
+        raise MigrationError("Git metadata directory is unavailable") from exc
+    ensure_directory(git_dir, "Git metadata directory")
+    trust_root = git_dir / "codex-standards-migration"
+    if trust_root.exists() or trust_root.is_symlink():
+        ensure_directory(trust_root, "standards attestation directory")
+    elif create:
+        trust_root.mkdir(mode=0o700)
+        ensure_directory(trust_root, "standards attestation directory")
+    key = hashlib.sha256(project_relative.encode("utf-8")).hexdigest()
+    return trust_root / f"{key}.json"
+
+
+def write_attestation(
+    repo_root: pathlib.Path,
+    project_relative: str,
+    kind: str,
+    fingerprint: str,
+    record_path: pathlib.Path,
+    decision: str | None = None,
+) -> None:
+    destination = attestation_path(repo_root, project_relative, create=True)
+    attestation = {
+        "schema_version": SCHEMA_VERSION,
+        "project_root": project_relative,
+        "kind": kind,
+        "standards_fingerprint": fingerprint,
+        "record_sha256": hashlib.sha256(record_path.read_bytes()).hexdigest(),
+    }
+    if kind == "adoption":
+        if decision not in DECISIONS:
+            raise MigrationError("adoption attestation decision is invalid")
+        attestation["decision"] = decision
+    elif decision is not None:
+        raise MigrationError("non-adoption attestation contains a decision")
+    atomic_json_write(destination, attestation, ".attestation.")
+
+
+def verify_attestation(
+    repo_root: pathlib.Path,
+    project_relative: str,
+    kind: str,
+    fingerprint: str,
+    record_path: pathlib.Path,
+) -> None:
+    trust_path = attestation_path(repo_root, project_relative)
+    if not trust_path.exists() and not trust_path.is_symlink():
+        raise MigrationError("clone-local standards attestation is unavailable")
+    attestation = load_json(trust_path, "standards attestation")
+    if attestation.get("schema_version") != SCHEMA_VERSION:
+        raise MigrationError("standards attestation schema is unsupported")
+    if attestation.get("project_root") != project_relative:
+        raise MigrationError("standards attestation scope is invalid")
+    if attestation.get("kind") != kind:
+        raise MigrationError("standards attestation kind is invalid")
+    if kind == "adoption" and attestation.get("decision") not in DECISIONS:
+        raise MigrationError("standards attestation decision is invalid")
+    if attestation.get("standards_fingerprint") != fingerprint:
+        raise MigrationError("standards attestation fingerprint is stale")
+    expected_hash = nonempty_text(
+        attestation.get("record_sha256"), "attestation.record_sha256"
+    )
+    if hashlib.sha256(record_path.read_bytes()).hexdigest() != expected_hash:
+        raise MigrationError("standards record does not match its local attestation")
+
+
+def existing_adoption_decision(
+    repo_root: pathlib.Path,
+    project_root: pathlib.Path,
+    project_relative: str,
+) -> str | None:
+    record_path = adoption_path(project_root)
+    record_exists = record_path.exists() or record_path.is_symlink()
+    trust_path = attestation_path(repo_root, project_relative)
+    trust_exists = trust_path.exists() or trust_path.is_symlink()
+    if trust_exists:
+        attestation = load_json(trust_path, "standards attestation")
+        if attestation.get("schema_version") != SCHEMA_VERSION:
+            raise MigrationError("standards attestation schema is unsupported")
+        if attestation.get("project_root") != project_relative:
+            raise MigrationError("standards attestation scope is invalid")
+        if attestation.get("kind") != "adoption":
+            if record_exists:
+                raise MigrationError(
+                    "existing adoption record conflicts with its local attestation"
+                )
+            return None
+        if not record_exists:
+            raise MigrationError(
+                "existing adoption record is missing while its local attestation is present"
+            )
+        fingerprint = nonempty_text(
+            attestation.get("standards_fingerprint"),
+            "attestation.standards_fingerprint",
+        )
+        if HASH_PATTERN.fullmatch(fingerprint) is None:
+            raise MigrationError("standards attestation fingerprint is invalid")
+        verify_attestation(
+            repo_root, project_relative, "adoption", fingerprint, record_path
+        )
+    elif not record_exists:
+        return None
+
+    record = load_json(record_path, "existing standards adoption record")
+    if record.get("schema_version") != SCHEMA_VERSION:
+        raise MigrationError("existing standards adoption record schema is unsupported")
+    if record.get("project_root") != project_relative:
+        raise MigrationError("existing standards adoption record scope is invalid")
+    fingerprint = nonempty_text(
+        record.get("standards_fingerprint"),
+        "existing_adoption.standards_fingerprint",
+    )
+    if HASH_PATTERN.fullmatch(fingerprint) is None:
+        raise MigrationError("existing standards adoption fingerprint is invalid")
+    decision = record.get("decision")
+    if decision not in DECISIONS:
+        raise MigrationError("existing standards adoption decision is invalid")
+    if trust_exists and attestation.get("decision") != decision:
+        raise MigrationError(
+            "existing adoption decision does not match its local attestation"
+        )
+    return decision
+
+
+def audit_state(
+    repo_root: pathlib.Path,
+    project_root: pathlib.Path,
+    project_relative: str,
+    fingerprint: str,
+) -> tuple[str, str, dict[str, Any] | None]:
+    record_path = adoption_path(project_root)
+    if record_path.exists() or record_path.is_symlink():
+        try:
+            verify_attestation(
+                repo_root, project_relative, "adoption", fingerprint, record_path
+            )
+            record = load_json(record_path, "standards adoption record")
+            if record.get("schema_version") != SCHEMA_VERSION:
+                raise MigrationError("standards adoption record schema is unsupported")
+            if record.get("project_root") != project_relative:
+                raise MigrationError("standards adoption record scope is invalid")
+            if record.get("standards_fingerprint") != fingerprint:
+                return "migration-required", "adopted standards fingerprint is stale", None
+            decision = record.get("decision")
+            if decision not in DECISIONS:
+                raise MigrationError("standards adoption record decision is invalid")
+            audit_relative = nonempty_text(record.get("audit_path"), "adoption.audit_path")
+            audit_file = safe_project_file(
+                project_root,
+                audit_relative,
+                project_root / ".workspace" / "records",
+                "migration audit",
+            )
+            expected_hash = nonempty_text(record.get("audit_sha256"), "adoption.audit_sha256")
+            actual_hash = hashlib.sha256(audit_file.read_bytes()).hexdigest()
+            if actual_hash != expected_hash:
+                return "migration-required", "migration audit changed after adoption", None
+            audit = load_json(audit_file, "migration audit")
+            validated_decision, _, legacy_roots, replacement_roots = validate_audit(
+                audit,
+                project_root,
+                project_relative,
+                fingerprint,
+                verify_live_snapshots=False,
+            )
+            if validated_decision != decision:
+                return (
+                    "migration-required",
+                    "migration decision no longer matches its audit",
+                    None,
+                )
+            if record.get("legacy_roots", []) != legacy_roots:
+                return "migration-required", "adoption legacy_roots no longer match", None
+            if record.get("replacement_roots", []) != replacement_roots:
+                return "migration-required", "adoption replacement_roots no longer match", None
+            return decision, "adopted migration audit is current", record
+        except MigrationError as exc:
+            return "migration-required", str(exc), None
+
+    initial_path = initialization_path(project_root)
+    if initial_path.exists() or initial_path.is_symlink():
+        try:
+            verify_attestation(
+                repo_root, project_relative, "initialization", fingerprint, initial_path
+            )
+            initial = load_json(initial_path, "standards initialization record")
+            if initial.get("schema_version") != SCHEMA_VERSION:
+                raise MigrationError("standards initialization record schema is unsupported")
+            if initial.get("project_root") != project_relative:
+                raise MigrationError("standards initialization record scope is invalid")
+            if initial.get("initialized_empty_project") is not True:
+                raise MigrationError("standards initialization record is invalid")
+            if initial.get("standards_fingerprint") != fingerprint:
+                return "migration-required", "initialized standards fingerprint is stale", None
+            nonempty_text(initial.get("repository_head"), "initialization.repository_head")
+            nonempty_text(initial.get("initialized_at_utc"), "initialization.initialized_at_utc")
+            validate_current_project_roots(project_root)
+            return (
+                "current-at-creation",
+                "empty project was initialized under the current standards",
+                initial,
+            )
+        except MigrationError as exc:
+            return "migration-required", str(exc), None
+
+    return "migration-required", "project has no verifiable standards baseline", None
+
+
+def operation_allowed(state: str, operation: str) -> bool:
+    if operation in {"extend", "promotion"}:
+        return state in {"retain", "current-at-creation"}
+    if operation == "reconstruct":
+        return state == "reconstruct"
+    return False
+
+
+def command_check(
+    repo_root: pathlib.Path,
+    project_root: pathlib.Path,
+    project_relative: str,
+    operation: str,
+    target: str | None,
+) -> None:
+    _, fingerprint = current_manifest(repo_root, project_root)
+    state, reason, state_record = audit_state(
+        repo_root, project_root, project_relative, fingerprint
+    )
+    if operation == "inspect":
+        print(
+            f"standards-migration: inspect allowed for {project_relative}; "
+            f"state={state}; fingerprint={fingerprint}; reason={reason}"
+        )
+        return
+    if state == "migration-required":
+        print(
+            f"standards-migration: migration required for {project_relative}: {reason}\n"
+            f"standards-migration: current fingerprint {fingerprint}\n"
+            "standards-migration: freeze legacy extension and promotion, mark draft status stale, "
+            "then create and adopt an independent migration audit.",
+            file=sys.stderr,
+        )
+        raise SystemExit(3)
+    if not operation_allowed(state, operation):
+        print(
+            f"standards-migration: operation {operation} is forbidden while project state is {state}\n"
+            f"standards-migration: {reason}",
+            file=sys.stderr,
+        )
+        raise SystemExit(4)
+    if operation == "reconstruct":
+        if target is None or state_record is None:
+            raise MigrationError("reconstruct check requires --target")
+        validate_reconstruction_target(
+            project_root, target, state_record.get("replacement_roots")
+        )
+    print(
+        f"standards-migration: {operation} allowed for {project_relative}; "
+        f"state={state}; fingerprint={fingerprint}"
+    )
+
+
+def validate_reconstruction_target(
+    project_root: pathlib.Path, raw_target: str, replacement_roots: Any
+) -> None:
+    if not isinstance(replacement_roots, list) or not replacement_roots:
+        raise MigrationError("adoption replacement_roots is invalid")
+    pure_target = pathlib.PurePosixPath(raw_target)
+    if pure_target.is_absolute() or ".." in pure_target.parts:
+        raise MigrationError("reconstruction target is invalid")
+    candidate = pathlib.Path(os.path.abspath(project_root / pure_target))
+    parent = candidate.parent
+    ensure_directory(parent, "reconstruction target parent")
+    if candidate.exists() or candidate.is_symlink():
+        ensure_regular(candidate, "reconstruction target")
+        if candidate.resolve(strict=True) != candidate:
+            raise MigrationError("reconstruction target is unsafe")
+    for raw_root in replacement_roots:
+        root = project_root / nonempty_text(raw_root, "adoption.replacement_roots")
+        ensure_directory(root, "replacement root")
+        if candidate != root and root in candidate.parents:
+            return
+    raise MigrationError("reconstruction target is outside adopted replacement_roots")
+
+
+def verify_empty_skeleton(
+    project_root: pathlib.Path, expected_head: str
+) -> None:
+    root_entries = {entry.name for entry in project_root.iterdir()}
+    if root_entries != {"inbox", "draft", "out", ".workspace"}:
+        raise MigrationError("new project root is not the complete empty skeleton")
+    for name in ("inbox", "draft", "out"):
+        directory = project_root / name
+        ensure_directory(directory, f"new project directory {name}")
+        if next(directory.iterdir(), None) is not None:
+            raise MigrationError("standards initialization is allowed only for an empty new project")
+    workspace = project_root / ".workspace"
+    workspace_entries = {entry.name for entry in workspace.iterdir()}
+    workspace_directories = {
+        entry.name for entry in workspace.iterdir() if entry.is_dir() and not entry.is_symlink()
+    }
+    workspace_files = {
+        entry.name for entry in workspace.iterdir() if entry.is_file() and not entry.is_symlink()
+    }
+    if not REQUIRED_WORKSPACE_DIRECTORIES.issubset(workspace_directories):
+        raise MigrationError("new project workspace skeleton is incomplete")
+    if not workspace_directories.issubset(
+        REQUIRED_WORKSPACE_DIRECTORIES | OPTIONAL_WORKSPACE_DIRECTORIES
+    ):
+        raise MigrationError("new project workspace contains an unexpected directory")
+    if not workspace_files.issubset(ALLOWED_WORKSPACE_FILES):
+        raise MigrationError("new project workspace contains an unexpected file")
+    if workspace_entries != workspace_directories | workspace_files:
+        raise MigrationError("new project workspace contains an unsafe entry")
+    for name in workspace_directories:
+        directory = workspace / name
+        ensure_directory(directory, f"new project workspace directory {name}")
+        if next(directory.iterdir(), None) is not None:
+            raise MigrationError("standards initialization is allowed only for an empty new project")
+    version_path = workspace / "system-version"
+    ensure_regular(version_path, "new project system version")
+    if version_path.read_text(encoding="utf-8").strip() != expected_head:
+        raise MigrationError("new project system version does not match HEAD")
+    project_id_path = workspace / "project-id"
+    if project_id_path.exists() or project_id_path.is_symlink():
+        ensure_regular(project_id_path, "new project identity")
+        nonempty_text(project_id_path.read_text(encoding="utf-8"), "project-id")
+
+
+def command_initialize(
+    repo_root: pathlib.Path,
+    project_root: pathlib.Path,
+    project_relative: str,
+) -> None:
+    try:
+        head = (
+            run_git(repo_root, "rev-parse", "--verify", "HEAD^{commit}")
+            .decode("ascii")
+            .strip()
+        )
+    except (MigrationError, UnicodeError) as exc:
+        raise MigrationError("HEAD commit is unavailable") from exc
+    verify_empty_skeleton(project_root, head)
+    records_root = project_root / ".workspace" / "records"
+    _, fingerprint = current_manifest(repo_root, project_root)
+    record = {
+        "schema_version": SCHEMA_VERSION,
+        "project_root": project_relative,
+        "standards_fingerprint": fingerprint,
+        "initialized_empty_project": True,
+        "initialized_at_utc": dt.datetime.now(dt.timezone.utc)
+        .replace(microsecond=0)
+        .isoformat(),
+        "repository_head": head,
+    }
+    destination = initialization_path(project_root)
+    atomic_json_write(destination, record, ".standards-initialization.")
+    write_attestation(
+        repo_root, project_relative, "initialization", fingerprint, destination
+    )
+    print(
+        f"standards-migration: initialized empty project {project_relative}; "
+        f"fingerprint={fingerprint}"
+    )
+
+
+def command_adopt(
+    repo_root: pathlib.Path,
+    project_root: pathlib.Path,
+    project_relative: str,
+    raw_audit: str,
+) -> None:
+    _, fingerprint = current_manifest(repo_root, project_root)
+    records_root = project_root / ".workspace" / "records"
+    ensure_directory(records_root, "project records directory")
+    audit_file = safe_project_file(
+        project_root, raw_audit, records_root, "migration audit"
+    )
+    record_file = adoption_path(project_root)
+    if audit_file == record_file:
+        raise MigrationError("migration audit cannot be the adoption record")
+    audit = load_json(audit_file, "migration audit")
+    decision, status_path, legacy_roots, replacement_roots = validate_audit(
+        audit, project_root, project_relative, fingerprint
+    )
+    existing_decision = existing_adoption_decision(
+        repo_root, project_root, project_relative
+    )
+    if existing_decision == "retire" and decision != "retire":
+        raise MigrationError(
+            "retirement is permanent for this project; create a separate successor project"
+        )
+    try:
+        head = (
+            run_git(repo_root, "rev-parse", "--verify", "HEAD^{commit}")
+            .decode("ascii")
+            .strip()
+        )
+    except (MigrationError, UnicodeError) as exc:
+        raise MigrationError("HEAD commit is unavailable") from exc
+    record = {
+        "schema_version": SCHEMA_VERSION,
+        "project_root": project_relative,
+        "standards_fingerprint": fingerprint,
+        "decision": decision,
+        "audit_path": audit_file.relative_to(project_root).as_posix(),
+        "audit_sha256": hashlib.sha256(audit_file.read_bytes()).hexdigest(),
+        "draft_status_path": status_path.relative_to(project_root).as_posix(),
+        "legacy_roots": legacy_roots,
+        "replacement_roots": replacement_roots,
+        "adopted_at_utc": dt.datetime.now(dt.timezone.utc)
+        .replace(microsecond=0)
+        .isoformat(),
+        "repository_head": head,
+    }
+    atomic_json_write(record_file, record, ".standards-adoption.")
+    write_attestation(
+        repo_root,
+        project_relative,
+        "adoption",
+        fingerprint,
+        record_file,
+        decision,
+    )
+    print(
+        f"standards-migration: adopted decision={decision} for {project_relative}; "
+        f"fingerprint={fingerprint}"
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog=".system/standards-migration")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    fingerprint_parser = subparsers.add_parser("fingerprint")
+    fingerprint_parser.add_argument("--scope", required=True)
+
+    check_parser = subparsers.add_parser("check")
+    check_parser.add_argument("--scope", required=True)
+    check_parser.add_argument("--operation", choices=sorted(OPERATIONS), default="extend")
+    check_parser.add_argument("--target")
+
+    initialize_parser = subparsers.add_parser("initialize")
+    initialize_parser.add_argument("--scope", required=True)
+
+    adopt_parser = subparsers.add_parser("adopt")
+    adopt_parser.add_argument("--scope", required=True)
+    adopt_parser.add_argument("--audit", required=True)
+    return parser
+
+
+def main() -> None:
+    parser = build_parser()
+    arguments = parser.parse_args()
+    try:
+        repo_root = resolve_repository()
+        project_root, project_relative = resolve_scope(repo_root, arguments.scope)
+        if arguments.command == "fingerprint":
+            _, fingerprint = current_manifest(repo_root, project_root)
+            print(fingerprint)
+        elif arguments.command == "check":
+            command_check(
+                repo_root,
+                project_root,
+                project_relative,
+                arguments.operation,
+                arguments.target,
+            )
+        elif arguments.command == "initialize":
+            command_initialize(repo_root, project_root, project_relative)
+        elif arguments.command == "adopt":
+            command_adopt(
+                repo_root,
+                project_root,
+                project_relative,
+                arguments.audit,
+            )
+        else:
+            parser.error("unknown command")
+    except MigrationError as exc:
+        fail(str(exc))
+
+
+if __name__ == "__main__":
+    main()

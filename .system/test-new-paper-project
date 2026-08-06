@@ -34,14 +34,23 @@ expect_failure() {
 }
 
 repo_dir=$test_root/repository
-mkdir -p "$repo_dir/.system" "$repo_dir/papers/writing" \
+mkdir -p "$repo_dir/.system" "$repo_dir/.githooks" "$repo_dir/papers/writing" \
   "$repo_dir/papers/submitted"
 cp -- "$source_root/.system/new-paper-project" \
+  "$source_root/.system/standards-migration" \
   "$source_root/.system/sync-mode-excludes" "$repo_dir/.system/"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$repo_dir/.system/doctor"
+printf 'root instructions\n' >"$repo_dir/AGENTS.md"
+printf 'routing instructions\n' >"$repo_dir/WORKFLOW_ROUTING.md"
+printf 'writing instructions\n' >"$repo_dir/JAPANESE_WRITING.md"
+printf 'review instructions\n' >"$repo_dir/MATH_PROSE_REVIEW.md"
+printf 'refresh checker\n' >"$repo_dir/.system/instruction-refresh"
+printf 'post-merge hook\n' >"$repo_dir/.githooks/post-merge"
+printf 'paper instructions\n' >"$repo_dir/papers/AGENTS.md"
 printf '%s\n' '# placeholder' >"$repo_dir/papers/writing/.gitignore"
 printf '%s\n' '# placeholder' >"$repo_dir/papers/submitted/.gitignore"
 chmod +x "$repo_dir/.system/new-paper-project" \
+  "$repo_dir/.system/standards-migration" \
   "$repo_dir/.system/sync-mode-excludes" "$repo_dir/.system/doctor"
 
 git init -q "$repo_dir"
@@ -49,7 +58,8 @@ cd "$repo_dir"
 git config --local user.name 'Paper Project Test'
 git config --local user.email 'paper-project@example.invalid'
 git config --local books.repositoryMode public
-git add -- .system papers
+git add -- .system .githooks AGENTS.md WORKFLOW_ROUTING.md \
+  JAPANESE_WRITING.md MATH_PROSE_REVIEW.md papers
 git commit -q -m 'test fixture'
 .system/sync-mode-excludes public >/dev/null
 
@@ -67,6 +77,9 @@ if .system/new-paper-project alpha >/dev/null &&
   [[ -d papers/writing/alpha/.workspace/locks ]] &&
   [[ $(<papers/writing/alpha/.workspace/system-version) == \
     $(git rev-parse --verify 'HEAD^{commit}') ]] &&
+  [[ -f papers/writing/alpha/.workspace/records/standards-initialization.json ]] &&
+  .system/standards-migration check --scope papers/writing/alpha \
+    --operation extend >/dev/null &&
   git check-ignore --no-index -q -- papers/writing/alpha/; then
   pass 1 'public project creation and privacy guard'
 else

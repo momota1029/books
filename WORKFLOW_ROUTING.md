@@ -69,7 +69,7 @@ route が変わる曖昧さだけを質問し、command 名や内部 directory �
 ## 自然言語から開始するときの実行規則
 
 1. 依頼から最終成果物、source 種別、新規作成か継続か、投稿・配布の有無を抽出する。
-2. repository 内の候補 project と `STATUS` を read-only で確認し、同一 project の重複作成を避ける。private な題名、著者、ファイル名、内容を進捗報告へ不要に転載しない。
+2. repository 内の候補 project と `STATUS` を read-only で確認し、同一 project の重複作成を避ける。既存 project を継続候補にした場合は、編集または旧稿の延長を決める前に親 `AGENTS.md` の基準移行 gate を適用し、`.system/standards-migration check --scope <project-root> --operation extend` で current standards fingerprint への adoption を確認する。private な題名、著者、ファイル名、内容を進捗報告へ不要に転載しない。
 3. route が一意なら、選んだ route と理由を短く commentary で伝える。内部 command の実行許可を改めてユーザーへ求めず、依頼範囲内の通常の初期化としてエージェントが実行する。
 4. 新規 project では適用される `AGENTS.md` と shared system を確認し、必要な bootstrap/doctor gate と repository mode を確認する。public mode で private な制作物を保護・復旧できない場合は、空の ignored skeleton の作成を超える制作を始めず、親 `AGENTS.md` の recovery 規則に従って verified private mode または承認済みの復旧経路を確定する。エージェントが実行可能な設定 command は自ら実行し、credential や外部 repository の準備などユーザーにしかできない操作だけを具体的に依頼する。
 5. 初期化 command が失敗した場合は手作業で半端な構造を作らず、原因を解消または報告する。
@@ -80,6 +80,7 @@ route が変わる曖昧さだけを質問し、command 名や内部 directory �
 
 - `papers/writing/`、`papers/submitted/`、`book-translations/` は direct child を調べる。`paper-lecture-notes/` では共有 `AGENTS.md` と legacy 用の `inbox/`、`draft/`、`out/`、`.workspace/` を候補から除外し、`.workspace/project-id` を持つ direct child だけを通常 project 候補として調べる。題材、records、status から同一性を確認し、名前が似ているだけで既存 project と断定しない。
 - 一致する active project が一つなら新規作成せず継続する。submitted 論文の改訂や英訳も同じ project で行う。
+- 「同一 project なので継続する」は、既存 canonical source、章立て、mapping、review status をそのまま採用する判断ではない。基準世代が不一致または不明なら親 `AGENTS.md` の移行 audit が完了するまで旧稿を延長せず、`retain`、`reconstruct`、`retire` を current requirements から判定する。
 - repository 外の自著原稿を初めて取り込む場合は `papers/writing/` に project を作り、原稿を上書き可能な working copy として直接扱わず、採用 input revision と canonical source の起点を記録する。すでに外部投稿済みなら送信 snapshot と識別番号を記録したうえで `submitted/` lifecycle に置く。
 - `paper-lecture-notes/<project-id>/` は一つの講義ノート成果物と、そのために共同で読む一つ以上の原論文を管理する。複数の原論文が同じ読者、学習目標、scope、canonical source、review/promotion gate を共有して一つの統合 PDF になる場合だけ同一 project に置く。独立した PDF、独立した進捗・公開判断、または独立に再開・完了させる案件は、題材が近くても別 project にする。
 - 新しい論文講義ノートは collection root に `inbox/` 等を増設せず、必ず `.system/new-paper-note-project <project-id>` で direct child を作る。project ID は成果物の scope から短い lowercase ASCII の `kebab-case` で定める。ユーザーに command や directory 選択を求めない。

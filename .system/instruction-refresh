@@ -138,6 +138,7 @@ add_instruction WORKFLOW_ROUTING.md
 add_instruction JAPANESE_WRITING.md
 add_instruction MATH_PROSE_REVIEW.md
 add_instruction .system/instruction-refresh
+add_instruction .system/standards-migration
 add_instruction .githooks/post-merge
 
 cursor=$repo_root

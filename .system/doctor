@@ -39,16 +39,19 @@ required_scripts=(
   .system/bootstrap
   .system/doctor
   .system/instruction-refresh
+  .system/standards-migration
   .system/verify-private-remote
   .system/repository-mode
   .system/sync-mode-excludes
   .system/test-instruction-refresh
+  .system/test-standards-migration
   .system/test-repository-mode
   .system/new-book-project
   .system/new-paper-project
   .system/new-paper-note-project
   .system/paper-evidence-harness
   .system/private-checkpoint
+  .system/test-new-book-project
   .system/test-new-paper-project
   .system/test-new-paper-note-project
   .system/test-paper-evidence-harness
@@ -85,6 +88,10 @@ done
   fail "offline repository mode test failed"
 .system/test-instruction-refresh >/dev/null 2>&1 || \
   fail "offline instruction refresh test failed"
+.system/test-standards-migration >/dev/null 2>&1 || \
+  fail "offline standards migration test failed"
+.system/test-new-book-project >/dev/null 2>&1 || \
+  fail "offline new book project test failed"
 .system/test-new-paper-project >/dev/null 2>&1 || \
   fail "offline new paper project test failed"
 .system/test-new-paper-note-project >/dev/null 2>&1 || \

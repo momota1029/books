@@ -1,0 +1,921 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+export LC_ALL=C
+export GIT_CONFIG_GLOBAL=/dev/null
+export GIT_CONFIG_SYSTEM=/dev/null
+
+source_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+test_root=$(mktemp -d)
+
+cleanup() {
+  if [[ -n ${test_root:-} && -d $test_root ]]; then
+    rm -rf -- "$test_root"
+  fi
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+fail() {
+  printf 'not ok %s - %s\n' "$1" "$2" >&2
+  exit 1
+}
+
+pass() {
+  printf 'ok %s - %s\n' "$1" "$2"
+}
+
+capture_status() {
+  local output_file=$1
+  local expected_status=$2
+  shift 2
+  local actual_status
+
+  if "$@" >"$output_file" 2>&1; then
+    actual_status=0
+  else
+    actual_status=$?
+  fi
+  [[ $actual_status == "$expected_status" ]]
+}
+
+repo_dir=$test_root/repository
+mkdir -p "$repo_dir/.system" "$repo_dir/.githooks" \
+  "$repo_dir/projects/example/inbox" "$repo_dir/projects/example/draft" \
+  "$repo_dir/projects/example/out" \
+  "$repo_dir/projects/example/.workspace/source" \
+  "$repo_dir/projects/example/.workspace/records" \
+  "$repo_dir/projects/example/.workspace/tools" \
+  "$repo_dir/projects/example/.workspace/build" \
+  "$repo_dir/projects/example/.workspace/cache" \
+  "$repo_dir/projects/example/.workspace/tmp" \
+  "$repo_dir/projects/example/.workspace/logs" \
+  "$repo_dir/projects/example/.workspace/locks"
+cp -- "$source_root/.system/standards-migration" "$repo_dir/.system/"
+chmod +x "$repo_dir/.system/standards-migration"
+printf 'root instructions\n' >"$repo_dir/AGENTS.md"
+printf 'routing instructions\n' >"$repo_dir/WORKFLOW_ROUTING.md"
+printf 'writing instructions\n' >"$repo_dir/JAPANESE_WRITING.md"
+printf 'review instructions\n' >"$repo_dir/MATH_PROSE_REVIEW.md"
+printf 'project instructions\n' >"$repo_dir/projects/AGENTS.md"
+printf 'refresh checker\n' >"$repo_dir/.system/instruction-refresh"
+printf 'post-merge hook\n' >"$repo_dir/.githooks/post-merge"
+printf 'unrelated\n' >"$repo_dir/notes.txt"
+
+git init -q "$repo_dir"
+cd "$repo_dir"
+git config --local user.name 'Standards Migration Test'
+git config --local user.email 'standards-migration@example.invalid'
+git add -- AGENTS.md WORKFLOW_ROUTING.md JAPANESE_WRITING.md \
+  MATH_PROSE_REVIEW.md projects/AGENTS.md notes.txt \
+  .system/instruction-refresh .system/standards-migration .githooks/post-merge
+git commit -q -m 'test fixture'
+git rev-parse --verify 'HEAD^{commit}' >projects/example/.workspace/system-version
+.system/standards-migration initialize --scope projects/example >/dev/null
+
+output_file=$test_root/output
+if .system/standards-migration check --scope projects/example \
+    --operation extend >/dev/null &&
+  .system/standards-migration check --scope projects/example \
+    --operation promotion >/dev/null &&
+  [[ -f projects/example/.workspace/records/standards-initialization.json ]]; then
+  pass initialization 'empty project receives a current standards baseline'
+else
+  fail initialization 'empty project standards baseline'
+fi
+
+if capture_status "$output_file" 1 .system/standards-migration initialize \
+    --scope projects/example &&
+  grep -Fq -- 'only for an empty new project' "$output_file"; then
+  pass initialization-once 'standards initialization cannot overwrite a baseline'
+else
+  fail initialization-once 'standards initialization overwrite rejection'
+fi
+
+mv -- projects/example/inbox projects/example/.workspace/records/inbox-real
+ln -s -- .workspace/records/inbox-real projects/example/inbox
+if capture_status "$output_file" 3 .system/standards-migration check \
+    --scope projects/example --operation extend &&
+  grep -Fq -- 'path is unsafe' "$output_file"; then
+  pass initialized-symlink 'current-at-creation roots remain path-safe'
+else
+  fail initialized-symlink 'current-at-creation root-symlink rejection'
+fi
+rm -- projects/example/inbox
+mv -- projects/example/.workspace/records/inbox-real projects/example/inbox
+
+mv -- projects/example/.workspace/records "$test_root/records-real"
+ln -s -- "$test_root/records-real" projects/example/.workspace/records
+if capture_status "$output_file" 1 .system/standards-migration check \
+    --scope projects/example --operation extend &&
+  grep -Fq -- 'safe .workspace/records' "$output_file"; then
+  pass initialized-records-symlink 'the records root cannot escape the project'
+else
+  fail initialized-records-symlink 'records-root symlink rejection'
+fi
+rm -- projects/example/.workspace/records
+mv -- "$test_root/records-real" projects/example/.workspace/records
+
+ln -s -- / projects/example/.workspace/records/unsafe-descendant
+if capture_status "$output_file" 1 .system/standards-migration check \
+    --scope projects/example --operation extend &&
+  grep -Fq -- 'safe .workspace/records' "$output_file"; then
+  pass initialized-records-descendant 'unsafe records descendants are rejected in every state'
+else
+  fail initialized-records-descendant 'records-descendant rejection'
+fi
+rm -- projects/example/.workspace/records/unsafe-descendant
+
+printf 'unrelated changed\n' >notes.txt
+if .system/standards-migration check --scope projects/example \
+    --operation extend >/dev/null; then
+  pass unrelated 'unrelated changes do not invalidate project standards'
+else
+  fail unrelated 'unrelated changes do not invalidate project standards'
+fi
+
+printf 'root instructions changed\n' >AGENTS.md
+if capture_status "$output_file" 3 .system/standards-migration check \
+    --scope projects/example --operation extend &&
+  grep -Fq -- 'migration required' "$output_file"; then
+  pass freeze 'changed standards freeze legacy extension'
+else
+  fail freeze 'changed standards freeze legacy extension'
+fi
+
+if .system/standards-migration check --scope projects/example \
+    --operation inspect >"$output_file" &&
+  grep -Fq -- 'state=migration-required' "$output_file"; then
+  pass inspect 'read-only inspection remains available during migration'
+else
+  fail inspect 'read-only inspection during migration'
+fi
+
+fingerprint=$(.system/standards-migration fingerprint --scope projects/example)
+mkdir -- projects/example/.workspace/source/legacy \
+  projects/example/.workspace/source/replacement
+printf 'legacy canonical source\n' \
+  >projects/example/.workspace/source/legacy/main.tex
+printf '%s\n' \
+  'standards-migration: reconstructing' \
+  "standards-fingerprint: $fingerprint" >projects/example/draft/STATUS.md
+python3 - "$fingerprint" <<'PY'
+import json
+import hashlib
+import pathlib
+import sys
+
+fingerprint = sys.argv[1]
+project = pathlib.Path("projects/example")
+
+
+def digest(path):
+    value = hashlib.sha256()
+    if path.is_file():
+        value.update(b"file\0")
+        value.update(path.read_bytes())
+        return value.hexdigest()
+    value.update(b"directory\0")
+    for entry in sorted(path.rglob("*"), key=lambda item: item.relative_to(path).as_posix()):
+        relative = entry.relative_to(path).as_posix().encode("utf-8")
+        if entry.is_dir():
+            value.update(b"directory-entry\0" + relative + b"\0")
+        else:
+            value.update(b"file-entry\0" + relative + b"\0")
+            value.update(entry.read_bytes())
+    return value.hexdigest()
+
+
+def snapshot(relative):
+    return {"path": relative, "sha256": digest(project / relative)}
+
+
+def review_universe():
+    paths = [entry.name for entry in project.iterdir() if entry.name != ".workspace"]
+    paths += [
+        f".workspace/{entry.name}"
+        for entry in (project / ".workspace").iterdir()
+        if entry.name != "records"
+    ]
+    return [snapshot(relative) for relative in sorted(paths)]
+
+
+legacy_file = ".workspace/source/legacy/main.tex"
+universe = review_universe()
+audit = {
+    "schema_version": 1,
+    "project_root": "projects/example",
+    "standards_fingerprint": fingerprint,
+    "review_universe": universe,
+    "evaluated_revisions": {
+        "artifact": snapshot(legacy_file),
+        "input": snapshot("inbox"),
+        "canonical_source": snapshot(legacy_file),
+    },
+    "decision": "reconstruct",
+    "disposition_reason": "The legacy structure violates the current dependency order.",
+    "current_requirements": [
+        {
+            "gate_id": gate_id,
+            "requirement": "Definitions precede use.",
+            "status": "fail" if gate_id == "dependency-order" else "pass",
+            "evidence": "Whole-artifact fixture evidence for " + gate_id,
+        }
+        for gate_id in (
+            "artifact-identity",
+            "scope-coverage",
+            "dependency-order",
+            "quality-review",
+            "build-and-render",
+            "rights-and-privacy",
+        )
+    ],
+    "legacy_artifacts": [
+        {
+            "path": item["path"],
+            "sha256": item["sha256"],
+            "disposition": "rework",
+            "reason": "This artifact root is covered by the reconstruction decision.",
+        }
+        for item in universe
+    ],
+    "legacy_units": [
+        {
+            "unit_id": "legacy-unit-1",
+            "source_path": legacy_file,
+            "source_sha256": digest(project / legacy_file),
+            "disposition": "rework",
+            "reason": "The unit must be repositioned after its dependencies.",
+        }
+    ],
+    "systemic_findings": [
+        {
+            "finding": "The dependency order is inherited throughout the outline.",
+            "scope": "whole artifact",
+            "severity": "blocking",
+        }
+    ],
+    "whole_artifact_review": True,
+    "replacement_plan": [
+        "Derive a new dependency graph from current requirements.",
+        "Create a replacement canonical source without extending the legacy outline.",
+    ],
+    "legacy_roots": [".workspace/source/legacy"],
+    "replacement_roots": [".workspace/source/replacement"],
+    "independent_review": {
+        "reviewer": "independent-reviewer-fixture",
+        "independent_from_legacy_authoring": True,
+        "decision_confirmed": True,
+        "evidence": "Read-only whole-artifact review fixture.",
+    },
+    "physical_deletion": {"requested": False},
+    "draft_status": {"path": "draft/STATUS.md"},
+}
+pathlib.Path("projects/example/.workspace/records/migration-audit.json").write_text(
+    json.dumps(audit, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+)
+PY
+
+cp -- projects/example/.workspace/records/migration-audit.json \
+  projects/example/.workspace/records/incomplete-audit.json
+python3 - <<'PY'
+import json
+import pathlib
+
+path = pathlib.Path("projects/example/.workspace/records/incomplete-audit.json")
+audit = json.loads(path.read_text(encoding="utf-8"))
+audit["current_requirements"].pop()
+path.write_text(json.dumps(audit, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+if capture_status "$output_file" 1 .system/standards-migration adopt \
+    --scope projects/example --audit .workspace/records/incomplete-audit.json &&
+  grep -Fq -- 'every required gate exactly once' "$output_file"; then
+  pass complete-gates 'audit adoption requires the complete gate inventory'
+else
+  fail complete-gates 'complete migration gate inventory'
+fi
+
+cp -- projects/example/.workspace/records/migration-audit.json \
+  projects/example/.workspace/records/incomplete-universe-audit.json
+python3 - <<'PY'
+import json
+import pathlib
+
+path = pathlib.Path(
+    "projects/example/.workspace/records/incomplete-universe-audit.json"
+)
+audit = json.loads(path.read_text(encoding="utf-8"))
+audit["legacy_artifacts"].pop()
+path.write_text(json.dumps(audit, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+if capture_status "$output_file" 1 .system/standards-migration adopt \
+    --scope projects/example \
+    --audit .workspace/records/incomplete-universe-audit.json &&
+  grep -Fq -- 'every review_universe root' "$output_file"; then
+  pass complete-universe 'every artifact root requires an explicit disposition'
+else
+  fail complete-universe 'complete artifact-root disposition inventory'
+fi
+
+cp -- projects/example/.workspace/records/migration-audit.json \
+  projects/example/.workspace/records/reconstruct-without-rework.json
+python3 - <<'PY'
+import json
+import pathlib
+
+path = pathlib.Path(
+    "projects/example/.workspace/records/reconstruct-without-rework.json"
+)
+audit = json.loads(path.read_text(encoding="utf-8"))
+for item in audit["legacy_artifacts"] + audit["legacy_units"]:
+    item["disposition"] = "reuse"
+path.write_text(json.dumps(audit, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+if capture_status "$output_file" 1 .system/standards-migration adopt \
+    --scope projects/example \
+    --audit .workspace/records/reconstruct-without-rework.json &&
+  grep -Fq -- 'at least one rework disposition' "$output_file"; then
+  pass reconstruct-disposition 'reconstruction requires an actual rework disposition'
+else
+  fail reconstruct-disposition 'reconstruction disposition consistency'
+fi
+
+if .system/standards-migration adopt --scope projects/example \
+    --audit .workspace/records/migration-audit.json >/dev/null &&
+  .system/standards-migration check --scope projects/example \
+    --operation reconstruct \
+    --target .workspace/source/replacement/main.tex >/dev/null &&
+  capture_status "$output_file" 1 .system/standards-migration check \
+    --scope projects/example --operation reconstruct \
+    --target .workspace/source/legacy/main.tex &&
+  capture_status "$output_file" 4 .system/standards-migration check \
+    --scope projects/example --operation extend &&
+  capture_status "$output_file" 4 .system/standards-migration check \
+    --scope projects/example --operation promotion; then
+  pass reconstruct 'reconstruction is restricted to the replacement root'
+else
+  fail reconstruct 'reconstruction operation boundaries'
+fi
+
+printf 'tampered\n' >>projects/example/.workspace/records/migration-audit.json
+if capture_status "$output_file" 3 .system/standards-migration check \
+    --scope projects/example --operation reconstruct \
+    --target .workspace/source/replacement/main.tex &&
+  grep -Fq -- 'changed after adoption' "$output_file"; then
+  pass audit-tamper 'adopted audit tampering invalidates migration state'
+else
+  fail audit-tamper 'adopted audit tampering invalidates migration state'
+fi
+
+printf 'replacement canonical source\n' \
+  >projects/example/.workspace/source/replacement/main.tex
+printf '%s\n' \
+  'standards-migration: current' \
+  "standards-fingerprint: $fingerprint" >projects/example/draft/STATUS.md
+python3 - "$fingerprint" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+fingerprint = sys.argv[1]
+project = pathlib.Path("projects/example")
+
+
+def digest(path):
+    value = hashlib.sha256()
+    if path.is_file():
+        value.update(b"file\0")
+        value.update(path.read_bytes())
+        return value.hexdigest()
+    value.update(b"directory\0")
+    for entry in sorted(path.rglob("*"), key=lambda item: item.relative_to(path).as_posix()):
+        relative = entry.relative_to(path).as_posix().encode("utf-8")
+        if entry.is_dir():
+            value.update(b"directory-entry\0" + relative + b"\0")
+        else:
+            value.update(b"file-entry\0" + relative + b"\0")
+            value.update(entry.read_bytes())
+    return value.hexdigest()
+
+
+def snapshot(relative):
+    return {"path": relative, "sha256": digest(project / relative)}
+
+
+def review_universe():
+    paths = [entry.name for entry in project.iterdir() if entry.name != ".workspace"]
+    paths += [
+        f".workspace/{entry.name}"
+        for entry in (project / ".workspace").iterdir()
+        if entry.name != "records"
+    ]
+    return [snapshot(relative) for relative in sorted(paths)]
+
+
+replacement_file = ".workspace/source/replacement/main.tex"
+universe = review_universe()
+audit = {
+    "schema_version": 1,
+    "project_root": "projects/example",
+    "standards_fingerprint": fingerprint,
+    "review_universe": universe,
+    "evaluated_revisions": {
+        "artifact": snapshot(replacement_file),
+        "input": snapshot("inbox"),
+        "canonical_source": snapshot(replacement_file),
+    },
+    "decision": "retain",
+    "disposition_reason": "The replacement passed the whole-artifact current-standard review.",
+    "current_requirements": [
+        {
+            "gate_id": gate_id,
+            "requirement": "Definitions precede use.",
+            "status": "pass",
+            "evidence": "Whole-artifact fixture evidence for " + gate_id,
+        }
+        for gate_id in (
+            "artifact-identity",
+            "scope-coverage",
+            "dependency-order",
+            "quality-review",
+            "build-and-render",
+            "rights-and-privacy",
+        )
+    ],
+    "legacy_artifacts": [
+        {
+            "path": item["path"],
+            "sha256": item["sha256"],
+            "disposition": "reuse",
+            "reason": "This artifact root passed the current whole-artifact review.",
+        }
+        for item in universe
+    ],
+    "legacy_units": [
+        {
+            "unit_id": "replacement-unit-1",
+            "source_path": replacement_file,
+            "source_sha256": digest(project / replacement_file),
+            "disposition": "reuse",
+            "reason": "The replacement unit passed current review.",
+        }
+    ],
+    "systemic_findings": [],
+    "whole_artifact_review": True,
+    "independent_review": {
+        "reviewer": "independent-reviewer-fixture",
+        "independent_from_legacy_authoring": True,
+        "decision_confirmed": True,
+        "evidence": "Read-only whole-artifact review fixture.",
+    },
+    "physical_deletion": {"requested": False},
+    "draft_status": {"path": "draft/STATUS.md"},
+}
+pathlib.Path("projects/example/.workspace/records/retain-audit.json").write_text(
+    json.dumps(audit, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+)
+PY
+
+cp -- projects/example/.workspace/records/retain-audit.json \
+  projects/example/.workspace/records/retain-with-rework.json
+python3 - <<'PY'
+import json
+import pathlib
+
+path = pathlib.Path("projects/example/.workspace/records/retain-with-rework.json")
+audit = json.loads(path.read_text(encoding="utf-8"))
+audit["legacy_artifacts"][0]["disposition"] = "rework"
+path.write_text(json.dumps(audit, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+if capture_status "$output_file" 1 .system/standards-migration adopt \
+    --scope projects/example --audit .workspace/records/retain-with-rework.json &&
+  grep -Fq -- 'every artifact and unit disposition to be reuse' "$output_file"; then
+  pass retain-disposition 'retain rejects any artifact marked for rework'
+else
+  fail retain-disposition 'retain disposition consistency'
+fi
+
+git_dir=$(git rev-parse --absolute-git-dir)
+attestation_key=$(python3 - <<'PY'
+import hashlib
+
+print(hashlib.sha256(b"projects/example").hexdigest())
+PY
+)
+rm -- "$git_dir/codex-standards-migration/$attestation_key.json"
+if .system/standards-migration adopt --scope projects/example \
+    --audit .workspace/records/retain-audit.json >/dev/null; then
+  pass clone-recovery 'a complete new audit recovers a non-retired clone without local attestation'
+else
+  fail clone-recovery 'non-retired clone recovery by complete audit'
+fi
+
+if .system/standards-migration check --scope projects/example \
+    --operation extend >/dev/null &&
+  .system/standards-migration check --scope projects/example \
+    --operation promotion >/dev/null; then
+  pass retain 'whole-artifact retain adoption reopens extension and promotion checks'
+else
+  fail retain 'whole-artifact retain adoption'
+fi
+
+cp -- projects/example/.workspace/records/standards-adoption.json \
+  projects/example/.workspace/records/standards-adoption.original
+python3 - <<'PY'
+import json
+import pathlib
+
+path = pathlib.Path("projects/example/.workspace/records/standards-adoption.json")
+record = json.loads(path.read_text(encoding="utf-8"))
+record["audit_sha256"] = "0" * 64
+path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+if capture_status "$output_file" 3 .system/standards-migration check \
+    --scope projects/example --operation extend &&
+  grep -Fq -- 'does not match its local attestation' "$output_file"; then
+  pass adoption-tamper 'adoption-record rewriting is rejected by local attestation'
+else
+  fail adoption-tamper 'adoption-record attestation'
+fi
+mv -- projects/example/.workspace/records/standards-adoption.original \
+  projects/example/.workspace/records/standards-adoption.json
+
+printf '%s\n' 'standards-migration: stale' >>projects/example/draft/STATUS.md
+if capture_status "$output_file" 3 .system/standards-migration check \
+    --scope projects/example --operation extend &&
+  grep -Fq -- 'required migration marker' "$output_file"; then
+  pass conflicting-status 'conflicting status markers invalidate migration state'
+else
+  fail conflicting-status 'conflicting status marker rejection'
+fi
+sed -i '$d' projects/example/draft/STATUS.md
+
+python3 - <<'PY'
+import json
+import pathlib
+
+path = pathlib.Path("projects/example/.workspace/records/retain-audit.json")
+audit = json.loads(path.read_text(encoding="utf-8"))
+audit["physical_deletion"] = {"requested": True}
+path.write_text(json.dumps(audit, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+if capture_status "$output_file" 1 .system/standards-migration adopt \
+    --scope projects/example --audit .workspace/records/retain-audit.json &&
+  grep -Fq -- 'user_approval_reference' "$output_file"; then
+  pass deletion 'physical deletion requires explicit user approval reference'
+else
+  fail deletion 'physical deletion approval boundary'
+fi
+python3 - <<'PY'
+import json
+import pathlib
+
+path = pathlib.Path("projects/example/.workspace/records/retain-audit.json")
+audit = json.loads(path.read_text(encoding="utf-8"))
+audit["physical_deletion"] = {"requested": False}
+path.write_text(json.dumps(audit, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+
+mkdir -p projects/legacy/.workspace/records projects/legacy/draft
+git rev-parse --verify 'HEAD^{commit}' >projects/legacy/.workspace/system-version
+python3 - "$fingerprint" <<'PY'
+import json
+import pathlib
+import sys
+
+record = {
+    "schema_version": 1,
+    "project_root": "projects/legacy",
+    "standards_fingerprint": sys.argv[1],
+    "initialized_empty_project": True,
+    "initialized_at_utc": "2026-01-01T00:00:00+00:00",
+    "repository_head": "0" * 40,
+}
+pathlib.Path(
+    "projects/legacy/.workspace/records/standards-initialization.json"
+).write_text(json.dumps(record) + "\n", encoding="utf-8")
+PY
+if capture_status "$output_file" 3 .system/standards-migration check \
+    --scope projects/legacy --operation extend &&
+  grep -Fq -- 'clone-local standards attestation is unavailable' "$output_file"; then
+  pass legacy 'handwritten project records cannot grandfather a legacy project'
+else
+  fail legacy 'legacy project baseline rejection'
+fi
+
+mkdir -p projects/not-empty/{inbox,draft,out} \
+  projects/not-empty/.workspace/{source,records,tools,build,cache,tmp,logs,locks}
+git rev-parse --verify 'HEAD^{commit}' >projects/not-empty/.workspace/system-version
+printf 'legacy content\n' >projects/not-empty/legacy.txt
+if capture_status "$output_file" 1 .system/standards-migration initialize \
+    --scope projects/not-empty &&
+  grep -Fq -- 'complete empty skeleton' "$output_file"; then
+  pass nonempty-initialization 'legacy content prevents new-project initialization'
+else
+  fail nonempty-initialization 'nonempty project initialization rejection'
+fi
+
+mv -- projects/example/draft \
+  projects/example/.workspace/records/draft-real
+ln -s -- .workspace/records/draft-real projects/example/draft
+if capture_status "$output_file" 3 .system/standards-migration check \
+    --scope projects/example --operation extend &&
+  grep -Fq -- 'path is unsafe' "$output_file"; then
+  pass status-symlink 'symlinked artifact root is rejected after adoption'
+else
+  fail status-symlink 'symlinked artifact-root rejection'
+fi
+rm -- projects/example/draft
+mv -- projects/example/.workspace/records/draft-real projects/example/draft
+
+printf 'ordinary post-adoption extension\n' \
+  >>projects/example/.workspace/source/replacement/main.tex
+if .system/standards-migration check --scope projects/example \
+    --operation extend >/dev/null; then
+  pass retained-extension 'retained projects can evolve under unchanged standards'
+else
+  fail retained-extension 'ordinary post-adoption extension'
+fi
+
+mv -- projects/example/.workspace/source \
+  projects/example/.workspace/records/source-real
+ln -s -- records/source-real projects/example/.workspace/source
+if capture_status "$output_file" 3 .system/standards-migration check \
+    --scope projects/example --operation extend &&
+  grep -Fq -- 'path is unsafe' "$output_file"; then
+  pass source-symlink 'adopted source roots remain path-safe without digest pinning'
+else
+  fail source-symlink 'post-adoption source-root symlink rejection'
+fi
+rm -- projects/example/.workspace/source
+mv -- projects/example/.workspace/records/source-real \
+  projects/example/.workspace/source
+
+ln -s -- / projects/example/.workspace/source/unsafe-descendant
+if capture_status "$output_file" 3 .system/standards-migration check \
+    --scope projects/example --operation extend &&
+  grep -Fq -- 'contains an unsafe entry' "$output_file"; then
+  pass source-descendant-symlink 'post-adoption descendant symlinks are rejected'
+else
+  fail source-descendant-symlink 'post-adoption descendant-symlink rejection'
+fi
+rm -- projects/example/.workspace/source/unsafe-descendant
+
+mv -- projects/example projects/example-real
+ln -s -- example-real projects/example
+if capture_status "$output_file" 1 .system/standards-migration check \
+    --scope projects/example --operation inspect &&
+  grep -Fq -- 'scope is unsafe' "$output_file"; then
+  pass scope-symlink 'symlinked project scope is rejected'
+else
+  fail scope-symlink 'symlinked project scope rejection'
+fi
+rm -- projects/example
+mv -- projects/example-real projects/example
+
+printf '%s\n' \
+  'standards-migration: retired' \
+  "standards-fingerprint: $fingerprint" >projects/example/draft/STATUS.md
+python3 - <<'PY'
+import hashlib
+import json
+import pathlib
+
+project = pathlib.Path("projects/example")
+path = project / ".workspace/records/retain-audit.json"
+audit = json.loads(path.read_text(encoding="utf-8"))
+
+
+def digest(target):
+    value = hashlib.sha256()
+    if target.is_file():
+        value.update(b"file\0")
+        value.update(target.read_bytes())
+        return value.hexdigest()
+    value.update(b"directory\0")
+    for entry in sorted(
+        target.rglob("*"), key=lambda item: item.relative_to(target).as_posix()
+    ):
+        relative = entry.relative_to(target).as_posix().encode("utf-8")
+        if entry.is_dir():
+            value.update(b"directory-entry\0" + relative + b"\0")
+        else:
+            value.update(b"file-entry\0" + relative + b"\0")
+            value.update(entry.read_bytes())
+    return value.hexdigest()
+
+
+universe_paths = [entry.name for entry in project.iterdir() if entry.name != ".workspace"]
+universe_paths += [
+    f".workspace/{entry.name}"
+    for entry in (project / ".workspace").iterdir()
+    if entry.name != "records"
+]
+universe = [
+    {"path": relative, "sha256": digest(project / relative)}
+    for relative in sorted(universe_paths)
+]
+source = ".workspace/source/replacement/main.tex"
+source_hash = digest(project / source)
+audit["decision"] = "retire"
+audit["disposition_reason"] = "The current line is closed and may not be restarted."
+audit["review_universe"] = universe
+audit["evaluated_revisions"]["artifact"]["sha256"] = source_hash
+audit["evaluated_revisions"]["canonical_source"]["sha256"] = source_hash
+audit["legacy_artifacts"] = [
+    {
+        "path": item["path"],
+        "sha256": item["sha256"],
+        "disposition": "retire",
+        "reason": "This artifact root is retired from the current line.",
+    }
+    for item in universe
+]
+for unit in audit["legacy_units"]:
+    unit["source_sha256"] = source_hash
+    unit["disposition"] = "retire"
+    unit["reason"] = "This unit is retired from the current line."
+retire_path = project / ".workspace/records/retire-audit.json"
+retire_path.write_text(
+    json.dumps(audit, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+)
+PY
+if capture_status "$output_file" 1 .system/standards-migration adopt \
+    --scope projects/example --audit .workspace/records/retire-audit.json &&
+  grep -Fq -- 'must prohibit restart' "$output_file"; then
+  pass retire-status 'retirement adoption requires an explicit no-restart marker'
+else
+  fail retire-status 'retirement no-restart marker gate'
+fi
+
+printf '%s\n' \
+  'standards-migration: retired' \
+  "standards-fingerprint: $fingerprint" \
+  'standards-retirement: no-restart' \
+  'standards-successor: none' >projects/example/draft/STATUS.md
+python3 - <<'PY'
+import hashlib
+import json
+import pathlib
+
+project = pathlib.Path("projects/example")
+status_digest = hashlib.sha256()
+status_digest.update(b"directory\0")
+for entry in sorted(
+    (project / "draft").rglob("*"),
+    key=lambda item: item.relative_to(project / "draft").as_posix(),
+):
+    relative = entry.relative_to(project / "draft").as_posix().encode("utf-8")
+    if entry.is_dir():
+        status_digest.update(b"directory-entry\0" + relative + b"\0")
+    else:
+        status_digest.update(b"file-entry\0" + relative + b"\0")
+        status_digest.update(entry.read_bytes())
+digest = status_digest.hexdigest()
+
+path = project / ".workspace/records/retire-audit.json"
+audit = json.loads(path.read_text(encoding="utf-8"))
+for collection in (audit["review_universe"], audit["legacy_artifacts"]):
+    next(item for item in collection if item["path"] == "draft")["sha256"] = digest
+path.write_text(json.dumps(audit, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+cp -- projects/example/.workspace/records/retire-audit.json \
+  projects/example/.workspace/records/retire-with-reuse.json
+python3 - <<'PY'
+import json
+import pathlib
+
+path = pathlib.Path("projects/example/.workspace/records/retire-with-reuse.json")
+audit = json.loads(path.read_text(encoding="utf-8"))
+audit["legacy_artifacts"][0]["disposition"] = "reuse"
+path.write_text(json.dumps(audit, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+if capture_status "$output_file" 1 .system/standards-migration adopt \
+    --scope projects/example --audit .workspace/records/retire-with-reuse.json &&
+  grep -Fq -- 'every artifact and unit disposition to be retire' "$output_file"; then
+  pass retire-disposition 'retire rejects any artifact marked for reuse'
+else
+  fail retire-disposition 'retire disposition consistency'
+fi
+if .system/standards-migration adopt --scope projects/example \
+    --audit .workspace/records/retire-audit.json >/dev/null; then
+  pass retire-readopt 'a retired project can refresh only its retirement audit'
+else
+  fail retire-readopt 'retirement audit refresh'
+fi
+if .system/standards-migration check --scope projects/example \
+    --operation inspect | grep -Fq -- 'state=retire' &&
+  capture_status "$output_file" 4 .system/standards-migration check \
+    --scope projects/example --operation extend &&
+  capture_status "$output_file" 4 .system/standards-migration check \
+    --scope projects/example --operation promotion; then
+  pass retire 'retired projects reject extension and promotion'
+else
+  fail retire 'retirement operation boundaries'
+fi
+
+printf '%s\n' \
+  'standards-migration: current' \
+  "standards-fingerprint: $fingerprint" >projects/example/draft/STATUS.md
+python3 - <<'PY'
+import hashlib
+import json
+import pathlib
+
+project = pathlib.Path("projects/example")
+path = project / ".workspace/records/retire-audit.json"
+audit = json.loads(path.read_text(encoding="utf-8"))
+
+
+def digest(target):
+    value = hashlib.sha256()
+    if target.is_file():
+        value.update(b"file\0")
+        value.update(target.read_bytes())
+        return value.hexdigest()
+    value.update(b"directory\0")
+    for entry in sorted(
+        target.rglob("*"), key=lambda item: item.relative_to(target).as_posix()
+    ):
+        relative = entry.relative_to(target).as_posix().encode("utf-8")
+        if entry.is_dir():
+            value.update(b"directory-entry\0" + relative + b"\0")
+        else:
+            value.update(b"file-entry\0" + relative + b"\0")
+            value.update(entry.read_bytes())
+    return value.hexdigest()
+
+
+universe_paths = [entry.name for entry in project.iterdir() if entry.name != ".workspace"]
+universe_paths += [
+    f".workspace/{entry.name}"
+    for entry in (project / ".workspace").iterdir()
+    if entry.name != "records"
+]
+universe = [
+    {"path": relative, "sha256": digest(project / relative)}
+    for relative in sorted(universe_paths)
+]
+audit["decision"] = "retain"
+audit["disposition_reason"] = "Attempted reopening of the retired project."
+audit["review_universe"] = universe
+audit["legacy_artifacts"] = [
+    {
+        "path": item["path"],
+        "sha256": item["sha256"],
+        "disposition": "reuse",
+        "reason": "Attempted reuse after retirement.",
+    }
+    for item in universe
+]
+for unit in audit["legacy_units"]:
+    unit["disposition"] = "reuse"
+    unit["reason"] = "Attempted reuse after retirement."
+reopen_path = project / ".workspace/records/reopen-audit.json"
+reopen_path.write_text(
+    json.dumps(audit, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+)
+PY
+cp -- projects/example/.workspace/records/standards-adoption.json \
+  projects/example/.workspace/records/retired-adoption.original
+python3 - <<'PY'
+import json
+import pathlib
+
+path = pathlib.Path("projects/example/.workspace/records/standards-adoption.json")
+record = json.loads(path.read_text(encoding="utf-8"))
+record["decision"] = "retain"
+path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+if capture_status "$output_file" 1 .system/standards-migration adopt \
+    --scope projects/example --audit .workspace/records/reopen-audit.json &&
+  grep -Fq -- 'does not match its local attestation' "$output_file"; then
+  pass retire-tamper 'a retirement record cannot be rewritten before reopening'
+else
+  fail retire-tamper 'tampered retirement record rejection'
+fi
+mv -- projects/example/.workspace/records/retired-adoption.original \
+  projects/example/.workspace/records/standards-adoption.json
+
+mv -- projects/example/.workspace/records/standards-adoption.json \
+  projects/example/.workspace/records/retired-adoption.missing
+if capture_status "$output_file" 1 .system/standards-migration adopt \
+    --scope projects/example --audit .workspace/records/reopen-audit.json &&
+  grep -Fq -- 'missing while its local attestation is present' "$output_file"; then
+  pass retire-missing 'a retirement record cannot be removed before reopening'
+else
+  fail retire-missing 'missing retirement record rejection'
+fi
+mv -- projects/example/.workspace/records/retired-adoption.missing \
+  projects/example/.workspace/records/standards-adoption.json
+
+if capture_status "$output_file" 1 .system/standards-migration adopt \
+    --scope projects/example --audit .workspace/records/reopen-audit.json &&
+  grep -Fq -- 'retirement is permanent' "$output_file"; then
+  pass retire-lock 'retirement cannot be overwritten by a later retain audit'
+else
+  fail retire-lock 'permanent retirement adoption lock'
+fi

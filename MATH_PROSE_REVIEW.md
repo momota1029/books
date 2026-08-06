@@ -43,6 +43,7 @@ severity は次のように分類する。
 - `reviewed`、`unreviewed`、`WIP` を project の `STATUS` と成果物本文の双方で識別し、snapshot と表示が一致していることを確認する。open blocking finding がある unit を `reviewed` と表示してはならない。
 - draft は、読者が完成範囲と未完成範囲を正しく判断できる可読品質にする。未完成の後半は明示した placeholder または roadmap として隔離し、未完成の証明を完成済みの本文のように掲載しない。
 - `out/` への promotion 前には、unit ごとの既存 review に依存せず、成果物全体を一つの snapshot として全 phase で再 review する。
+- 親 `AGENTS.md` の基準移行 gate が発火した既存成果物は grandfathering しない。旧 review artifact、旧 unit status、旧 coverage、compile 成功を current gate の証拠として流用せず、まず current requirements から成果物全体の identity、scope、依存、構成、review universe を再確定する。`retain` は全該当 phase の新 snapshot に対する再 review が完了した場合だけ許し、systemic finding がある場合は affected unit の局所再 review へ縮退させず `reconstruct` または `retire` とする。
 
 ## phase 1: inventory と truth status
 

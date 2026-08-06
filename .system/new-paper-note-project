@@ -64,7 +64,9 @@ cleanup() {
     [[ -d "$target" && ! -L "$target" ]]; then
     rm -f -- \
       "$target/.workspace/project-id" \
-      "$target/.workspace/system-version" 2>/dev/null || true
+      "$target/.workspace/system-version" \
+      "$target/.workspace/records/standards-initialization.json" \
+      2>/dev/null || true
     rmdir -- \
       "$target/.workspace/source" \
       "$target/.workspace/records" \
@@ -113,6 +115,9 @@ if ! { printf '%s\n' "$project_id" >"$target/.workspace/project-id" &&
   2>/dev/null; then
   fail "project identity could not be recorded"
 fi
+"$repo_root/.system/standards-migration" initialize \
+  --scope "paper-lecture-notes/$project_id" >/dev/null || \
+  fail "standards baseline could not be initialized"
 
 relative_target="paper-lecture-notes/$project_id"
 mode="$(git config --local --get books.repositoryMode 2>/dev/null)" || \

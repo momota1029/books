@@ -52,6 +52,27 @@ tool は検査の再現性と漏れの低減に使うが、数学的・翻訳上
 - `.system/instruction-refresh` 自体または post-merge hook の更新も世代に含める。shared tool の変更を検出した場合は、本ファイルの bootstrap/doctor 規則も適用する。
 - 本規則が merge される前から動いており `.system/instruction-refresh` を一度も読み込んでいない既存 thread へは、repository 内の仕組みだけで polling を遡及開始できない。その thread には一度だけ user または外側の harness から再読・check を指示するか、新しい thread へ引き継ぐ。導入後に既読世代を持つ thread は通常の action boundary で自動的に追随する。
 
+## 規約刷新時の既存成果物の基準移行
+
+instruction source を読み直して thread-local に ack したことは、既存 project や既存成果物が新基準へ適合したことを意味しない。
+新規作成時の空 project に初期化 command が発行した基準世代、または最後に採用した基準世代と、現在適用される全 instruction source の fingerprint が一致しない project は、旧成果物の完成度、既存 review、過去の promotion、投入工数にかかわらず `standards-migration-required` とする。
+既存 project を再開する最初の実作業前と、instruction refresh が変更を検出した後の次の action boundary で、agent は `.system/standards-migration check --scope <project-root> --operation extend` を実行する。
+user にこの command の実行を求めない。
+
+- 基準世代の記録がない、検証不能、または current fingerprint と不一致の場合は、旧稿への追記、局所的な延命修正、新しい source の統合、旧 review status の流用、共有、配布、promotion を停止する。既存 `draft/` と `out/` は物理削除せず historical snapshot として保持してよいが、current、reviewed、配布可能と表示せず、`draft/STATUS.*` を先に `standards-migration-required` または `stale` へ更新し、現行 fingerprint、評価対象 snapshot、停止範囲、再開条件を記録する。
+- 移行 audit は旧稿の章立て、既存 source、既存 mapping、直前の TODO を出発点にしない。user の目的、合意 scope、採用 input、現在の規約と quality gate から、必要な成果物 identity、読者、学習目標、coverage、依存 graph、構成、証拠、build・review 条件を先に再構成する。その後で旧成果物を read-only な候補部品として全体 inventory に掛け、要件ごとに `reuse`、`rework`、`retire` を根拠付きで判定する。
+- 「既に多く生成した」「build できる」「見た目が整っている」「以前 review 済みである」「局所 patch の方が安い」は、旧構造を採用する根拠にしない。成果物 identity、教育設計、source coverage、定義・証明依存、情報 architecture、追跡 schema、権利・privacy 境界、または current gate のいずれかに project 全体へ波及する不一致があり、影響を閉じた affected unit に限定できない場合は systemic finding とし、局所 patch による継続を禁止する。
+- disposition は `retain`、`reconstruct`、`retire` のいずれかとする。`retain` は、旧成果物全体を current snapshot として新基準の全該当 gate で再評価し、systemic finding と未通過要件が 0 件である場合に限る。`reconstruct` では current requirements から replacement の構成と canonical source を設計し、旧稿を雛形として連続編集しない。旧稿の unit は、新構成上の役割、意味、依存、coverage、出典、review を個別に再検証した後にだけ再利用できる。`retire` では旧成果物を current line から外し、再開禁止と後継の有無を status に示す。
+- 移行 audit と disposition の確認は、旧成果物の authoring に関与していない担当による independent read-only review とする。継続担当はその finding を受けて移行計画と status を更新する。独立担当を利用できない場合は、旧成果物の延長を自己判断で許可せず blocker として報告する。
+- audit は project の private な `.workspace/records/` に保存し、現行 fingerprint、評価した artifact・input・canonical source revision、current requirements、旧 artifact inventory、unit ごとの disposition、systemic finding、全体 decision、再構成時の replacement plan、独立 review 証拠、物理削除の有無と承認参照を含める。`retain`、`reconstruct`、`retire` のすべてで、project 直下と `.workspace/records/` 以外の全 workspace 直下を path と digest 付きの `review_universe` に列挙し、旧成果物全体の inventory と review universe を確定する。`legacy_artifacts` は `review_universe` の各 root に一対一で disposition と理由を与える。空 inventory の理由欄や一部の代表 path だけで全体 review を代用しない。`.system/standards-migration adopt --scope <project-root> --audit <record>` が audit、review universe、`draft/STATUS.*` を検証して adoption record を作るまで移行完了としない。
+- `reconstruct` 採用後の作業境界では `.system/standards-migration check --scope <project-root> --operation reconstruct --target <replacement-file>` を実行し、audit で固定した replacement root 配下だけを編集する。旧線をそのまま延長する場合は `--operation extend` を用いる。`reconstruct` 状態では旧線の `extend`、legacy root を対象とする編集、`promotion` を禁止する。replacement が完成し、現行基準による全体 review を通過した後は、新しい snapshot に対する `retain` audit を採用してから `promotion` check を行う。`retire` 状態では status に `standards-retirement: no-restart` と `standards-successor: <後継または none>` を記録し、status・記録保全以外の authoring と promotion を禁止する。採用済みの `retire` decision は instruction fingerprint の変更後も同じ project 内で `retain` または `reconstruct` に上書きせず、再開が必要なら別の successor project として新規 route する。
+- archive、隔離、current status の剥奪、replacement の新設は移行 decision に従って実行してよい。物理削除、履歴消去、上書き等の不可逆操作は基準移行から自動的には許可されず、正確な対象と復旧可能性を示した user の明示承認を別に得る。旧稿を残すことと、旧稿を current canonical source として使い続けることを混同しない。
+
+基準移行 record は品質 gate の代用ではない。
+移行後も各 work unit と成果物全体について現在の規約が要求する build、review、coverage、rights、privacy、promotion gate を実行する。
+`.workspace/system-version` は toolchain の来歴にすぎず、基準適合または新規 project の証拠として扱わない。
+新規 project の基準初期化 record は、初期化 command が project root 全体を走査し、許可された空 skeleton と初期化 metadata 以外が存在しないことを確認した瞬間にだけ発行でき、既存 project の移行 audit を置換できない。初期化・adoption record は project 内の JSON だけを信頼せず、clone-local な Git metadata に保存した record hash の attestation と一致する場合だけ有効とする。clone、Git metadata の消失、または attestation 不一致時は fail closed で再監査し、project 内 record の手書きや `.workspace/system-version` の更新で新規扱いに戻してはならない。
+
 ## project の配置と継承
 
 制作領域は、その領域に置かれた共有 `AGENTS.md` と本ファイルを継承し、案件ごとの private copy を正本にしない。

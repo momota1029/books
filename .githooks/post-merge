@@ -21,7 +21,8 @@ if [[ -n $old_head && -n $new_head ]]; then
   while IFS= read -r -d '' changed_path; do
     case "$changed_path" in
       AGENTS.md|*/AGENTS.md|WORKFLOW_ROUTING.md|JAPANESE_WRITING.md|\
-      MATH_PROSE_REVIEW.md|.system/instruction-refresh|.githooks/post-merge)
+      MATH_PROSE_REVIEW.md|.system/instruction-refresh|\
+      .system/standards-migration|.githooks/post-merge)
         instruction_change=1
         instruction_changes+=("$changed_path")
         ;;

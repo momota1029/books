@@ -13,6 +13,7 @@ WORKFLOW_ROUTING.md
 .system/bootstrap
 .system/doctor
 .system/instruction-refresh
+.system/standards-migration
 .system/new-book-project
 .system/new-paper-project
 .system/new-paper-note-project
@@ -21,6 +22,8 @@ WORKFLOW_ROUTING.md
 .system/repository-mode
 .system/sync-mode-excludes
 .system/test-instruction-refresh
+.system/test-standards-migration
+.system/test-new-book-project
 .system/test-new-paper-project
 .system/test-new-paper-note-project
 .system/test-paper-evidence-harness

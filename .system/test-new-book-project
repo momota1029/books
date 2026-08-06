@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+export LC_ALL=C
+export GIT_CONFIG_GLOBAL=/dev/null
+export GIT_CONFIG_SYSTEM=/dev/null
+
+source_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+test_root=$(mktemp -d)
+
+cleanup() {
+  if [[ -n ${test_root:-} && -d $test_root ]]; then
+    rm -rf -- "$test_root"
+  fi
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+fail() {
+  printf 'not ok %s - %s\n' "$1" "$2" >&2
+  exit 1
+}
+
+pass() {
+  printf 'ok %s - %s\n' "$1" "$2"
+}
+
+expect_failure() {
+  if "$@" >/dev/null 2>&1; then
+    return 1
+  fi
+}
+
+repo_dir=$test_root/repository
+mkdir -p "$repo_dir/.system" "$repo_dir/.githooks" \
+  "$repo_dir/book-translations"
+cp -- "$source_root/.system/new-book-project" \
+  "$source_root/.system/standards-migration" \
+  "$source_root/.system/sync-mode-excludes" "$repo_dir/.system/"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$repo_dir/.system/doctor"
+printf 'root instructions\n' >"$repo_dir/AGENTS.md"
+printf 'routing instructions\n' >"$repo_dir/WORKFLOW_ROUTING.md"
+printf 'writing instructions\n' >"$repo_dir/JAPANESE_WRITING.md"
+printf 'review instructions\n' >"$repo_dir/MATH_PROSE_REVIEW.md"
+printf 'refresh checker\n' >"$repo_dir/.system/instruction-refresh"
+printf 'post-merge hook\n' >"$repo_dir/.githooks/post-merge"
+printf 'book instructions\n' >"$repo_dir/book-translations/AGENTS.md"
+chmod +x "$repo_dir/.system/new-book-project" \
+  "$repo_dir/.system/standards-migration" \
+  "$repo_dir/.system/sync-mode-excludes" "$repo_dir/.system/doctor"
+
+git init -q "$repo_dir"
+cd "$repo_dir"
+git config --local user.name 'Book Project Test'
+git config --local user.email 'book-project@example.invalid'
+git config --local books.repositoryMode public
+git add -- .system .githooks AGENTS.md WORKFLOW_ROUTING.md \
+  JAPANESE_WRITING.md MATH_PROSE_REVIEW.md book-translations/AGENTS.md
+git commit -q -m 'test fixture'
+.system/sync-mode-excludes public >/dev/null
+
+if .system/new-book-project alpha >/dev/null &&
+  [[ -d book-translations/alpha/inbox ]] &&
+  [[ -d book-translations/alpha/draft ]] &&
+  [[ -d book-translations/alpha/out ]] &&
+  [[ -d book-translations/alpha/.workspace/source ]] &&
+  [[ -d book-translations/alpha/.workspace/records ]] &&
+  [[ -d book-translations/alpha/.workspace/tools ]] &&
+  [[ -f book-translations/alpha/.workspace/records/standards-initialization.json ]] &&
+  [[ $(<book-translations/alpha/.workspace/system-version) == \
+    $(git rev-parse --verify 'HEAD^{commit}') ]] &&
+  .system/standards-migration check --scope book-translations/alpha \
+    --operation extend >/dev/null &&
+  git check-ignore --no-index -q -- book-translations/alpha/; then
+  pass 1 'public project creation, standards baseline, and privacy guard'
+else
+  fail 1 'public project creation and standards baseline'
+fi
+
+if expect_failure .system/new-book-project alpha &&
+  expect_failure .system/new-book-project ../escape &&
+  expect_failure .system/new-book-project inbox &&
+  [[ ! -e book-translations/escape ]]; then
+  pass 2 'invalid, reserved, and duplicate target rejection'
+else
+  fail 2 'invalid, reserved, and duplicate target rejection'
+fi
+
+mv -- book-translations book-translations-real
+ln -s -- book-translations-real book-translations
+if expect_failure .system/new-book-project symlinked &&
+  [[ ! -e book-translations-real/symlinked ]]; then
+  pass 3 'symlinked collection root rejection'
+else
+  fail 3 'symlinked collection root rejection'
+fi
+rm -- book-translations
+mv -- book-translations-real book-translations
+
+git config --local books.repositoryMode private
+.system/sync-mode-excludes private >/dev/null
+if .system/new-book-project beta >/dev/null &&
+  ! git check-ignore --no-index -q -- book-translations/beta/ &&
+  [[ -d book-translations/beta/.workspace/records ]]; then
+  pass 4 'private project staging availability'
+else
+  fail 4 'private project staging availability'
+fi
+
+git config --local books.repositoryMode invalid
+if expect_failure .system/new-book-project gamma &&
+  [[ ! -e book-translations/gamma ]]; then
+  pass 5 'invalid mode rejection and cleanup'
+else
+  fail 5 'invalid mode rejection and cleanup'
+fi

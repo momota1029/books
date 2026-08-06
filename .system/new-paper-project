@@ -64,7 +64,10 @@ cleanup() {
 
   if (( created_target == 1 && keep_target == 0 )) && \
     [[ -d "$target" && ! -L "$target" ]]; then
-    rm -f -- "$target/.workspace/system-version" 2>/dev/null || true
+    rm -f -- \
+      "$target/.workspace/system-version" \
+      "$target/.workspace/records/standards-initialization.json" \
+      2>/dev/null || true
     rmdir -- \
       "$target/.workspace/source" \
       "$target/.workspace/records" \
@@ -109,6 +112,9 @@ head_commit="$(git rev-parse --verify 'HEAD^{commit}' 2>/dev/null)" || \
 if ! { printf '%s\n' "$head_commit" >"$target/.workspace/system-version"; } 2>/dev/null; then
   fail "system version could not be recorded"
 fi
+"$repo_root/.system/standards-migration" initialize \
+  --scope "papers/writing/$paper_id" >/dev/null || \
+  fail "standards baseline could not be initialized"
 
 relative_target="papers/writing/$paper_id"
 mode="$(git config --local --get books.repositoryMode 2>/dev/null)" || \
