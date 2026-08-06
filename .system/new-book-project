@@ -65,6 +65,10 @@ cleanup() {
     rm -f -- \
       "$target/.workspace/system-version" \
       "$target/.workspace/records/standards-initialization.json" \
+      "$target/.workspace/records/claim-audit.json" \
+      "$target/.workspace/records/claim-audit-report.json" \
+      "$target/.workspace/tools/book-claim-audit.json" \
+      "$target/.workspace/locks/book-claim-harness.lock" \
       2>/dev/null || true
     rmdir -- \
       "$target/.workspace/source" \
@@ -113,6 +117,9 @@ fi
 "$repo_root/.system/standards-migration" initialize \
   --scope "book-translations/$project_id" >/dev/null || \
   fail "standards baseline could not be initialized"
+"$repo_root/.system/book-claim-harness" init \
+  "book-translations/$project_id" >/dev/null || \
+  fail "claim audit harness could not be initialized"
 
 relative_target="book-translations/$project_id"
 mode="$(git config --local --get books.repositoryMode 2>/dev/null)" || \

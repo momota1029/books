@@ -1,0 +1,457 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+export LC_ALL=C
+export GIT_CONFIG_GLOBAL=/dev/null
+export GIT_CONFIG_SYSTEM=/dev/null
+
+source_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+test_root=$(mktemp -d)
+
+cleanup() {
+  if [[ -n ${test_root:-} && -d $test_root ]]; then
+    rm -rf -- "$test_root"
+  fi
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+fail() {
+  printf 'not ok %s - %s\n' "$1" "$2" >&2
+  exit 1
+}
+
+pass() {
+  printf 'ok %s - %s\n' "$1" "$2"
+}
+
+expect_failure() {
+  if "$@" >/dev/null 2>&1; then
+    return 1
+  fi
+}
+
+repo_dir=$test_root/repository
+project=$repo_dir/book-translations/alpha
+mkdir -p "$repo_dir/.system" "$project/inbox" "$project/draft" \
+  "$project/out" "$project/.workspace/source" \
+  "$project/.workspace/records" "$project/.workspace/tools" \
+  "$project/.workspace/locks"
+cp -- "$source_root/.system/book-claim-harness" "$repo_dir/.system/"
+chmod +x "$repo_dir/.system/book-claim-harness"
+git init -q "$repo_dir"
+
+write_bad_example() {
+  python3 - "$project/.workspace/source/main.tex" <<'PY'
+import pathlib
+import sys
+
+pathlib.Path(sys.argv[1]).write_text(r"""\documentclass{article}
+\newtheorem{proposition}{命題}
+\newtheorem{example}{例}
+\begin{document}
+\begin{example}\label{ex:embedded}
+この写像は連続である．
+実際，開集合の逆像は開集合である．
+\end{example}
+\end{document}
+""", encoding="utf-8")
+PY
+}
+
+write_extracted_example() {
+  python3 - "$project/.workspace/source/main.tex" <<'PY'
+import pathlib
+import sys
+
+pathlib.Path(sys.argv[1]).write_text(r"""\documentclass{article}
+\newtheorem{proposition}{命題}
+\newtheorem{example}{例}
+\begin{document}
+\begin{proposition}\label{prop:specific-map}
+例\ref{ex:specific-map}で構成する写像は連続である．
+\end{proposition}
+\begin{proof}
+開集合の逆像が開集合であることを直接確認する．
+\end{proof}
+
+\begin{example}\label{ex:specific-map}
+具体的な写像を構成し，連続性には命題\ref{prop:specific-map}を適用する．
+\end{example}
+\end{document}
+""", encoding="utf-8")
+PY
+}
+
+write_nested_label_example() {
+  python3 - "$project/.workspace/source/main.tex" <<'PY'
+import pathlib
+import sys
+
+pathlib.Path(sys.argv[1]).write_text(r"""\documentclass{article}
+\newtheorem{proposition}{命題}
+\newtheorem{example}{例}
+\begin{document}
+\begin{proposition}
+例\ref{ex:specific-map}で構成する写像は連続である．
+\begin{equation}\label{prop:specific-map}
+1=1.
+\end{equation}
+\end{proposition}
+\begin{proof}
+開集合の逆像が開集合であることを直接確認する．
+\end{proof}
+
+\begin{example}\label{ex:specific-map}
+具体的な写像を構成し，連続性には命題\ref{prop:specific-map}を適用する．
+\end{example}
+\end{document}
+""", encoding="utf-8")
+PY
+}
+
+write_titled_proof_example() {
+  write_extracted_example
+  python3 - "$project/.workspace/source/main.tex" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text(encoding="utf-8").replace(
+    r"\begin{proof}", r"\begin{proof}[連続性の確認]", 1
+)
+path.write_text(text, encoding="utf-8")
+PY
+}
+
+write_self_referencing_proof_example() {
+  write_extracted_example
+  python3 - "$project/.workspace/source/main.tex" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text(encoding="utf-8").replace(
+    "開集合の逆像が開集合であることを直接確認する．",
+    r"命題\ref{prop:specific-map}のため，開集合の逆像が開集合であることを直接確認する．",
+)
+path.write_text(text, encoding="utf-8")
+PY
+}
+
+annotate_nonformal_without_waiver() {
+  python3 - "$project/.workspace/records/claim-audit.json" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+ledger = json.loads(path.read_text(encoding="utf-8"))
+container = next(value for value in ledger["containers"].values() if value["kind"] == "example")
+container.update({
+    "classification": "no-formal-assertion",
+    "rationale": "A classification decision was recorded.",
+    "nonformal_kind": "pure-computation",
+    "review": {
+        "status": "verified",
+        "reviewer": "independent-reviewer",
+        "independent_from_authoring": True,
+        "independent_from_classification": True,
+        "evidence": "Read the complete container.",
+    },
+})
+path.write_text(json.dumps(ledger, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+}
+
+annotate_valid_extraction() {
+  python3 - "$project/.workspace/records/claim-audit.json" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+ledger = json.loads(path.read_text(encoding="utf-8"))
+container = next(value for value in ledger["containers"].values() if value["kind"] == "example")
+review = {
+    "status": "verified",
+    "reviewer": "independent-reviewer",
+    "independent_from_authoring": True,
+    "independent_from_classification": True,
+    "evidence": "Compared the source assertion, statement, proof, and both references.",
+}
+container.update({
+    "classification": "formal-assertions-extracted",
+    "rationale": "The instance-specific assertion was separated from the example.",
+    "nonformal_kind": "",
+    "cue_waiver": None,
+    "review": review,
+    "extractions": [{
+        "id": "ASSERT-1",
+        "origin_source_unit_ids": ["SRC-EXAMPLE-1-CLAIM-1"],
+        "mapping_edge_ids": ["MAP-EXAMPLE-1-CLAIM-1"],
+        "source_scope": "instance-specific",
+        "statement": {
+            "path": ".workspace/source/main.tex",
+            "environment": "proposition",
+            "label": "prop:specific-map",
+        },
+        "container_anchor": "ex:specific-map",
+        "meaning_preserved": True,
+        "no_unjustified_generalization": True,
+        "proof_complete": True,
+        "review": review,
+    }],
+})
+path.write_text(json.dumps(ledger, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+}
+
+cd "$repo_dir"
+if .system/book-claim-harness init "$project" >/dev/null &&
+  [[ -f $project/.workspace/tools/book-claim-audit.json ]] &&
+  [[ -f $project/.workspace/records/claim-audit.json ]] &&
+  [[ -f $project/.workspace/records/claim-audit-report.json ]]; then
+  pass 1 'project-local audit records are initialized'
+else
+  fail 1 'project-local audit initialization'
+fi
+
+cp -- "$project/.workspace/tools/book-claim-audit.json" \
+  "$project/.workspace/tools/book-claim-audit.original.json"
+python3 - "$project/.workspace/tools/book-claim-audit.json" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+config = json.loads(path.read_text(encoding="utf-8"))
+config["container_environments"] = ["aside"]
+config["masked_environments"] = ["document"]
+path.write_text(json.dumps(config, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+if expect_failure .system/book-claim-harness scan "$project"; then
+  pass 2 'the fixed profile cannot be narrowed to hide audited containers'
+else
+  fail 2 'fixed-profile enforcement'
+fi
+mv -- "$project/.workspace/tools/book-claim-audit.original.json" \
+  "$project/.workspace/tools/book-claim-audit.json"
+
+write_bad_example >/dev/null
+.system/book-claim-harness scan "$project" >/dev/null
+if expect_failure .system/book-claim-harness check "$project" --gate checkpoint; then
+  pass 3 'an unclassified embedded example claim blocks the checkpoint'
+else
+  fail 3 'unclassified embedded claim rejection'
+fi
+
+annotate_nonformal_without_waiver
+if expect_failure .system/book-claim-harness check "$project" --gate checkpoint; then
+  pass 4 'a cue-bearing false-negative classification needs a reviewed waiver'
+else
+  fail 4 'cue-bearing false-negative rejection'
+fi
+
+write_extracted_example >/dev/null
+.system/book-claim-harness scan "$project" >/dev/null
+annotate_valid_extraction
+if .system/book-claim-harness check "$project" --gate checkpoint >/dev/null &&
+  .system/book-claim-harness check "$project" --gate promotion >/dev/null; then
+  pass 5 'extracted proposition, proof, provenance, and mutual references pass'
+else
+  fail 5 'valid extraction acceptance'
+fi
+
+python3 - "$project/.workspace/source/chapter.md" <<'PY'
+import pathlib
+import sys
+
+pathlib.Path(sys.argv[1]).write_text(
+    "この写像は連続である。実際、開集合の逆像は開集合である。\n",
+    encoding="utf-8",
+)
+PY
+.system/book-claim-harness scan "$project" >/dev/null
+if expect_failure .system/book-claim-harness check "$project" --gate promotion; then
+  pass 6 'unsupported canonical text cannot be hidden beside audited TeX'
+else
+  fail 6 'unsupported canonical text rejection'
+fi
+unlink -- "$project/.workspace/source/chapter.md"
+.system/book-claim-harness scan "$project" >/dev/null
+
+printf '%% source changed after review\n' >> "$project/.workspace/source/main.tex"
+if expect_failure .system/book-claim-harness check "$project" --gate checkpoint; then
+  pass 7 'a source change invalidates the claim audit snapshot'
+else
+  fail 7 'stale source rejection'
+fi
+
+python3 - "$project/.workspace/source/main.tex" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+text = text.replace("例\\ref{ex:specific-map}で構成する写像", "ここで構成する写像")
+path.write_text(text, encoding="utf-8")
+PY
+.system/book-claim-harness scan "$project" >/dev/null
+if expect_failure .system/book-claim-harness check "$project" --gate checkpoint; then
+  pass 8 'a missing reverse reference blocks the checkpoint'
+else
+  fail 8 'mutual-reference rejection'
+fi
+
+write_nested_label_example >/dev/null
+.system/book-claim-harness scan "$project" >/dev/null
+if expect_failure .system/book-claim-harness check "$project" --gate checkpoint; then
+  pass 9 'a nested equation label cannot identify its enclosing proposition'
+else
+  fail 9 'direct statement label enforcement'
+fi
+
+write_titled_proof_example >/dev/null
+.system/book-claim-harness scan "$project" >/dev/null
+if expect_failure .system/book-claim-harness check "$project" --gate checkpoint; then
+  pass 10 'an optional proof title is not accepted as the immediate bare proof'
+else
+  fail 10 'bare proof title rejection'
+fi
+
+write_self_referencing_proof_example >/dev/null
+.system/book-claim-harness scan "$project" >/dev/null
+if expect_failure .system/book-claim-harness check "$project" --gate checkpoint; then
+  pass 11 'an immediate proof cannot redundantly cross-reference its target'
+else
+  fail 11 'bare proof target-reference rejection'
+fi
+
+beta=$repo_dir/book-translations/beta
+outside_lock=$test_root/outside-lock
+mkdir -p "$beta/inbox" "$beta/draft" "$beta/out" \
+  "$beta/.workspace/source" "$beta/.workspace/records" \
+  "$beta/.workspace/tools" "$beta/.workspace/locks"
+ln -s "$outside_lock" "$beta/.workspace/locks/book-claim-harness.lock"
+if expect_failure .system/book-claim-harness init "$beta" &&
+  [[ ! -e $outside_lock ]]; then
+  pass 12 'a dangling lock symlink cannot create a project-external target'
+else
+  fail 12 'lock symlink rejection'
+fi
+
+gamma=$repo_dir/book-translations/gamma
+mkdir -p "$gamma/inbox" "$gamma/draft" "$gamma/out" \
+  "$gamma/.workspace/source" "$gamma/.workspace/records" \
+  "$gamma/.workspace/tools" "$gamma/.workspace/locks"
+.system/book-claim-harness init "$gamma" >/dev/null
+python3 - "$gamma/.workspace/source/main.tex" <<'PY'
+import pathlib
+import sys
+
+pathlib.Path(sys.argv[1]).write_text(r"""\documentclass{article}
+\begin{document}
+第一行は同じ段落に属する．
+第二行も同じ段落に属する．
+\end{document}
+""", encoding="utf-8")
+PY
+.system/book-claim-harness scan "$gamma" >/dev/null
+if python3 - "$gamma/.workspace/records/claim-audit.json" <<'PY'
+import json
+import pathlib
+import sys
+
+ledger = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+prose = [item for item in ledger["containers"].values() if item["kind"] == "prose"]
+raise SystemExit(0 if len(prose) == 1 else 1)
+PY
+then
+  pass 13 'comment stripping preserves ordinary line breaks and prose paragraphs'
+else
+  fail 13 'prose paragraph preservation'
+fi
+
+delta=$repo_dir/book-translations/delta
+mkdir -p "$delta/inbox" "$delta/draft" "$delta/out" \
+  "$delta/.workspace/source" "$delta/.workspace/records" \
+  "$delta/.workspace/tools" "$delta/.workspace/locks"
+.system/book-claim-harness init "$delta" >/dev/null
+python3 - "$delta/.workspace/source/main.tex" <<'PY'
+import pathlib
+import sys
+
+pathlib.Path(sys.argv[1]).write_text(r"""\documentclass{article}
+\newtheorem{proposition}{命題}
+\begin{document}
+\begin{proposition}\label{prop:prose-map}
+この写像は連続である．
+\end{proposition}
+\begin{proof}
+開集合の逆像が開集合である．
+\end{proof}
+
+この具体例から得られる写像は連続である．
+
+別の箇所では命題\ref{prop:prose-map}を用いる．
+\end{document}
+""", encoding="utf-8")
+PY
+.system/book-claim-harness scan "$delta" >/dev/null
+python3 - "$delta/.workspace/records/claim-audit.json" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+ledger = json.loads(path.read_text(encoding="utf-8"))
+prose = sorted(
+    (item for item in ledger["containers"].values() if item["kind"] == "prose"),
+    key=lambda item: item["start_line"],
+)
+review = {
+    "status": "verified",
+    "reviewer": "independent-reviewer",
+    "independent_from_authoring": True,
+    "independent_from_classification": True,
+    "evidence": "Read this exact prose container and its declared extraction.",
+}
+prose[0].update({
+    "classification": "formal-assertions-extracted",
+    "rationale": "The prose assertion was declared as extracted.",
+    "review": review,
+    "extractions": [{
+        "id": "ASSERT-PROSE-1",
+        "origin_source_unit_ids": ["SRC-PROSE-1"],
+        "mapping_edge_ids": ["MAP-PROSE-1"],
+        "source_scope": "instance-specific",
+        "statement": {
+            "path": ".workspace/source/main.tex",
+            "environment": "proposition",
+            "label": "prop:prose-map",
+        },
+        "meaning_preserved": True,
+        "no_unjustified_generalization": True,
+        "proof_complete": True,
+        "review": review,
+    }],
+})
+prose[1].update({
+    "classification": "no-formal-assertion",
+    "rationale": "This sentence only records a use of an existing result.",
+    "nonformal_kind": "narrative",
+    "review": review,
+})
+path.write_text(
+    json.dumps(ledger, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+PY
+if expect_failure .system/book-claim-harness check "$delta" --gate promotion; then
+  pass 14 'a reference in another prose container cannot satisfy the extraction edge'
+else
+  fail 14 'container-local reference enforcement'
+fi

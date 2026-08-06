@@ -15,7 +15,7 @@ cd books
 
 `bootstrap` は repository local の Git 設定、hook、mode 別の `.git/info/exclude` を準備し、`doctor` は system を検査します。どちらかが失敗した場合は、原因を解消して再実行するまで制作を始めません。system 更新後にも両方を再実行します。
 
-共通 shell tool と offline test は、GNU/Linux の Bash と macOS 標準の Bash 3.2・BSD userland の双方を対象とします。GNU 固有の `sed -i`、`sha256sum`、`realpath`、`stat -c` や Bash 4 以降だけの構文を前提にしません。evidence harness は Python 3.10 以降を必要とし、図表・PDF の検査には各 harness が確認する外部 decoder も必要です。
+共通 shell tool と offline test は、GNU/Linux の Bash と macOS 標準の Bash 3.2・BSD userland の双方を対象とします。GNU 固有の `sed -i`、`sha256sum`、`realpath`、`stat -c` や Bash 4 以降だけの構文を前提にしません。evidence harness と book claim harness は Python 3.10 以降を必要とし、図表・PDF の検査には各 harness が確認する外部 decoder も必要です。
 
 repository mode は clone ごとの local Git config `books.repositoryMode` に記録されます。未設定の clone は `public` として扱われ、`bootstrap` も既定値として `public` を設定します。この時点の通常の出力は `mode=public` です。
 
@@ -168,6 +168,8 @@ private 作業から得た generic な system 改善は、clean な public clone
 ```sh
 .system/new-book-project <project-id>
 ```
+
+initializer は、例・注意・caption・脚注・通常文に埋め込まれた formal assertion を全件分類し、番号付き statement、直後の proof、provenance、元の例との相互参照を checkpoint と promotion で検証する project-local claim audit も初期化します。通常の制作ではエージェントが source 変更後の scan、独立 review、gate 検査を実行します。
 
 配置、権利管理、制作、review、promotion の詳細は、次の文書を参照してください。
 

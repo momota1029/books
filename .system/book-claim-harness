@@ -1,0 +1,1065 @@
+#!/usr/bin/env python3
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import datetime as dt
+import fcntl
+import hashlib
+import json
+import os
+import pathlib
+import re
+import stat
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass
+from typing import Any, Iterable
+
+
+os.umask(0o077)
+
+
+SCHEMA_VERSION = 1
+PROJECT_ID = re.compile(r"[a-z0-9][a-z0-9._-]*")
+ENV_TOKEN = re.compile(r"\\(begin|end)\s*\{([^{}]+)\}")
+LABEL = re.compile(r"\\label\s*\{([^{}]+)\}")
+REF_TEMPLATE = r"\\(?:ref|pageref|eqref|autoref|cref|Cref)\*?\s*\{{{label}\}}|\\hyperref\s*\[{label}\]"
+CLASSIFICATIONS = {
+    "pending",
+    "no-formal-assertion",
+    "formal-assertions-extracted",
+    "formal-assertion-embedded",
+}
+NONFORMAL_KINDS = {
+    "pure-computation",
+    "value-list",
+    "counterexample-setup",
+    "motivation",
+    "definition-illustration",
+    "narrative",
+}
+CUE_WAIVER_KINDS = {
+    "calculation-only-cue",
+    "counterexample-only-cue",
+    "quoted-or-metalinguistic-cue",
+    "residual-nonassertive-cue",
+}
+SOURCE_SCOPES = {"instance-specific", "general"}
+GATES = {"checkpoint", "promotion"}
+DEFAULT_CONTAINER_ENVIRONMENTS = ("example", "example*", "remark", "remark*")
+DEFAULT_STATEMENT_ENVIRONMENTS = (
+    "lemma",
+    "proposition",
+    "theorem",
+    "corollary",
+)
+DEFAULT_MASKED_ENVIRONMENTS = (
+    "definition",
+    "proof",
+    "equation",
+    "equation*",
+    "align",
+    "align*",
+    "gather",
+    "gather*",
+    "multline",
+    "multline*",
+    "displaymath",
+    "figure",
+    "figure*",
+    "table",
+    "table*",
+    "tikzpicture",
+    "verbatim",
+    "verbatim*",
+    "lstlisting",
+)
+DEFAULT_AUXILIARY_EXTENSIONS = (
+    ".bbx",
+    ".bib",
+    ".bst",
+    ".cbx",
+    ".cls",
+    ".csv",
+    ".dat",
+    ".eps",
+    ".jpeg",
+    ".jpg",
+    ".pdf",
+    ".png",
+    ".sty",
+    ".svg",
+    ".tsv",
+)
+JUSTIFICATION_CUES = {
+    "実際": re.compile(r"実際"),
+    "なぜなら": re.compile(r"なぜなら"),
+    "これを見るには": re.compile(r"これを?見るには"),
+    "したがって": re.compile(r"したがって"),
+    "ゆえに": re.compile(r"ゆえに"),
+    "indeed": re.compile(r"\bindeed\b", re.IGNORECASE),
+    "because": re.compile(r"\bbecause\b", re.IGNORECASE),
+    "to-see-this": re.compile(r"\bto see (?:this|that)\b", re.IGNORECASE),
+    "therefore": re.compile(r"\btherefore\b", re.IGNORECASE),
+    "hence": re.compile(r"\bhence\b", re.IGNORECASE),
+}
+
+
+class AuditError(Exception):
+    pass
+
+
+@dataclass(frozen=True)
+class Environment:
+    name: str
+    full_start: int
+    content_start: int
+    content_end: int
+    full_end: int
+    start_line: int
+    end_line: int
+    content: str
+
+
+def fail(message: str) -> None:
+    print(f"book-claim-harness: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def repository_root() -> pathlib.Path:
+    script = pathlib.Path(__file__)
+    if script.is_symlink():
+        raise AuditError("script path is unsafe")
+    script = script.resolve(strict=True)
+    result = subprocess.run(
+        ["git", "-C", str(script.parent.parent), "rev-parse", "--show-toplevel"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise AuditError("repository root is unavailable")
+    root = pathlib.Path(result.stdout.strip()).resolve(strict=True)
+    if script.parent != root / ".system":
+        raise AuditError("script path is unsafe")
+    return root
+
+
+def ensure_directory(path: pathlib.Path, description: str) -> pathlib.Path:
+    lexical = pathlib.Path(os.path.abspath(path))
+    try:
+        metadata = lexical.lstat()
+        resolved = lexical.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise AuditError(f"{description} is unavailable") from exc
+    if not stat.S_ISDIR(metadata.st_mode) or lexical.is_symlink() or lexical != resolved:
+        raise AuditError(f"{description} is unsafe")
+    return resolved
+
+
+def resolve_project(root: pathlib.Path, raw_project: str) -> pathlib.Path:
+    collection = ensure_directory(root / "book-translations", "book collection")
+    candidate = pathlib.Path(raw_project)
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    candidate = pathlib.Path(os.path.abspath(candidate))
+    project = ensure_directory(candidate, "project directory")
+    if project.parent != collection or PROJECT_ID.fullmatch(project.name) is None:
+        raise AuditError("project must be one direct child of book-translations")
+    for name in ("inbox", "draft", "out", ".workspace"):
+        ensure_directory(project / name, f"project directory {name}")
+    for name in ("source", "records", "tools", "locks"):
+        ensure_directory(project / ".workspace" / name, f"workspace directory {name}")
+    return project
+
+
+def managed_paths(project: pathlib.Path) -> dict[str, pathlib.Path]:
+    workspace = project / ".workspace"
+    return {
+        "config": workspace / "tools" / "book-claim-audit.json",
+        "ledger": workspace / "records" / "claim-audit.json",
+        "report": workspace / "records" / "claim-audit-report.json",
+        "source": workspace / "source",
+        "lock": workspace / "locks" / "book-claim-harness.lock",
+    }
+
+
+def reject_symlink_chain(path: pathlib.Path, stop: pathlib.Path) -> None:
+    current = path
+    while True:
+        if current.is_symlink():
+            raise AuditError(f"managed path is a symlink: {current}")
+        if current == stop:
+            return
+        if stop not in current.parents:
+            raise AuditError("managed path escapes project")
+        current = current.parent
+
+
+@contextlib.contextmanager
+def project_lock(project: pathlib.Path):
+    lock_path = managed_paths(project)["lock"]
+    reject_symlink_chain(lock_path, project)
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(lock_path, flags, 0o600)
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise AuditError("lock path is not a regular file")
+        with os.fdopen(descriptor, "a+", encoding="utf-8") as handle:
+            descriptor = None
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            yield
+    except OSError as exc:
+        raise AuditError("lock path is unsafe or unavailable") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def atomic_json_write(path: pathlib.Path, value: dict[str, Any]) -> None:
+    reject_symlink_chain(path.parent, path.parents[2])
+    if path.exists() and path.is_symlink():
+        raise AuditError(f"managed path is unsafe: {path}")
+    encoded = (json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode()
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_name, path)
+    except BaseException:
+        try:
+            os.unlink(temporary_name)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def read_json(path: pathlib.Path, description: str) -> dict[str, Any]:
+    try:
+        metadata = path.lstat()
+        if path.is_symlink() or not stat.S_ISREG(metadata.st_mode):
+            raise AuditError(f"{description} is unsafe")
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise AuditError(f"{description} is invalid") from exc
+    if not isinstance(value, dict):
+        raise AuditError(f"{description} root must be an object")
+    return value
+
+
+def default_review() -> dict[str, Any]:
+    return {
+        "status": "pending",
+        "reviewer": "",
+        "independent_from_authoring": False,
+        "independent_from_classification": False,
+        "evidence": "",
+    }
+
+
+def default_config(project: pathlib.Path) -> dict[str, Any]:
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "project": project.name,
+        "source_root": ".workspace/source",
+        "source_extensions": [".tex"],
+        "container_environments": list(DEFAULT_CONTAINER_ENVIRONMENTS),
+        "statement_environments": list(DEFAULT_STATEMENT_ENVIRONMENTS),
+        "masked_environments": list(DEFAULT_MASKED_ENVIRONMENTS),
+        "command_containers": ["caption", "footnote"],
+        "auxiliary_extensions": list(DEFAULT_AUXILIARY_EXTENSIONS),
+    }
+
+
+def default_ledger(project: pathlib.Path) -> dict[str, Any]:
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "project": project.name,
+        "scan": {
+            "source_root": ".workspace/source",
+            "snapshot_sha256": "",
+            "scanned_at_utc": "",
+            "files": [],
+        },
+        "containers": {},
+    }
+
+
+def require_string_list(value: Any, field: str) -> list[str]:
+    if not isinstance(value, list) or not value:
+        raise AuditError(f"config field {field} must be a non-empty array")
+    if not all(isinstance(item, str) and item for item in value):
+        raise AuditError(f"config field {field} is invalid")
+    if len(value) != len(set(value)):
+        raise AuditError(f"config field {field} contains duplicates")
+    return value
+
+
+def validate_config(config: dict[str, Any], project: pathlib.Path) -> dict[str, Any]:
+    if config.get("schema_version") != SCHEMA_VERSION:
+        raise AuditError("unsupported config schema version")
+    if config.get("project") != project.name:
+        raise AuditError("config project identity does not match the selected project")
+    if config.get("source_root") != ".workspace/source":
+        raise AuditError("config source_root must be .workspace/source")
+    extensions = require_string_list(config.get("source_extensions"), "source_extensions")
+    if extensions != [".tex"]:
+        raise AuditError("only the fixed .tex source profile is supported")
+    fixed_profiles = {
+        "container_environments": list(DEFAULT_CONTAINER_ENVIRONMENTS),
+        "statement_environments": list(DEFAULT_STATEMENT_ENVIRONMENTS),
+        "masked_environments": list(DEFAULT_MASKED_ENVIRONMENTS),
+        "command_containers": ["caption", "footnote"],
+    }
+    for field, expected in fixed_profiles.items():
+        values = require_string_list(config.get(field), field)
+        if not all(re.fullmatch(r"[A-Za-z@][A-Za-z0-9@*_-]*", item) for item in values):
+            raise AuditError(f"config field {field} contains an invalid TeX name")
+        if values != expected:
+            raise AuditError(f"config field {field} does not match the fixed scan profile")
+    auxiliary_extensions = require_string_list(
+        config.get("auxiliary_extensions"), "auxiliary_extensions"
+    )
+    if auxiliary_extensions != list(DEFAULT_AUXILIARY_EXTENSIONS):
+        raise AuditError("config field auxiliary_extensions does not match the fixed scan profile")
+    return config
+
+
+def initialize(project: pathlib.Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    paths = managed_paths(project)
+    config = read_json(paths["config"], "claim audit config") if paths["config"].exists() else default_config(project)
+    config = validate_config(config, project)
+    ledger = read_json(paths["ledger"], "claim audit ledger") if paths["ledger"].exists() else default_ledger(project)
+    if ledger.get("schema_version") != SCHEMA_VERSION or ledger.get("project") != project.name:
+        raise AuditError("claim audit ledger identity or schema is invalid")
+    if not paths["config"].exists():
+        atomic_json_write(paths["config"], config)
+    if not paths["ledger"].exists():
+        atomic_json_write(paths["ledger"], ledger)
+    if not paths["report"].exists():
+        atomic_json_write(
+            paths["report"],
+            inactive_report(
+                project,
+                config,
+                ledger,
+                "not-run",
+                "claim audit scan and gate check have not run",
+            ),
+        )
+    return config, ledger
+
+
+def strip_comments(text: str) -> str:
+    result: list[str] = []
+    for line in text.splitlines(keepends=True):
+        suffix = "\n" if line.endswith("\n") else ""
+        body = line[:-1] if suffix else line
+        cut = len(body)
+        for index, character in enumerate(body):
+            if character != "%":
+                continue
+            backslashes = 0
+            cursor = index - 1
+            while cursor >= 0 and line[cursor] == "\\":
+                backslashes += 1
+                cursor -= 1
+            if backslashes % 2 == 0:
+                cut = index
+                break
+        result.append(body[:cut] + " " * (len(body) - cut) + suffix)
+    return "".join(result)
+
+
+def parse_environments(text: str, relative_path: str) -> list[Environment]:
+    stack: list[tuple[str, int, int, int]] = []
+    environments: list[Environment] = []
+    for token in ENV_TOKEN.finditer(text):
+        action, name = token.group(1), token.group(2).strip()
+        if action == "begin":
+            stack.append((name, token.start(), token.end(), text.count("\n", 0, token.start()) + 1))
+            continue
+        if not stack or stack[-1][0] != name:
+            raise AuditError(f"unbalanced TeX environment in {relative_path}")
+        begin_name, full_start, content_start, start_line = stack.pop()
+        environments.append(
+            Environment(
+                name=begin_name,
+                full_start=full_start,
+                content_start=content_start,
+                content_end=token.start(),
+                full_end=token.end(),
+                start_line=start_line,
+                end_line=text.count("\n", 0, token.end()) + 1,
+                content=text[content_start:token.start()],
+            )
+        )
+    if stack:
+        raise AuditError(f"unbalanced TeX environment in {relative_path}")
+    return sorted(environments, key=lambda item: (item.full_start, item.full_end))
+
+
+def balanced_command_spans(text: str, command: str) -> list[tuple[int, int, int, int, str]]:
+    pattern = re.compile(rf"\\{re.escape(command)}\*?(?![A-Za-z@])")
+    spans: list[tuple[int, int, int, int, str]] = []
+    for match in pattern.finditer(text):
+        cursor = match.end()
+        while cursor < len(text) and text[cursor].isspace():
+            cursor += 1
+        if cursor < len(text) and text[cursor] == "[":
+            depth = 1
+            cursor += 1
+            while cursor < len(text) and depth:
+                if text[cursor] == "[":
+                    depth += 1
+                elif text[cursor] == "]":
+                    depth -= 1
+                cursor += 1
+            while cursor < len(text) and text[cursor].isspace():
+                cursor += 1
+        if cursor >= len(text) or text[cursor] != "{":
+            continue
+        content_start = cursor + 1
+        depth = 1
+        cursor += 1
+        while cursor < len(text) and depth:
+            if text[cursor] == "{" and (cursor == 0 or text[cursor - 1] != "\\"):
+                depth += 1
+            elif text[cursor] == "}" and (cursor == 0 or text[cursor - 1] != "\\"):
+                depth -= 1
+            cursor += 1
+        if depth:
+            raise AuditError(f"unbalanced argument for \\{command}")
+        spans.append((match.start(), cursor, content_start, cursor - 1, text[content_start:cursor - 1]))
+    return spans
+
+
+def mask_ranges(text: str, ranges: Iterable[tuple[int, int]]) -> str:
+    characters = list(text)
+    for start, end in ranges:
+        for index in range(max(0, start), min(len(characters), end)):
+            if characters[index] != "\n":
+                characters[index] = " "
+    return "".join(characters)
+
+
+def content_bearing(content: str) -> bool:
+    if re.fullmatch(
+        r"\s*(?:\\(?:input|include|bibliography|addbibresource|printindex|tableofcontents|maketitle)\*?(?:\[[^\]]*\])?\{?[^}]*\}?\s*)+",
+        content,
+        re.DOTALL,
+    ):
+        return False
+    visible = re.sub(r"\\[A-Za-z@]+\*?", " ", content)
+    visible = re.sub(r"[{}\[\]$\\_^&~]", " ", visible)
+    return re.search(r"[A-Za-z0-9\u3040-\u30ff\u3400-\u9fff]", visible) is not None
+
+
+def cue_hits(content: str) -> list[str]:
+    return [name for name, pattern in JUSTIFICATION_CUES.items() if pattern.search(content)]
+
+
+def sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def object_sha256(value: dict[str, Any]) -> str:
+    encoded = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    return sha256_text(encoded)
+
+
+def inactive_report(
+    project: pathlib.Path,
+    config: dict[str, Any],
+    ledger: dict[str, Any],
+    result: str,
+    message: str,
+) -> dict[str, Any]:
+    scan = ledger.get("scan") if isinstance(ledger.get("scan"), dict) else {}
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "project": project.name,
+        "gate": "none",
+        "checked_at_utc": "",
+        "source_snapshot_sha256": scan.get("snapshot_sha256", ""),
+        "config_sha256": object_sha256(config),
+        "ledger_sha256": object_sha256(ledger),
+        "container_total": len(ledger.get("containers", {}))
+        if isinstance(ledger.get("containers"), dict)
+        else 0,
+        "classification_counts": {
+            classification: 0 for classification in CLASSIFICATIONS
+        },
+        "extraction_total": 0,
+        "result": result,
+        "errors": [message],
+    }
+
+
+def discover(
+    project: pathlib.Path, config: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, str], dict[str, str]]:
+    source_root = ensure_directory(managed_paths(project)["source"], "canonical source")
+    source_files: list[pathlib.Path] = []
+    for entry in source_root.rglob("*"):
+        metadata = entry.lstat()
+        if entry.is_symlink() or not (stat.S_ISDIR(metadata.st_mode) or stat.S_ISREG(metadata.st_mode)):
+            raise AuditError("canonical source contains an unsafe entry")
+        if stat.S_ISREG(metadata.st_mode):
+            source_files.append(entry)
+    source_files = sorted(
+        source_files,
+        key=lambda entry: entry.relative_to(project).as_posix(),
+    )
+    auxiliary_extensions = set(config["auxiliary_extensions"])
+    file_records: list[dict[str, str]] = []
+    tex_files: list[pathlib.Path] = []
+    unsupported_files: list[str] = []
+    for path in source_files:
+        relative = path.relative_to(project).as_posix()
+        suffix = path.suffix.lower()
+        if suffix == ".tex":
+            role = "audited-tex"
+            tex_files.append(path)
+        elif suffix in auxiliary_extensions:
+            role = "auxiliary-asset"
+        else:
+            role = "unsupported-source"
+            unsupported_files.append(relative)
+        file_records.append(
+            {
+                "path": relative,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "role": role,
+            }
+        )
+    raw_texts: dict[str, str] = {}
+    candidates: list[dict[str, Any]] = []
+    audited = set(config["container_environments"])
+    masked = audited | set(config["statement_environments"]) | set(config["masked_environments"])
+    for path in tex_files:
+        relative = path.relative_to(project).as_posix()
+        raw = path.read_text(encoding="utf-8")
+        clean = strip_comments(raw)
+        raw_texts[relative] = clean
+        environments = parse_environments(clean, relative)
+        ranges: list[tuple[int, int]] = []
+        for environment in environments:
+            if environment.name in audited:
+                kind = environment.name.removesuffix("*")
+                candidates.append(
+                    {
+                        "path": relative,
+                        "kind": kind,
+                        "start_line": environment.start_line,
+                        "end_line": environment.end_line,
+                        "span_start": environment.full_start,
+                        "span_end": environment.full_end,
+                        "content_start": environment.content_start,
+                        "content_end": environment.content_end,
+                        "content_sha256": sha256_text(environment.content.strip()),
+                        "cue_hits": cue_hits(environment.content),
+                        "_audit_content": environment.content,
+                    }
+                )
+            if environment.name in masked:
+                ranges.append((environment.full_start, environment.full_end))
+        for command in config["command_containers"]:
+            for full_start, full_end, content_start, content_end, content in balanced_command_spans(clean, command):
+                candidates.append(
+                    {
+                        "path": relative,
+                        "kind": command,
+                        "start_line": clean.count("\n", 0, content_start) + 1,
+                        "end_line": clean.count("\n", 0, content_end) + 1,
+                        "span_start": full_start,
+                        "span_end": full_end,
+                        "content_start": content_start,
+                        "content_end": content_end,
+                        "content_sha256": sha256_text(content.strip()),
+                        "cue_hits": cue_hits(content),
+                        "_audit_content": content,
+                    }
+                )
+                ranges.append((full_start, full_end))
+        document = next((item for item in environments if item.name == "document"), None)
+        if document is not None:
+            ranges.append((0, document.content_start))
+            ranges.append((document.content_end, len(clean)))
+        prose_text = mask_ranges(clean, ranges)
+        for paragraph in re.finditer(r"\S(?:.*?)(?=\n\s*\n|\Z)", prose_text, re.DOTALL):
+            content = paragraph.group(0).strip()
+            if not content_bearing(content):
+                continue
+            candidates.append(
+                {
+                    "path": relative,
+                    "kind": "prose",
+                    "start_line": clean.count("\n", 0, paragraph.start()) + 1,
+                    "end_line": clean.count("\n", 0, paragraph.end()) + 1,
+                    "span_start": paragraph.start(),
+                    "span_end": paragraph.end(),
+                    "content_start": paragraph.start(),
+                    "content_end": paragraph.end(),
+                    "content_sha256": sha256_text(content),
+                    "cue_hits": cue_hits(content),
+                    "_audit_content": content,
+                }
+            )
+    duplicates: dict[tuple[str, str, str], int] = {}
+    containers: dict[str, dict[str, Any]] = {}
+    container_contents: dict[str, str] = {}
+    for candidate in sorted(candidates, key=lambda item: (item["path"], item["start_line"], item["kind"])):
+        duplicate_key = (candidate["path"], candidate["kind"], candidate["content_sha256"])
+        ordinal = duplicates.get(duplicate_key, 0) + 1
+        duplicates[duplicate_key] = ordinal
+        stable_key = "\0".join((*duplicate_key, str(ordinal)))
+        container_id = "CON-" + sha256_text(stable_key)[:16]
+        candidate["id"] = container_id
+        candidate["duplicate_ordinal"] = ordinal
+        container_contents[container_id] = candidate.pop("_audit_content")
+        containers[container_id] = candidate
+    snapshot_sha256 = sha256_text(json.dumps(file_records, sort_keys=True, separators=(",", ":")))
+    scan = {
+        "source_root": ".workspace/source",
+        "snapshot_sha256": snapshot_sha256,
+        "config_sha256": object_sha256(config),
+        "scanned_at_utc": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat(),
+        "files": file_records,
+        "audited_tex_file_count": len(tex_files),
+        "auxiliary_file_count": sum(
+            record["role"] == "auxiliary-asset" for record in file_records
+        ),
+        "unsupported_source_files": unsupported_files,
+    }
+    return {"scan": scan, "containers": containers}, raw_texts, container_contents
+
+
+def blank_annotation(discovered: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **discovered,
+        "classification": "pending",
+        "rationale": "",
+        "nonformal_kind": "",
+        "cue_waiver": None,
+        "extractions": [],
+        "review": default_review(),
+    }
+
+
+def scan_project(project: pathlib.Path, config: dict[str, Any], ledger: dict[str, Any]) -> dict[str, Any]:
+    discovery, _, _ = discover(project, config)
+    previous = ledger.get("containers")
+    if not isinstance(previous, dict):
+        raise AuditError("claim audit ledger containers must be an object")
+    merged: dict[str, dict[str, Any]] = {}
+    identity_fields = {"id", "path", "kind", "content_sha256", "duplicate_ordinal"}
+    for container_id, discovered in discovery["containers"].items():
+        old = previous.get(container_id)
+        if isinstance(old, dict) and all(
+            old.get(field) == discovered.get(field) for field in identity_fields
+        ):
+            merged[container_id] = {**old, **discovered}
+        else:
+            merged[container_id] = blank_annotation(discovered)
+    ledger = {
+        "schema_version": SCHEMA_VERSION,
+        "project": project.name,
+        "scan": discovery["scan"],
+        "containers": merged,
+    }
+    atomic_json_write(managed_paths(project)["ledger"], ledger)
+    atomic_json_write(
+        managed_paths(project)["report"],
+        inactive_report(
+            project,
+            config,
+            ledger,
+            "stale",
+            "claim audit classifications require a gate check after this scan",
+        ),
+    )
+    return ledger
+
+
+def nonempty_text(value: Any, field: str, errors: list[str]) -> str:
+    if not isinstance(value, str) or not value.strip():
+        errors.append(f"{field} must be non-empty text")
+        return ""
+    return value.strip()
+
+
+def text_array(value: Any, field: str, errors: list[str]) -> list[str]:
+    if not isinstance(value, list) or not value or not all(isinstance(item, str) and item.strip() for item in value):
+        errors.append(f"{field} must be a non-empty text array")
+        return []
+    if len(value) != len(set(value)):
+        errors.append(f"{field} contains duplicate values")
+    return value
+
+
+def validate_review(value: Any, field: str, errors: list[str]) -> None:
+    if not isinstance(value, dict):
+        errors.append(f"{field} must be an object")
+        return
+    if value.get("status") != "verified":
+        errors.append(f"{field}.status must be verified")
+    nonempty_text(value.get("reviewer"), f"{field}.reviewer", errors)
+    nonempty_text(value.get("evidence"), f"{field}.evidence", errors)
+    if value.get("independent_from_authoring") is not True:
+        errors.append(f"{field} is not independent from authoring")
+    if value.get("independent_from_classification") is not True:
+        errors.append(f"{field} is not independent from classification")
+
+
+def validate_cue_waiver(value: Any, field: str, errors: list[str]) -> None:
+    if not isinstance(value, dict):
+        errors.append(f"{field} is required when justification cues remain")
+        return
+    if value.get("kind") not in CUE_WAIVER_KINDS:
+        errors.append(f"{field}.kind is invalid")
+    nonempty_text(value.get("rationale"), f"{field}.rationale", errors)
+
+
+def safe_source_file(project: pathlib.Path, raw_path: Any, field: str, errors: list[str]) -> pathlib.Path | None:
+    if not isinstance(raw_path, str) or not raw_path:
+        errors.append(f"{field} is invalid")
+        return None
+    pure = pathlib.PurePosixPath(raw_path)
+    if pure.is_absolute() or ".." in pure.parts:
+        errors.append(f"{field} is unsafe")
+        return None
+    candidate = pathlib.Path(os.path.abspath(project / pure))
+    source = managed_paths(project)["source"]
+    try:
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(source)
+        metadata = resolved.lstat()
+    except (OSError, RuntimeError, ValueError):
+        errors.append(f"{field} is unavailable or outside canonical source")
+        return None
+    if candidate != resolved or resolved.is_symlink() or not stat.S_ISREG(metadata.st_mode) or resolved.suffix != ".tex":
+        errors.append(f"{field} is not a safe TeX source file")
+        return None
+    return resolved
+
+
+def contains_reference(text: str, label: str) -> bool:
+    return re.search(REF_TEMPLATE.format(label=re.escape(label)), text) is not None
+
+
+def direct_environment_labels(environment: Environment, relative_path: str) -> list[str]:
+    nested = parse_environments(environment.content, relative_path)
+    direct_content = mask_ranges(
+        environment.content,
+        ((item.full_start, item.full_end) for item in nested),
+    )
+    return LABEL.findall(direct_content)
+
+
+def validate_extraction(
+    extraction: Any,
+    field: str,
+    container: dict[str, Any],
+    project: pathlib.Path,
+    config: dict[str, Any],
+    raw_texts: dict[str, str],
+    container_contents: dict[str, str],
+    parsed_cache: dict[str, list[Environment]],
+    label_counts: dict[str, int],
+    errors: list[str],
+) -> str:
+    if not isinstance(extraction, dict):
+        errors.append(f"{field} must be an object")
+        return ""
+    extraction_id = nonempty_text(extraction.get("id"), f"{field}.id", errors)
+    text_array(extraction.get("origin_source_unit_ids"), f"{field}.origin_source_unit_ids", errors)
+    text_array(extraction.get("mapping_edge_ids"), f"{field}.mapping_edge_ids", errors)
+    if extraction.get("source_scope") not in SOURCE_SCOPES:
+        errors.append(f"{field}.source_scope is invalid")
+    for flag in ("meaning_preserved", "no_unjustified_generalization", "proof_complete"):
+        if extraction.get(flag) is not True:
+            errors.append(f"{field}.{flag} must be true")
+    validate_review(extraction.get("review"), f"{field}.review", errors)
+    statement = extraction.get("statement")
+    if not isinstance(statement, dict):
+        errors.append(f"{field}.statement must be an object")
+        return extraction_id
+    target = safe_source_file(project, statement.get("path"), f"{field}.statement.path", errors)
+    environment_name = statement.get("environment")
+    if environment_name not in config["statement_environments"]:
+        errors.append(f"{field}.statement.environment is not theorem-like")
+    statement_label = nonempty_text(statement.get("label"), f"{field}.statement.label", errors)
+    if target is None or not statement_label or environment_name not in config["statement_environments"]:
+        return extraction_id
+    relative = target.relative_to(project).as_posix()
+    text = raw_texts.get(relative)
+    if text is None:
+        errors.append(f"{field}.statement.path was not part of the current scan")
+        return extraction_id
+    environments = parsed_cache.setdefault(relative, parse_environments(text, relative))
+    statements = [
+        item for item in environments
+        if item.name == environment_name
+        and statement_label in direct_environment_labels(item, relative)
+    ]
+    if len(statements) != 1:
+        errors.append(f"{field}.statement label does not identify exactly one declared environment")
+        return extraction_id
+    if label_counts.get(statement_label, 0) != 1:
+        errors.append(f"{field}.statement.label is not globally unique")
+    statement_environment = statements[0]
+    if relative == container.get("path"):
+        container_start = int(container.get("span_start", -1))
+        container_end = int(container.get("span_end", -1))
+        if (
+            container_start <= statement_environment.full_start
+            and statement_environment.full_end <= container_end
+        ):
+            errors.append(f"{field}.statement remains embedded in its original container")
+    later = [item for item in environments if item.full_start >= statement_environment.full_end]
+    proof = next((item for item in later if item.name == "proof"), None)
+    if proof is None:
+        errors.append(f"{field} has no proof environment after its statement")
+        return extraction_id
+    intervening = re.sub(r"\\par\b", "", text[statement_environment.full_end:proof.full_start]).strip()
+    if intervening:
+        errors.append(f"{field} proof is not immediately after its statement")
+    if LABEL.search(proof.content):
+        errors.append(f"{field} immediate proof must be an unlabeled bare proof")
+    if re.match(r"\s*\[", proof.content):
+        errors.append(f"{field} immediate proof must not have an optional title")
+    if contains_reference(proof.content, statement_label):
+        errors.append(f"{field} immediate proof must not restate its target by cross-reference")
+    container_relative = container.get("path")
+    container_text = raw_texts.get(container_relative, "")
+    container_environments = parsed_cache.setdefault(
+        container_relative, parse_environments(container_text, container_relative)
+    )
+    original = next(
+        (
+            item for item in container_environments
+            if item.name.removesuffix("*") == container.get("kind")
+            and item.full_start == container.get("span_start")
+            and item.full_end == container.get("span_end")
+        ),
+        None,
+    )
+    if original is None and container.get("kind") in {"example", "remark"}:
+        errors.append(f"{field} original semantic container cannot be located")
+        return extraction_id
+    original_content = container_contents.get(container.get("id"), "")
+    if not contains_reference(original_content, statement_label):
+        errors.append(f"{field} original container does not reference the extracted statement")
+    if container.get("kind") in {"example", "remark"}:
+        anchor = nonempty_text(extraction.get("container_anchor"), f"{field}.container_anchor", errors)
+        if anchor and original is not None and anchor not in direct_environment_labels(
+            original, container_relative
+        ):
+            errors.append(f"{field}.container_anchor is not declared in the original container")
+        if anchor and not contains_reference(statement_environment.content + proof.content, anchor):
+            errors.append(f"{field} statement/proof does not reference the original container")
+    return extraction_id
+
+
+def validate_current(
+    project: pathlib.Path,
+    config: dict[str, Any],
+    ledger: dict[str, Any],
+    gate: str,
+) -> tuple[dict[str, Any], list[str]]:
+    errors: list[str] = []
+    discovery, raw_texts, container_contents = discover(project, config)
+    if ledger.get("schema_version") != SCHEMA_VERSION or ledger.get("project") != project.name:
+        errors.append("ledger identity or schema is invalid")
+    recorded_scan = ledger.get("scan")
+    current_scan = discovery["scan"]
+    stable_scan_fields = (
+        "source_root",
+        "snapshot_sha256",
+        "config_sha256",
+        "files",
+        "audited_tex_file_count",
+        "auxiliary_file_count",
+        "unsupported_source_files",
+    )
+    if not isinstance(recorded_scan, dict) or any(
+        recorded_scan.get(field) != current_scan.get(field)
+        for field in stable_scan_fields
+    ):
+        errors.append("ledger scan is stale; run scan again")
+    containers = ledger.get("containers")
+    if not isinstance(containers, dict):
+        containers = {}
+        errors.append("ledger containers must be an object")
+    if set(containers) != set(discovery["containers"]):
+        errors.append("ledger container inventory is stale or incomplete")
+    discovery_fields = {
+        "id",
+        "path",
+        "kind",
+        "start_line",
+        "end_line",
+        "span_start",
+        "span_end",
+        "content_start",
+        "content_end",
+        "content_sha256",
+        "cue_hits",
+        "duplicate_ordinal",
+    }
+    parsed_cache: dict[str, list[Environment]] = {}
+    label_counts: dict[str, int] = {}
+    for relative, text in raw_texts.items():
+        parsed_cache[relative] = parse_environments(text, relative)
+        for label in LABEL.findall(text):
+            label_counts[label] = label_counts.get(label, 0) + 1
+    counts = {classification: 0 for classification in CLASSIFICATIONS}
+    extraction_ids: list[str] = []
+    for container_id, discovered in discovery["containers"].items():
+        container = containers.get(container_id)
+        field = f"container {container_id}"
+        if not isinstance(container, dict):
+            errors.append(f"{field} is missing")
+            continue
+        if any(container.get(key) != discovered.get(key) for key in discovery_fields):
+            errors.append(f"{field} discovery metadata is stale")
+        classification = container.get("classification")
+        if classification not in CLASSIFICATIONS:
+            errors.append(f"{field}.classification is invalid")
+            continue
+        counts[classification] += 1
+        nonempty_text(container.get("rationale"), f"{field}.rationale", errors)
+        if classification in {"pending", "formal-assertion-embedded"}:
+            errors.append(f"{field} has blocking classification {classification}")
+            continue
+        validate_review(container.get("review"), f"{field}.review", errors)
+        cues = container.get("cue_hits")
+        if not isinstance(cues, list):
+            errors.append(f"{field}.cue_hits is invalid")
+            cues = []
+        extractions = container.get("extractions")
+        if classification == "no-formal-assertion":
+            if container.get("nonformal_kind") not in NONFORMAL_KINDS:
+                errors.append(f"{field}.nonformal_kind is invalid")
+            if extractions not in ([], None):
+                errors.append(f"{field} classified as nonformal must not contain extractions")
+            if cues:
+                validate_cue_waiver(container.get("cue_waiver"), f"{field}.cue_waiver", errors)
+            continue
+        if container.get("nonformal_kind") not in ("", None):
+            errors.append(f"{field} extracted classification must not set nonformal_kind")
+        if cues:
+            validate_cue_waiver(container.get("cue_waiver"), f"{field}.cue_waiver", errors)
+        if not isinstance(extractions, list) or not extractions:
+            errors.append(f"{field} extracted classification requires at least one extraction")
+            continue
+        for index, extraction in enumerate(extractions):
+            extraction_ids.append(
+                validate_extraction(
+                    extraction,
+                    f"{field}.extractions[{index}]",
+                    container,
+                    project,
+                    config,
+                    raw_texts,
+                    container_contents,
+                    parsed_cache,
+                    label_counts,
+                    errors,
+                )
+            )
+    nonempty_ids = [item for item in extraction_ids if item]
+    if len(nonempty_ids) != len(set(nonempty_ids)):
+        errors.append("extraction IDs are not globally unique")
+    unsupported_files = discovery["scan"]["unsupported_source_files"]
+    if unsupported_files:
+        errors.append(
+            "canonical source contains "
+            f"{len(unsupported_files)} unsupported file(s); extend the shared scan profile"
+        )
+    if discovery["scan"]["audited_tex_file_count"] == 0:
+        errors.append(f"{gate} claim audit requires at least one audited TeX source file")
+    report = {
+        "schema_version": SCHEMA_VERSION,
+        "project": project.name,
+        "gate": gate,
+        "checked_at_utc": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat(),
+        "source_snapshot_sha256": discovery["scan"]["snapshot_sha256"],
+        "config_sha256": object_sha256(config),
+        "ledger_sha256": object_sha256(ledger),
+        "container_total": len(discovery["containers"]),
+        "classification_counts": counts,
+        "extraction_total": len(nonempty_ids),
+        "result": "pass" if not errors else "fail",
+        "errors": errors,
+    }
+    return report, errors
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog=".system/book-claim-harness")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    for command in ("init", "scan"):
+        command_parser = subparsers.add_parser(command)
+        command_parser.add_argument("project")
+    check_parser = subparsers.add_parser("check")
+    check_parser.add_argument("project")
+    check_parser.add_argument("--gate", choices=sorted(GATES), required=True)
+    return parser
+
+
+def main() -> None:
+    parser = build_parser()
+    arguments = parser.parse_args()
+    try:
+        root = repository_root()
+        project = resolve_project(root, arguments.project)
+        with project_lock(project):
+            config, ledger = initialize(project)
+            if arguments.command == "init":
+                print("book-claim-harness: initialized")
+            elif arguments.command == "scan":
+                ledger = scan_project(project, config, ledger)
+                counts: dict[str, int] = {}
+                for container in ledger["containers"].values():
+                    classification = container["classification"]
+                    counts[classification] = counts.get(classification, 0) + 1
+                print(
+                    "book-claim-harness: scanned "
+                    f"containers={len(ledger['containers'])}; "
+                    f"pending={counts.get('pending', 0)}"
+                )
+            elif arguments.command == "check":
+                report, errors = validate_current(project, config, ledger, arguments.gate)
+                atomic_json_write(managed_paths(project)["report"], report)
+                if errors:
+                    preview = "; ".join(errors[:5])
+                    if len(errors) > 5:
+                        preview += f"; and {len(errors) - 5} more"
+                    raise AuditError(preview)
+                print(
+                    "book-claim-harness: check passed "
+                    f"gate={arguments.gate}; containers={report['container_total']}; "
+                    f"extractions={report['extraction_total']}"
+                )
+            else:
+                parser.error("unknown command")
+    except AuditError as exc:
+        fail(str(exc))
+
+
+if __name__ == "__main__":
+    main()
