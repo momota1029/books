@@ -1,15 +1,4 @@
-# Mode-dependent privacy patterns are managed clone-locally in .git/info/exclude.
-# This shared file contains build artifacts that remain ignored in every mode.
-
-# LaTeX auxiliary and build logs.
-*.aux
-*.log
-*.fls
-*.fdb_latexmk
-*.synctex
-*.synctex.gz
-*.bbl
-*.blg
-*.toc
-*.out
-*.run.xml
+# Mode-dependent privacy and build-artifact patterns are managed clone-locally
+# in .git/info/exclude by .system/sync-mode-excludes.
+# Do not add broad patterns that match project .workspace files: verified
+# private mode must be able to checkpoint every permitted .workspace artifact.

@@ -146,7 +146,17 @@ private_probes=(
   papers/writing/__doctor_private_probe__/inbox/probe.pdf
   papers/submitted/__doctor_private_probe__/.workspace/source/probe.tex
   self-contained-math-notes/.workspace/source/probe.tex
+  self-contained-math-notes/.workspace/build/probe.aux
   self-contained-math-notes/.workspace/build/probe.log
+  self-contained-math-notes/.workspace/build/probe.fls
+  self-contained-math-notes/.workspace/build/probe.fdb_latexmk
+  self-contained-math-notes/.workspace/build/probe.synctex
+  self-contained-math-notes/.workspace/build/probe.synctex.gz
+  self-contained-math-notes/.workspace/build/probe.bbl
+  self-contained-math-notes/.workspace/build/probe.blg
+  self-contained-math-notes/.workspace/build/probe.toc
+  self-contained-math-notes/.workspace/build/probe.out
+  self-contained-math-notes/.workspace/build/probe.run.xml
   self-contained-math-notes/.workspace/cache/probe.bin
   self-contained-math-notes/.workspace/tmp/probe.tmp
   self-contained-math-notes/.workspace/logs/probe.log

@@ -167,7 +167,7 @@ sub-agent は共有 workspace を直接確認でき、変更は他担当にも�
 ## Sandbox 権限
 
 - sub-agent ごとに権限を設定できる場合、調査のみの依頼には `read-only`、通常の file 編集と test には `workspace-write` を基本とし、権限を不必要に広げない。個別設定がない場合は現在の session の権限内で実行し、権限名や機能の不在だけを理由に task を停止しない。
-- commit および通常の push までが明示的な作業範囲に含まれる場合、親は担当へ最初から `danger-full-access`、または Git metadata の更新と network 送信を可能にする同等の権限を渡す。`workspace-write` では `.git/index.lock` などを作成できず commit に失敗し得るため、commit 直前まで進めてから権限不足で作業を止めない。
+- commit および現在の branch の既定追跡先への通常の push は、下記「安全性と Git」の継続承認により、file 変更を伴う task の作業範囲へ既定で含まれる。親は担当へ最初から `danger-full-access`、または Git metadata の更新と network 送信を可能にする同等の権限を渡し、許可を再質問させない。`workspace-write` では `.git/index.lock` などを作成できず commit に失敗し得るため、commit 直前まで進めてから権限不足で作業を止めない。
 - 広い権限を渡しても、許可される操作はユーザーの依頼と指定パスの範囲に限る。無関係なファイルの変更、履歴改変、force-push、PR 作成などを許可するものではない。
 - Git を操作する担当は stage 前に対象 path、`git status`、`git diff` を確認し、依頼で明示された file だけを path 指定で stage・commit する。複数担当へ Git index の ownership を同時に与えない。
 - push は現在のブランチと追跡先を確認したうえで、既存の「安全性と Git」の方針に従い、その追跡先への通常の push に限る。
@@ -249,6 +249,9 @@ private な内部確認用 preview は、`unreviewed internal WIP` と input sna
 
 ## 安全性と Git
 
+- この repository では、task 内で生じた保存可能な変更について、対象差分の確認、明示 path の stage、適切な message での commit、現在の branch の既定追跡先への通常の push までを、今後のすべての task に対するユーザーの継続的な事前承認済み作業とする。ユーザーが各依頼で commit や push に言及していなくても作業範囲に含め、実行可否を質問せず、recovery checkpoint と task 完了の一部として agent が自律的に実行する。この継続承認は将来の thread と担当にも適用し、同じ許可を取り直さない。
+- commit または通常の push を実行できない場合は、許可を再確認するのではなく、まず repository mode、privacy・権利、branch、upstream、差分、index、hook、credential、network を安全な read-only 検査で確認し、依頼範囲内で解消できる問題は agent が解消して再試行する。安全に解消できない blocker だけを、未 commit・未送信の対象と再開条件とともに報告する。
+- 前項の継続承認は、task 外の差分の commit、別の送信先の選択、force-push、履歴改変、amend、PR 作成、外部公開、または repository の privacy・権利 gate の迂回を許可しない。ユーザーが特定の task で commit・push の停止、ローカル限定、まとめ方を指示した場合は、その限定指示を当該 scope で優先する。
 - ユーザーの既存変更を保持し、無関係な変更を混ぜない。
 - 削除、上書き、外部公開、送信、deploy など、重大または不可逆な操作は、親 Codex がユーザーの依頼範囲と対象を確認してから自ら実行するか、明示的に委譲する。
 - 編集開始前に branch、upstream、repository mode、`git status --short`、担当 task の対象 path を確認し、開始時点の既存変更を把握する。作業中に別担当またはユーザーの変更を検出した場合は自分の変更と仮定せず、ownership と差分を再確認する。
@@ -293,6 +296,7 @@ mode の切り替え、pre-commit、pre-push の各時点で `.system/repository
 - 実際に push する remote は configured private remote と完全に一致し、その時点でも GitHub visibility が `PRIVATE` でなければならない。
 - private mode では `inbox/`、`draft/`、`out/`、`.workspace/`、案件 directory を commit できる。ただし credential、secret、token、鍵、および契約・ライセンス・権利上 commit 自体が許されない data は含めない。
 - verified private mode では、`.workspace/` 配下の通常ファイルを `build/`、`cache/`、`tmp/`、`logs/` を含めて、上記の保存禁止対象を除き全件追跡可能かつ hard checkpoint の対象にする。repository 管理の `.gitignore`、clone-local exclude、または user 固有 exclude により対象ファイルが一件でも ignored のままなら、`git add -f` で迂回せず ignore policy を修正するまで checkpoint を blocker とする。
+- 共有 `.gitignore` には、`*.aux`、`*.log`、`*.fls`、`*.fdb_latexmk`、`*.synctex*`、`*.bbl`、`*.blg`、`*.toc`、`*.out`、`*.run.xml` 等、project の `.workspace/` 内の TeX 生成物に一致する広域 pattern を置かない。public mode で必要な TeX 生成物の除外は `.system/sync-mode-excludes` が clone-local な managed block として設定し、private mode への切替時に外す。private mode ではこれらの生成物も、保存禁止対象でない限り他の `.workspace/` file と同じ recovery checkpoint に含める。
 - private mode では、復旧可能性を既定で優先し、stable な `inbox/` input、canonical source、records、案件固有 tool、可読な `draft/` PDF と `STATUS`、必要な `out/` snapshot を、上記 hard checkpoint 契約に従って work unit ごとに commit・push する。公開・再配布ライセンスが未確定であることだけを理由に private backup から除外しないが、秘密情報、credential、または保存先への複製自体を明示的に禁ずる契約・ライセンス・権利条件がある data は除外して blocker を記録する。private remote への保存と `out/` の配布承認は別に判定する。
 - public mode 専用の privacy ignore は clone-local な `.git/info/exclude` の managed block とし、bootstrap、mode 切り替え、post-merge で同期する。private mode ではこの managed block を外し、通常の Git staging を可能にする。managed block 外の user 固有 exclude は保持する。
 - private remote の存在は内容の取得・保存・配布権限を与えない。`out/` の配布可否と GitHub visibility は別に審査する。

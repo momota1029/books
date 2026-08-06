@@ -112,7 +112,7 @@ cat >"$repo_dir/.public-files" <<'ALLOWLIST'
 .system/verify-private-remote
 public.txt
 ALLOWLIST
-printf '*.tmp\n' >"$repo_dir/.gitignore"
+cp -- "$source_root/.gitignore" "$repo_dir/.gitignore"
 printf 'public fixture\n' >"$repo_dir/public.txt"
 
 git init -q "$repo_dir"
@@ -358,6 +358,23 @@ printf '%s\n' \
   >"$checkpoint_project/.workspace/.gitignore"
 printf 'canonical fixture\n' >"$checkpoint_project/.workspace/source/main.tex"
 printf 'build fixture\n' >"$checkpoint_project/.workspace/build/document.pdf"
+tex_artifacts=(
+  document.aux
+  document.log
+  document.fls
+  document.fdb_latexmk
+  document.synctex
+  document.synctex.gz
+  document.bbl
+  document.blg
+  document.toc
+  document.out
+  document.run.xml
+)
+for tex_artifact in "${tex_artifacts[@]}"; do
+  printf 'TeX recovery fixture: %s\n' "$tex_artifact" \
+    >"$checkpoint_project/.workspace/build/$tex_artifact"
+done
 printf 'cache fixture\n' >"$checkpoint_project/.workspace/cache/state.bin"
 printf 'temporary fixture\n' >"$checkpoint_project/.workspace/tmp/work.state"
 printf 'log fixture\n' >"$checkpoint_project/.workspace/logs/build.log"
@@ -447,6 +464,15 @@ checkpoint_output=$(env FAKE_VISIBILITY=PRIVATE \
   fail private-checkpoint 'checkpoint command failed'
 }
 
+all_tex_artifacts_tracked=1
+for tex_artifact in "${tex_artifacts[@]}"; do
+  if ! git cat-file -e \
+      "HEAD:$checkpoint_project/.workspace/build/$tex_artifact"; then
+    all_tex_artifacts_tracked=0
+    break
+  fi
+done
+
 if grep -Fq 'push=ok dirty=0 ahead=0 created=yes' <<<"$checkpoint_output" &&
   grep -Fqx "$remote_name HEAD:refs/heads/checkpoint" "$CHECKPOINT_PUSH_LOG" &&
   git diff --cached --quiet &&
@@ -460,6 +486,7 @@ if grep -Fq 'push=ok dirty=0 ahead=0 created=yes' <<<"$checkpoint_output" &&
   git cat-file -e "HEAD:$checkpoint_project/.workspace/cache/state.bin" &&
   git cat-file -e "HEAD:$checkpoint_project/.workspace/tmp/work.state" &&
   git cat-file -e "HEAD:$checkpoint_project/.workspace/logs/build.log" &&
+  (( all_tex_artifacts_tracked == 1 )) &&
   [[ $(git rev-list --left-right --count \
     "$remote_name/checkpoint...HEAD") == $'0\t0' ]]; then
   pass private-checkpoint 'checkpoint commits every permitted private project file and pushes it'
