@@ -1,0 +1,248 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+export LC_ALL=C
+
+usage() {
+  cat >&2 <<'USAGE'
+usage: .system/private-checkpoint --scope <project-root> --message <message> \
+  --confirm-storage-reviewed
+
+Creates and pushes a verified private recovery checkpoint. The caller must
+first review every file in inbox/, draft/, out/, and .workspace/ for secrets,
+credentials, storage restrictions, rights restrictions, and task ownership.
+USAGE
+}
+
+fail() {
+  printf 'private-checkpoint: %s\n' "$1" >&2
+  exit 1
+}
+
+script_path=${BASH_SOURCE[0]}
+[[ ! -L $script_path ]] || fail 'script path is unsafe'
+script_dir=$(cd -P -- "$(dirname -- "$script_path")" && pwd) || \
+  fail 'repository root is unavailable'
+repo_root=$(git -C "$script_dir/.." rev-parse --show-toplevel 2>/dev/null) || \
+  fail 'repository root is unavailable'
+repo_root=$(cd -P -- "$repo_root" && pwd) || \
+  fail 'repository root is unavailable'
+[[ $script_dir == "$repo_root/.system" ]] || fail 'script path is unsafe'
+cd -- "$repo_root"
+
+scope_arg=
+commit_message=
+storage_reviewed=0
+while (( $# )); do
+  case "$1" in
+    --scope)
+      (( $# >= 2 )) || { usage; exit 2; }
+      scope_arg=$2
+      shift 2
+      ;;
+    --message)
+      (( $# >= 2 )) || { usage; exit 2; }
+      commit_message=$2
+      shift 2
+      ;;
+    --confirm-storage-reviewed)
+      storage_reviewed=1
+      shift
+      ;;
+    *)
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+[[ -n $scope_arg && -n $commit_message && $storage_reviewed == 1 ]] || {
+  usage
+  exit 2
+}
+[[ $commit_message == *[![:space:]]* ]] || fail 'commit message is invalid'
+[[ $commit_message != -* && $commit_message != *$'\n'* &&
+   $commit_message != *$'\r'* ]] || fail 'commit message is invalid'
+
+case "$scope_arg" in
+  /*) scope_candidate=$scope_arg ;;
+  *) scope_candidate=$repo_root/$scope_arg ;;
+esac
+[[ -d $scope_candidate && ! -L $scope_candidate ]] || \
+  fail 'project scope is unavailable or unsafe'
+scope_real=$(cd -P -- "$scope_candidate" && pwd) || \
+  fail 'project scope cannot be resolved'
+scope_lexical=$(python3 - "$scope_candidate" <<'PY'
+import os
+import sys
+
+print(os.path.abspath(sys.argv[1]))
+PY
+) || fail 'project scope cannot be normalized'
+[[ $scope_lexical == "$scope_real" ]] || fail 'project scope is unsafe'
+case "$scope_real/" in
+  "$repo_root/"*) ;;
+  *) fail 'project scope is outside this repository' ;;
+esac
+[[ $scope_real != "$repo_root" ]] || fail 'repository root is not a project scope'
+scope_relative=${scope_real#"$repo_root"/}
+
+declare -a private_paths=()
+for private_name in inbox draft out .workspace; do
+  private_path=$scope_real/$private_name
+  [[ -d $private_path && ! -L $private_path ]] || \
+    fail "project $private_name directory is unavailable or unsafe"
+  private_paths+=("$scope_relative/$private_name")
+done
+
+refresh=$repo_root/.system/instruction-refresh
+[[ -x $refresh ]] || fail 'instruction refresh checker is unavailable'
+if ! "$refresh" check --scope "$scope_real"; then
+  fail 'instruction refresh is not current for this project scope'
+fi
+
+mode=$(git config --local --get books.repositoryMode 2>/dev/null) || \
+  fail 'repository mode is unavailable'
+[[ $mode == private ]] || fail 'verified private mode is required'
+private_remote=$(git config --local --get books.privateRemote 2>/dev/null) || \
+  fail 'private remote is unavailable'
+[[ -n $private_remote && $private_remote != -* ]] || \
+  fail 'private remote is invalid'
+verify_private=$repo_root/.system/verify-private-remote
+[[ -x $verify_private ]] || fail 'private remote verifier is unavailable'
+"$verify_private" "$private_remote" >/dev/null || \
+  fail 'private remote verification failed'
+
+branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null) || \
+  fail 'a checked-out branch is required'
+upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' \
+  2>/dev/null) || fail 'an upstream branch is required'
+case "$upstream" in
+  "$private_remote"/*) ;;
+  *) fail 'upstream does not use the configured private remote' ;;
+esac
+remote_branch=${upstream#"$private_remote"/}
+git check-ref-format "refs/heads/$remote_branch" >/dev/null 2>&1 || \
+  fail 'upstream branch is invalid'
+
+checkpoint_tmp=$(mktemp -d "${TMPDIR:-/tmp}/books-private-checkpoint.XXXXXX") || \
+  fail 'temporary directory cannot be created'
+cleanup() {
+  rm -rf -- "$checkpoint_tmp"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+query_remote_branch_oid() {
+  local query_file=$checkpoint_tmp/remote-query
+  local remote_oid remote_ref extra
+
+  git ls-remote --exit-code --refs "$private_remote" \
+    "refs/heads/$remote_branch" >"$query_file" 2>/dev/null || return 1
+  [[ $(wc -l <"$query_file") == 1 ]] || return 1
+  IFS=$'\t' read -r remote_oid remote_ref extra <"$query_file" || return 1
+  [[ -z $extra && $remote_ref == "refs/heads/$remote_branch" ]] || return 1
+  [[ $remote_oid =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] || return 1
+  printf '%s\n' "$remote_oid"
+}
+
+gitlink_file=$checkpoint_tmp/gitlinks
+private_paths_have_no_gitlinks() {
+  local index_entry mode
+
+  git ls-files --stage -z -- "${private_paths[@]}" >"$gitlink_file" || return 1
+  while IFS= read -r -d '' index_entry; do
+    mode=${index_entry%% *}
+    [[ $mode != 160000 ]] || return 1
+  done <"$gitlink_file"
+}
+
+git diff --cached --quiet -- || \
+  fail 'Git index already contains changes from another task'
+unmerged_file=$checkpoint_tmp/unmerged
+git ls-files --unmerged -z >"$unmerged_file" || \
+  fail 'unmerged-path audit failed'
+[[ ! -s $unmerged_file ]] || fail 'unmerged paths prevent a checkpoint'
+
+for private_path in "${private_paths[@]}"; do
+  if find "$private_path" -mindepth 1 -name .git -print -quit | grep -q .; then
+    fail 'private project state contains a nested Git repository'
+  fi
+  if find "$private_path" -type l -print -quit | grep -q .; then
+    fail 'private project state contains a symlink'
+  fi
+  if find "$private_path" ! -type d ! -type f ! -type l -print -quit | grep -q .; then
+    fail 'private project state contains a non-regular entry'
+  fi
+done
+private_paths_have_no_gitlinks || \
+  fail 'private project state contains a Git link instead of ordinary files'
+
+ignored_file=$checkpoint_tmp/ignored
+git ls-files --others --ignored --exclude-standard -z -- \
+  "${private_paths[@]}" >"$ignored_file" || \
+  fail 'ignored private-path audit failed'
+[[ ! -s $ignored_file ]] || \
+  fail 'private project state contains ignored files; change the ignore policy before checkpointing'
+
+head_before=$(git rev-parse --verify 'HEAD^{commit}') || \
+  fail 'current HEAD cannot be resolved'
+remote_before=$(query_remote_branch_oid) || \
+  fail 'upstream branch OID cannot be verified on the private remote'
+[[ $remote_before == "$head_before" ]] || \
+  fail 'pre-existing unpushed or divergent commits prevent a project checkpoint'
+
+printf '%s\n' \
+  'private-checkpoint: caller confirmed storage, rights, secret, and ownership review.' >&2
+"$repo_root/.system/repository-mode" add -- "${private_paths[@]}" || \
+  fail 'private project state could not be staged'
+
+if ! private_paths_have_no_gitlinks; then
+  git reset -q -- "${private_paths[@]}" || \
+    fail 'Git link rejection could not restore the checkpoint index'
+  fail 'private project state staged a Git link instead of ordinary files'
+fi
+
+while IFS= read -r -d '' staged_path; do
+  case "$staged_path" in
+    "$scope_relative/inbox"/*|"$scope_relative/draft"/*|\
+    "$scope_relative/out"/*|"$scope_relative/.workspace"/*)
+      ;;
+    *) fail 'staged path escaped the selected project private state' ;;
+  esac
+done < <(git diff --cached --name-only -z --)
+
+created=no
+if ! git diff --cached --quiet --; then
+  git commit -m "$commit_message" || fail 'checkpoint commit failed'
+  created=yes
+fi
+
+git push "$private_remote" "HEAD:refs/heads/$remote_branch" || \
+  fail 'checkpoint push failed'
+
+"$verify_private" "$private_remote" >/dev/null || \
+  fail 'private remote verification failed after push'
+
+status_file=$checkpoint_tmp/status
+git status --porcelain=v1 -z --untracked-files=all -- \
+  "${private_paths[@]}" >"$status_file" || fail 'post-checkpoint status failed'
+[[ ! -s $status_file ]] || fail 'private project state remains dirty after checkpoint'
+git diff --cached --quiet -- || fail 'Git index is not empty after checkpoint'
+git ls-files --others --ignored --exclude-standard -z -- \
+  "${private_paths[@]}" >"$ignored_file" || \
+  fail 'post-checkpoint ignored-path audit failed'
+[[ ! -s $ignored_file ]] || \
+  fail 'private project state still contains ignored files after checkpoint'
+
+head_commit=$(git rev-parse --verify 'HEAD^{commit}') || \
+  fail 'checkpoint commit cannot be resolved'
+remote_commit=$(query_remote_branch_oid) || \
+  fail 'pushed branch OID cannot be verified on the private remote'
+[[ $remote_commit == "$head_commit" ]] || \
+  fail 'private remote branch does not contain the checkpoint commit'
+
+printf 'private-checkpoint: commit=%s push=ok dirty=0 ahead=0 created=%s branch=%s\n' \
+  "$head_commit" "$created" "$branch"

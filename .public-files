@@ -17,6 +17,7 @@ WORKFLOW_ROUTING.md
 .system/new-paper-project
 .system/new-paper-note-project
 .system/paper-evidence-harness
+.system/private-checkpoint
 .system/repository-mode
 .system/sync-mode-excludes
 .system/test-instruction-refresh

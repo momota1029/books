@@ -7,6 +7,7 @@ export GIT_CONFIG_SYSTEM=/dev/null
 export GIT_TERMINAL_PROMPT=0
 
 source_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+real_git=$(command -v git)
 test_root=$(mktemp -d)
 
 cleanup() {
@@ -57,6 +58,7 @@ fake_bin=$test_root/bin
 mkdir -p "$repo_dir/.system" "$repo_dir/.githooks" "$fake_bin"
 
 cp -- "$source_root/.system/verify-private-remote" \
+  "$source_root/.system/private-checkpoint" \
   "$source_root/.system/repository-mode" \
   "$source_root/.system/sync-mode-excludes" "$repo_dir/.system/"
 cp -- "$source_root/.githooks/check-public-tree" \
@@ -64,6 +66,7 @@ cp -- "$source_root/.githooks/check-public-tree" \
   "$source_root/.githooks/pre-commit" \
   "$source_root/.githooks/pre-push" "$repo_dir/.githooks/"
 chmod +x "$repo_dir/.system/verify-private-remote" \
+  "$repo_dir/.system/private-checkpoint" \
   "$repo_dir/.system/repository-mode" \
   "$repo_dir/.system/sync-mode-excludes" \
   "$repo_dir/.githooks/check-public-tree" \
@@ -104,6 +107,7 @@ cat >"$repo_dir/.public-files" <<'ALLOWLIST'
 .githooks/pre-commit
 .githooks/pre-push
 .system/repository-mode
+.system/private-checkpoint
 .system/sync-mode-excludes
 .system/verify-private-remote
 public.txt
@@ -310,6 +314,190 @@ if expect_success env FAKE_VISIBILITY=PRIVATE \
   pass 10 'push guard verification'
 else
   fail 10 'push guard verification'
+fi
+
+cat >.system/instruction-refresh <<'REFRESH'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ ${1:-} == check && ${2:-} == --scope && -n ${3:-} && $# == 3 ]]
+REFRESH
+chmod +x .system/instruction-refresh
+
+checkpoint_project=papers/writing/checkpoint-example
+mkdir -p -- \
+  "$checkpoint_project/inbox" \
+  "$checkpoint_project/draft" \
+  "$checkpoint_project/out" \
+  "$checkpoint_project/.workspace/source" \
+  "$checkpoint_project/.workspace/build" \
+  "$checkpoint_project/.workspace/cache" \
+  "$checkpoint_project/.workspace/tmp" \
+  "$checkpoint_project/.workspace/logs" \
+  "$checkpoint_project/.workspace/blocked"
+printf '/blocked/\n' >"$checkpoint_project/.workspace/.gitignore"
+printf 'previously ignored fixture\n' \
+  >"$checkpoint_project/.workspace/blocked/data.txt"
+
+git update-ref "refs/remotes/$remote_name/checkpoint" HEAD
+git branch --set-upstream-to="$remote_name/checkpoint" >/dev/null
+
+if expect_failure env FAKE_VISIBILITY=PRIVATE \
+    .system/private-checkpoint --scope "$checkpoint_project" \
+      --message 'checkpoint without storage review' &&
+  expect_failure env FAKE_VISIBILITY=PRIVATE \
+    .system/private-checkpoint --scope "$checkpoint_project" \
+      --message 'checkpoint with ignored state' --confirm-storage-reviewed &&
+  git diff --cached --quiet; then
+  pass checkpoint-rejection 'checkpoint requires review confirmation and rejects ignored private state'
+else
+  fail checkpoint-rejection 'checkpoint accepted unreviewed or ignored private state'
+fi
+
+printf '%s\n' \
+  '# Verified private mode tracks every permitted .workspace file.' \
+  >"$checkpoint_project/.workspace/.gitignore"
+printf 'canonical fixture\n' >"$checkpoint_project/.workspace/source/main.tex"
+printf 'build fixture\n' >"$checkpoint_project/.workspace/build/document.pdf"
+printf 'cache fixture\n' >"$checkpoint_project/.workspace/cache/state.bin"
+printf 'temporary fixture\n' >"$checkpoint_project/.workspace/tmp/work.state"
+printf 'log fixture\n' >"$checkpoint_project/.workspace/logs/build.log"
+printf 'input fixture\n' >"$checkpoint_project/inbox/input.txt"
+printf 'draft fixture\n' >"$checkpoint_project/draft/STATUS.md"
+printf 'output fixture\n' >"$checkpoint_project/out/result.txt"
+
+export REAL_GIT=$real_git
+export CHECKPOINT_PUSH_LOG=$test_root/checkpoint-push.log
+cat >"$fake_bin/git" <<'FAKE_GIT'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ ${1:-} == push ]]; then
+  (( $# == 3 )) || exit 2
+  remote_name=$2
+  refspec=$3
+  case "$refspec" in
+    HEAD:refs/heads/*) ;;
+    *) exit 2 ;;
+  esac
+  remote_branch=${refspec#HEAD:refs/heads/}
+  if [[ ${FAKE_PUSH_SKIP_UPDATE:-0} != 1 ]]; then
+    "$REAL_GIT" update-ref "refs/remotes/$remote_name/$remote_branch" HEAD
+  fi
+  printf '%s %s\n' "$remote_name" "$refspec" >"$CHECKPOINT_PUSH_LOG"
+  exit 0
+fi
+
+if [[ ${1:-} == ls-remote ]]; then
+  (( $# == 5 )) || exit 2
+  [[ $2 == --exit-code && $3 == --refs ]] || exit 2
+  remote_name=$4
+  remote_ref=$5
+  case "$remote_ref" in
+    refs/heads/*) ;;
+    *) exit 2 ;;
+  esac
+  remote_branch=${remote_ref#refs/heads/}
+  remote_oid=$("$REAL_GIT" rev-parse --verify \
+    "refs/remotes/$remote_name/$remote_branch") || exit 2
+  printf '%s\t%s\n' "$remote_oid" "$remote_ref"
+  exit 0
+fi
+
+exec "$REAL_GIT" "$@"
+FAKE_GIT
+chmod +x "$fake_bin/git"
+
+printf 'pre-existing ahead fixture\n' >>public.txt
+git add -- public.txt
+git commit -q -m 'pre-existing unpushed commit'
+if expect_failure env FAKE_VISIBILITY=PRIVATE \
+    .system/private-checkpoint --scope "$checkpoint_project" \
+      --message 'checkpoint with pre-existing ahead commit' \
+      --confirm-storage-reviewed &&
+  git diff --cached --quiet; then
+  pass checkpoint-ahead-rejection 'checkpoint refuses pre-existing unpushed commits'
+else
+  fail checkpoint-ahead-rejection 'checkpoint pushed a commit owned by another work unit'
+fi
+git update-ref "refs/remotes/$remote_name/checkpoint" HEAD
+
+nested_repository=$checkpoint_project/.workspace/nested-repository
+git init -q "$nested_repository"
+git -C "$nested_repository" config user.name 'Nested Repository Test'
+git -C "$nested_repository" config user.email nested@example.invalid
+printf 'nested ordinary file\n' >"$nested_repository/data.txt"
+git -C "$nested_repository" add -- data.txt
+git -C "$nested_repository" commit -q -m 'nested fixture'
+if expect_failure env FAKE_VISIBILITY=PRIVATE \
+    .system/private-checkpoint --scope "$checkpoint_project" \
+      --message 'checkpoint with nested repository' \
+      --confirm-storage-reviewed &&
+  git diff --cached --quiet; then
+  pass checkpoint-gitlink-rejection 'checkpoint rejects nested Git repositories'
+else
+  fail checkpoint-gitlink-rejection 'checkpoint replaced ordinary files with a Git link'
+fi
+mv -- "$nested_repository" "$test_root/nested-repository-rejected"
+
+checkpoint_output=$(env FAKE_VISIBILITY=PRIVATE \
+  .system/private-checkpoint --scope "$checkpoint_project" \
+    --message 'private recovery checkpoint' --confirm-storage-reviewed \
+    2>&1) || {
+  printf '%s\n' "$checkpoint_output" >&2
+  fail private-checkpoint 'checkpoint command failed'
+}
+
+if grep -Fq 'push=ok dirty=0 ahead=0 created=yes' <<<"$checkpoint_output" &&
+  grep -Fqx "$remote_name HEAD:refs/heads/checkpoint" "$CHECKPOINT_PUSH_LOG" &&
+  git diff --cached --quiet &&
+  [[ -z $(git status --porcelain --untracked-files=all -- \
+    "$checkpoint_project/inbox" "$checkpoint_project/draft" \
+    "$checkpoint_project/out" "$checkpoint_project/.workspace") ]] &&
+  [[ -z $(git ls-files --others --ignored --exclude-standard -- \
+    "$checkpoint_project/.workspace") ]] &&
+  git cat-file -e "HEAD:$checkpoint_project/.workspace/blocked/data.txt" &&
+  git cat-file -e "HEAD:$checkpoint_project/.workspace/build/document.pdf" &&
+  git cat-file -e "HEAD:$checkpoint_project/.workspace/cache/state.bin" &&
+  git cat-file -e "HEAD:$checkpoint_project/.workspace/tmp/work.state" &&
+  git cat-file -e "HEAD:$checkpoint_project/.workspace/logs/build.log" &&
+  [[ $(git rev-list --left-right --count \
+    "$remote_name/checkpoint...HEAD") == $'0\t0' ]]; then
+  pass private-checkpoint 'checkpoint commits every permitted private project file and pushes it'
+else
+  fail private-checkpoint 'checkpoint did not close private project state'
+fi
+
+printf 'remote verification fixture\n' \
+  >>"$checkpoint_project/.workspace/source/main.tex"
+if expect_failure env FAKE_VISIBILITY=PRIVATE FAKE_PUSH_SKIP_UPDATE=1 \
+    .system/private-checkpoint --scope "$checkpoint_project" \
+      --message 'checkpoint whose fake push is not stored remotely' \
+      --confirm-storage-reviewed &&
+  git diff --cached --quiet &&
+  [[ $(git rev-parse --verify "$remote_name/checkpoint") != \
+    $(git rev-parse --verify 'HEAD^{commit}') ]]; then
+  pass checkpoint-remote-verification 'checkpoint verifies the actual remote branch OID'
+else
+  fail checkpoint-remote-verification 'checkpoint trusted a local push result without remote storage'
+fi
+git update-ref "refs/remotes/$remote_name/checkpoint" HEAD
+
+checkpoint_head=$(git rev-parse --verify 'HEAD^{commit}')
+checkpoint_output=$(env FAKE_VISIBILITY=PRIVATE \
+  .system/private-checkpoint --scope "$checkpoint_project" \
+    --message 'unchanged private recovery checkpoint' \
+    --confirm-storage-reviewed 2>&1) || {
+  printf '%s\n' "$checkpoint_output" >&2
+  fail private-checkpoint-noop 'unchanged checkpoint command failed'
+}
+
+if grep -Fq 'push=ok dirty=0 ahead=0 created=no' <<<"$checkpoint_output" &&
+  [[ $(git rev-parse --verify 'HEAD^{commit}') == "$checkpoint_head" ]] &&
+  [[ $(git rev-list --left-right --count \
+    "$remote_name/checkpoint...HEAD") == $'0\t0' ]]; then
+  pass private-checkpoint-noop 'unchanged checkpoint pushes without an empty commit'
+else
+  fail private-checkpoint-noop 'unchanged checkpoint created a commit or left unpushed state'
 fi
 
 # Public-mode pre-push is intentionally out of scope here: the copied hook has

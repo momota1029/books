@@ -1,4 +1,2 @@
-/build/
-/cache/
-/tmp/
-/logs/
+# Public-mode privacy ignores are managed clone-locally.
+# Verified private mode tracks every permitted .workspace file.

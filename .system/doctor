@@ -48,6 +48,7 @@ required_scripts=(
   .system/new-paper-project
   .system/new-paper-note-project
   .system/paper-evidence-harness
+  .system/private-checkpoint
   .system/test-new-paper-project
   .system/test-new-paper-note-project
   .system/test-paper-evidence-harness
@@ -134,6 +135,14 @@ private_probes=(
   papers/writing/__doctor_private_probe__/inbox/probe.pdf
   papers/submitted/__doctor_private_probe__/.workspace/source/probe.tex
   self-contained-math-notes/.workspace/source/probe.tex
+  self-contained-math-notes/.workspace/build/probe.log
+  self-contained-math-notes/.workspace/cache/probe.bin
+  self-contained-math-notes/.workspace/tmp/probe.tmp
+  self-contained-math-notes/.workspace/logs/probe.log
+  paper-lecture-notes/.workspace/build/probe.log
+  paper-lecture-notes/.workspace/cache/probe.bin
+  paper-lecture-notes/.workspace/tmp/probe.tmp
+  paper-lecture-notes/.workspace/logs/probe.log
 )
 
 exclude_path="$(git rev-parse --git-path info/exclude 2>/dev/null)" || \
