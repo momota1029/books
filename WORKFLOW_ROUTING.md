@@ -15,7 +15,7 @@ LLM は意図と文脈の抽出に使うが、route、曖昧時の停止条件�
 | ユーザーの最終目的 | route | 開始または継続方法 |
 |---|---|---|
 | 新しい数学的結果を証明し、完全な研究論文として投稿したい | `papers/writing/<paper-id>/` | 既存の一致 project がなければ、エージェントが `.system/new-paper-project <paper-id>` を実行する |
-| 一冊以上の書籍を資料として精読・統合し、self-contained な再構成講義ノートを作りたい | `book-translations/<project-id>/` | 既存の一致 project がなければ、エージェントが `.system/new-book-project <project-id>` を実行する |
+| 一冊以上の書籍を資料として精読・統合し、合意範囲を完全被覆する self-contained な再構成講義ノートを作りたい | `book-translations/<project-id>/` | 既存の一致 project がなければ、エージェントが `.system/new-book-project <project-id>` を実行する。再構成を要約・抜粋の許可と解釈しない |
 | 書籍を原書順・原構成のまま忠実に全訳したい | 自動 route なし | `book-translations/` は再構成講義ノートを目的とするため誤配属せず、忠実翻訳専用 workflow を作るか、再構成講義ノートへ目的を変えるか確認する |
 | 既存論文を理解し、検証可能な解説・講義ノートを作りたい | `paper-lecture-notes/<project-id>/` | 一致 project がなければ、エージェントが `.system/new-paper-note-project <project-id>` を実行する |
 | 長編の self-contained な数学講義ノート・数学ノートを作りたい | `self-contained-math-notes/` | singleton workspace の既存状態を確認して開始または継続する |

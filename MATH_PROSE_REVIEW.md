@@ -21,6 +21,7 @@
 ## レビュー体制と記録
 
 - authoring 担当とは分けた read-only review phase を原則とする。修正は finding を受けた authoring 担当が行い、reviewer は修正後の対象を再検証する。
+- raw inventory、coverage matrix、mapping edge の意味保存を独立 review として認定する reviewer は、authoring 担当だけでなく、対象 inventory/mapping の作成・編集、semantic verification flag の付与、source-analysis 上の採否・同一視・統合判断を行った担当とも分ける。artifact 作成者による自己検査は WIP の一次確認には使えるが、independent review flag または promotion gate の証拠にしない。
 - review artifact は project の private な `.workspace/records/` に保存し、public Git へ commit または push しない。
 - 各 finding には severity、位置、対象の命題または表現、問題の根拠、修正案、再検証結果を記録する。
 - 自動検査は索引、参照、形式上の候補を見つける補助とし、内容の正しさの判定を代替させない。
@@ -47,6 +48,7 @@ severity は次のように分類する。
 
 レビュー対象の source revision、想定読者、self-contained の範囲、利用可能な定義・結果・出典、対象となる本文・見出し・定理環境・表・図・caption・演習・付録を確定する。
 対象外とした範囲も記録し、未確認部分を確認済みと混同しない。
+source の完全被覆を要求する project では、登録済み inventory だけを review universe にしない。authoring と inventory 作成から独立した reviewer が、採用した raw source snapshot の先頭から末尾までを page、logical range、rendered region 等の原形式に応じて直接走査し、すべての content-bearing span/region/range が独立して意味照合できる粒度の leaf Source Unit に少なくとも一つ所属し、leaf 間の重なりが明示した包含または cross-reference に根拠を持つことを inventory と照合する。catch-all unit、異なる実質要素の束ね、未分類領域、位置不明領域、意図しない重複、欠落を blocking とし、登録済み Source Unit の件数や downstream mapping が整っていることを raw-inventory audit の代用にしない。
 
 すべての主要な主張について truth status を次から明示し、本文の modality と一致させる。
 
@@ -60,7 +62,7 @@ severity は次のように分類する。
 
 ## phase 1b: 成果物 identity と教育設計 audit
 
-原書、論文その他の source 群から再構成講義ノートを作る場合は、数学的 fidelity の検査とは別に、最終成果が独立した講義ノートとして設計されているかを検査する。source の順序や文章を保つことを fidelity と取り違えない。
+原書、論文その他の source 群から再構成講義ノートを作る場合は、数学的 fidelity と完全被覆の検査とは別に、最終成果が独立した講義ノートとして設計されているかを検査する。source の順序や文章を保つことを fidelity と取り違えない。完全被覆と成果物 identity は独立した hard gate であり、一方の合格、件数、品質を他方の代用または相殺に使わない。同一の source inventory、destination source、coverage matrix revision に対して両方を検査し、どちらかの finding を直す編集が本文、構成、mapping または scope を変えた場合は affected scope の両 gate を再度開く。
 
 - まず source と照合せず成果物だけを読み、想定読者、学習目標、章節ごとの中心的な問い、必要な前提、到達点、最小読解経路が理解できるか確認する。source を知らなければ文章の目的や接続を理解できない unit は major とする。
 - 各 Destination Unit に、動機、見通し、定義、概念説明、主張、証明、例・反例、比較、応用、振り返り、navigation 等の教育的役割と、その位置に置く理由があるか確認する。原書の次の paragraph だから続く、という理由を認めない。
@@ -68,6 +70,7 @@ severity は次のように分類する。
 - 原文の連続 passage を逐次訳した後で見出しや順序だけを変えたもの、単語を置換した paragraph、source ごとの塊を接続しただけの章を再構成済みと判定しない。概念 cluster と dependency graph を単位に統合・分割し、成果物固有の問い、説明、比較、接続、まとめを持たせる。
 - source-derived な意味、仮定、modality、proof idea、例の役割、出典上の帰属は保持する一方、直接引用、歴史的見解、著者間の相違を示す箇所等を除き、原著者を成果物の継続的な語り手にしない。本文の基本 voice が講義ノート自身の説明になっているか確認する。
 - 再構成の成否を語彙差、文の長短、原文との表面的な非類似度だけで判定しない。教育構造を変えずに言い換えただけのものは不合格とし、意味保存に必要な定型的表現の一致は問題としない。
+- identity 改善のための統合、分割、移動、短縮後に、収録対象の各 leaf Source Unit から Destination Unit への forward mapping を全件照合し、仮定、一般性、modality、proof idea、非自明な推論、例・反例・図表・脚注・演習の教育的役割、歴史的・書誌的意味、source 間の差が保存されているか確認する。一つの Destination Unit へ多数の Source Unit が対応していても、mapping edge ごとの意味照合なしに covered と数えない。抜取検査、coverage 率、総数等式だけで完全被覆を認定しない。
 
 ## phase 2: definition-before-use audit
 
@@ -164,7 +167,7 @@ unit ごとに statement、proof、definition、label、ref の件数を集計�
 - 数式、量化、否定、条件、modality、定義域、式番号を、記号・意味・論理単位で原文と厳密に照合する。日本語の語順や構文の逐語性より、意味、論理、合意した self-contained 性と文脈上の行間が正確に伝わることを優先する。
 - source error の疑いを黙って修正しない。原文、問題、採用判断、根拠を private review record に残し、必要に応じて訳注・正誤注として原著者の主張と区別する。
 - 記号統一や節の再構成が原文の依存順と意味を変えていないか確認する。
-- 再構成講義ノートでは phase 1b を適用し、source inventory の完全被覆と、成果物の章節・説明単位・voice の独立した教育設計が両立しているか確認する。source order、paragraph 対応、原著者の語りを保持しただけの成果を、正確な翻訳であっても完成した再構成講義ノートとは判定しない。
+- 再構成講義ノートでは phase 1b を適用し、source inventory の全 leaf Source Unit の完全被覆と、成果物の章節・説明単位・voice の独立した教育設計が同一 snapshot で両立しているか確認する。source order、paragraph 対応、原著者の語りを保持しただけの成果を、正確な翻訳であっても完成した再構成講義ノートとは判定しない。逆に、教育設計を独立させた結果として内容が欠落、弱化、無根拠に一般化した成果も不合格とする。
 
 ### 論文
 
@@ -186,6 +189,8 @@ finding を severity 順に修正し、修正が定義、依存、後続証明�
 draft に完成 unit を含める場合、各 unit は次の unit gate を満たさなければならない。
 
 - [ ] source 群から再構成する unit では、phase 1b の成果物 identity audit が完了し、固有の学習目標、中心的な問い、前提、到達点、教育的役割と説明戦略があり、連続 passage の逐次訳または原 paragraph の言い換えになっていない。
+- [ ] source 群から再構成する unit では、収録対象の全 leaf Source Unit に forward mapping と mapping edge ごとの意味照合があり、全 leaf Destination Unit に reverse mapping または明示した編者補足種別がある。統合・分割・移動・短縮による意味、仮定、一般性、proof idea、非自明な段階、教育的役割、source 間の差の欠落が 0 件で、identity gate と coverage gate が同じ revision に対して有効である。
+- [ ] source の完全被覆を要求する unit では、登録済み Source Unit から逆算せず raw source snapshot を直接走査した independent inventory audit が完了し、未登録 content-bearing span/region/range、catch-all unit、誤った leaf 粒度、意図しない重複が 0 件である。
 - [ ] definition-before-use violation が 0 件である。
 - [ ] 定義依存 graph の推移閉包に、未定義の技術語、曖昧な同義語置換、正当化されない循環が 0 件であり、新出専門語の原語と glossary・索引が整合している。
 - [ ] unjustified step が 0 件である。
@@ -208,6 +213,8 @@ WIP を `reviewed` の本文に混ぜず、`out/` では WIP を 0 件にする�
 - [ ] blocking finding が 0 件である。
 - [ ] major finding が解消済み、または影響を理解した明示合意と理由が記録されている。
 - [ ] source 群から再構成した成果物では、phase 1b の全体 audit と source comparison が完了し、原書順・paragraph 対応・原著者の継続的 voice に依存しない講義ノート固有の教育構造が検証済みである。
+- [ ] source 群から再構成した成果物では、採用 source snapshot の全 leaf Source Unit と成果物の全 leaf Destination Unit に対する双方向 coverage と edge ごとの意味保存を全件検証し、未処理、未統合、出典・補足種別不明、弱化、強化、欠落、broken mapping が 0 件である。identity review と coverage review は同一 revision を対象とし、どちらかの後の変更で stale になっていない。
+- [ ] source 群から再構成した成果物では、inventory 作成と authoring から独立した reviewer が、採用 raw source snapshot の全 page/logical range/rendered region を直接再走査する raw-inventory audit を完了し、すべての content-bearing 領域と正しい粒度の leaf Source Unit が全件対応している。登録済み inventory、coverage 率、schema の整合だけから完全性を推定していない。
 - [ ] definition-before-use violation が 0 件である。
 - [ ] 定義依存 graph の推移閉包、専門用語の初出原語、局所読解用の定義・前提リンクが検証済みである。
 - [ ] unjustified step と unlabeled formal claim が 0 件である。
