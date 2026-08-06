@@ -87,13 +87,14 @@ record_all_na_visual_review() {
 }
 
 write_pdf() {
-  python3 - "$1" "${2:-}" "${3:-}" <<'PY'
+  python3 - "$1" "${2:-}" "${3:-}" "${4:-}" <<'PY'
 import json
 import pathlib
 import sys
 
 registry_path = pathlib.Path(sys.argv[2]) if sys.argv[2] else None
 placement_backing = sys.argv[3]
+extra_text = sys.argv[4]
 ids = []
 visual_placements = []
 code_placements = []
@@ -115,6 +116,8 @@ for visual_id, backing_id in visual_placements:
     commands.extend(["0 -12 Td", f"(placed visual: {visual_id} via {backing_id}) Tj"])
 for asset_id in code_placements:
     commands.extend(["0 -12 Td", f"(placed code: {asset_id}) Tj"])
+if extra_text:
+    commands.extend(["0 -12 Td", f"({extra_text}) Tj"])
 commands.append("ET")
 stream = "\n".join(commands).encode()
 objects = [
@@ -265,6 +268,202 @@ if $config_identity_rejected && $registry_identity_rejected; then
 else
   fail project-ledger 'cross-project config or registry was accepted'
 fi
+
+presentation_project=$project/presentation-notes
+make_isolated_project "$presentation_project"
+if "$repo_dir/.system/paper-evidence-harness" init "$presentation_project" \
+    --artifact-set presentation >/dev/null &&
+  [[ -d $presentation_project/.workspace/source/notes ]] &&
+  [[ -d $presentation_project/.workspace/source/slides ]] &&
+  python3 - "$presentation_project/.workspace/tools/evidence-harness.json" <<'PY'
+import json
+import pathlib
+import sys
+
+config = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert config["artifact_set"] == "presentation"
+assert set(config["artifacts"]) == {"notes", "slides"}
+assert config["artifacts"]["notes"]["status"] == "draft/STATUS.notes.md"
+assert config["artifacts"]["slides"]["status"] == "draft/STATUS.slides.md"
+assert config["artifacts"]["slides"]["evidence_scope"] == "referenced"
+PY
+then
+  pass artifact-init 'presentation profile initializes separate notes and slide artifacts'
+else
+  fail artifact-init 'presentation artifact initialization'
+fi
+rewrite_with_sed '0,/"evidence_scope": "all-current"/s//"evidence_scope": "referenced"/' \
+  "$presentation_project/.workspace/tools/evidence-harness.json"
+if expect_failure "$repo_dir/.system/paper-evidence-harness" status \
+    "$presentation_project"; then
+  pass artifact-config 'presentation artifact contract cannot be weakened in project config'
+else
+  fail artifact-config 'artifact-specific evidence scope tampering was accepted'
+fi
+rewrite_with_sed '0,/"evidence_scope": "referenced"/s//"evidence_scope": "all-current"/' \
+  "$presentation_project/.workspace/tools/evidence-harness.json"
+rewrite_with_sed 's/"min_stability_interval_seconds": 1.0/"min_stability_interval_seconds": 0.0/' \
+  "$presentation_project/.workspace/tools/evidence-harness.json"
+printf '%s\n' 'synthetic paper fixture' >"$presentation_project/inbox/paper.txt"
+"$repo_dir/.system/paper-evidence-harness" scan "$presentation_project" >/dev/null
+"$repo_dir/.system/paper-evidence-harness" scan "$presentation_project" >/dev/null
+presentation_paper=$(python3 - \
+  "$presentation_project/.workspace/records/evidence/registry.json" <<'PY'
+import json
+import pathlib
+import sys
+
+registry = json.loads(pathlib.Path(sys.argv[1]).read_text())
+print(next(iter(registry["assets"])))
+PY
+)
+"$repo_dir/.system/paper-evidence-harness" annotate \
+  "$presentation_project" "$presentation_paper" \
+  --disposition include --rights-status cleared --license CC0-1.0 \
+  --visibility reader --privacy-review complete \
+  --public-summary 'synthetic source paper fixture' \
+  --visual-review complete --link-review complete \
+  --attachment-review complete --reviewer fixture-reviewer >/dev/null
+"$repo_dir/.system/paper-evidence-harness" record-ingestion \
+  "$presentation_project" "$presentation_paper" \
+  --revision-id V1 --status adopted --reason fixture \
+  --source-kind paper --paper-id PAPER-MAIN --paper-role primary \
+  --paper-scope 'complete synthetic fixture' >/dev/null
+printf '%s\n' \
+  '\input{.workspace/source/generated/evidence-macros.tex}' \
+  '\begin{document}' \
+  "\\EvidenceAsset{$presentation_paper}" \
+  '\input{.workspace/source/generated/evidence-index.tex}' \
+  '\end{document}' \
+  >"$presentation_project/.workspace/source/notes/main.tex"
+printf '%s\n' \
+  '\input{.workspace/source/generated/evidence-macros.tex}' \
+  '\begin{document}' \
+  "\\EvidenceAsset{$presentation_paper}" \
+  '\end{document}' \
+  >"$presentation_project/.workspace/source/slides/main.tex"
+"$repo_dir/.system/paper-evidence-harness" scan "$presentation_project" >/dev/null
+mkdir -p "$presentation_project/.workspace/build"
+printf '%s\n' \
+  "PWD $presentation_project" \
+  "INPUT $presentation_project/.workspace/source/notes/main.tex" \
+  "INPUT $presentation_project/.workspace/source/generated/evidence-macros.tex" \
+  "INPUT $presentation_project/.workspace/source/generated/evidence-index.tex" \
+  >"$presentation_project/.workspace/build/notes.fls"
+printf '%s\n' \
+  "PWD $presentation_project" \
+  "INPUT $presentation_project/.workspace/source/slides/main.tex" \
+  "INPUT $presentation_project/.workspace/source/generated/evidence-macros.tex" \
+  >"$presentation_project/.workspace/build/slides.fls"
+printf '%s\n' \
+  "PWD $presentation_project" \
+  "INPUT $presentation_project/.workspace/source/slides/main.tex" \
+  "INPUT $presentation_project/.workspace/source/generated/evidence-macros.tex" \
+  "INPUT $presentation_project/.workspace/source/generated/evidence-index.tex" \
+  >"$presentation_project/.workspace/build/slides-index.fls"
+printf '%s\n' \
+  "PWD $presentation_project" \
+  "INPUT $presentation_project/.workspace/source/notes/main.tex" \
+  "INPUT $presentation_project/.workspace/source/slides/main.tex" \
+  "INPUT $presentation_project/.workspace/source/generated/evidence-macros.tex" \
+  "INPUT $presentation_project/.workspace/source/generated/evidence-index.tex" \
+  >"$presentation_project/.workspace/build/combined.fls"
+write_pdf "$presentation_project/.workspace/build/notes.pdf" \
+  "$presentation_project/.workspace/records/evidence/registry.json" '' NOTES
+write_pdf "$presentation_project/.workspace/build/slides.pdf" \
+  "$presentation_project/.workspace/records/evidence/registry.json" '' SLIDES
+write_pdf "$presentation_project/.workspace/build/slides-extra.pdf" \
+  "$presentation_project/.workspace/records/evidence/registry.json" '' \
+  ASSET-UNREFERENCED
+if expect_failure "$repo_dir/.system/paper-evidence-harness" record-build \
+    "$presentation_project" --artifact slides \
+    --fls .workspace/build/slides-index.fls \
+    --pdf .workspace/build/slides.pdf --offline yes &&
+  expect_failure "$repo_dir/.system/paper-evidence-harness" record-build \
+    "$presentation_project" --artifact notes \
+    --fls .workspace/build/combined.fls \
+    --pdf .workspace/build/notes.pdf --offline yes &&
+  expect_failure "$repo_dir/.system/paper-evidence-harness" record-build \
+    "$presentation_project" --artifact slides \
+    --fls .workspace/build/slides.fls \
+    --pdf .workspace/build/slides-extra.pdf --offline yes; then
+  pass artifact-isolation 'slides reject the full index, mixed source closure, and out-of-scope evidence'
+else
+  fail artifact-isolation 'artifact build isolation checks'
+fi
+if expect_failure "$repo_dir/.system/paper-evidence-harness" record-build \
+    "$presentation_project" --fls .workspace/build/notes.fls \
+    --pdf .workspace/build/notes.pdf --offline yes &&
+  "$repo_dir/.system/paper-evidence-harness" record-build \
+    "$presentation_project" --artifact notes \
+    --fls .workspace/build/notes.fls --pdf .workspace/build/notes.pdf \
+    --offline yes >/dev/null &&
+  expect_failure "$repo_dir/.system/paper-evidence-harness" record-build \
+    "$presentation_project" --artifact slides \
+    --fls .workspace/build/slides.fls --pdf .workspace/build/notes.pdf \
+    --offline yes &&
+  "$repo_dir/.system/paper-evidence-harness" record-build \
+    "$presentation_project" --artifact slides \
+    --fls .workspace/build/slides.fls --pdf .workspace/build/slides.pdf \
+    --offline yes >/dev/null; then
+  pass artifact-build 'build receipts bind each output to its own canonical source closure'
+else
+  fail artifact-build 'artifact-specific build receipt behavior'
+fi
+cp -- "$presentation_project/.workspace/build/notes.pdf" \
+  "$presentation_project/draft/presentation-notes.pdf"
+cp -- "$presentation_project/.workspace/build/slides.pdf" \
+  "$presentation_project/draft/presentation-slides.pdf"
+python3 - "$presentation_project" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+project = pathlib.Path(sys.argv[1])
+registry = json.loads((project / ".workspace/records/evidence/registry.json").read_text())
+manifest = json.loads((project / ".workspace/records/paper-ingestion-manifest.json").read_text())
+catalog = registry["receipts"]["builds"][-1]["catalog_fingerprint"]
+ingestion = manifest["snapshot_fingerprint"]
+for artifact_id in ("notes", "slides"):
+    pdf_name = f"presentation-{artifact_id}.pdf"
+    pdf = project / "draft" / pdf_name
+    source = registry["scan"]["artifacts"][artifact_id]["source_fingerprint"]
+    status = project / "draft" / f"STATUS.{artifact_id}.md"
+    status.write_text(
+        "# fixture status\n"
+        "- state: ready\n"
+        "- WIP_units: none\n"
+        "- blocked_units: none\n"
+        f"- evidence_artifact_id: `{artifact_id}`\n"
+        f"- evidence_catalog_fingerprint: `{catalog}`\n"
+        f"- evidence_source_fingerprint: `{source}`\n"
+        f"- evidence_ingestion_fingerprint: `{ingestion}`\n"
+        f"- evidence_pdf: `{pdf_name}`\n"
+        f"- evidence_pdf_sha256: `{hashlib.sha256(pdf.read_bytes()).hexdigest()}`\n",
+        encoding="utf-8",
+    )
+PY
+if "$repo_dir/.system/paper-evidence-harness" gate \
+    "$presentation_project" --phase shared-draft >/dev/null; then
+  pass artifact-gate 'shared-draft gate requires and validates both independent artifacts'
+else
+  fail artifact-gate 'completed presentation artifact pair'
+fi
+mv -- "$presentation_project/draft/STATUS.slides.md" \
+  "$test_root/STATUS.slides.md"
+if "$repo_dir/.system/paper-evidence-harness" gate \
+    "$presentation_project" --phase shared-draft \
+    >"$test_root/missing-slide-status.log" 2>&1; then
+  fail artifact-status 'multi-artifact gate accepted a missing slide STATUS'
+elif grep -Fq 'draft STATUS is missing for artifact slides' \
+    "$test_root/missing-slide-status.log"; then
+  pass artifact-status 'notes STATUS cannot stand in for the slide artifact STATUS'
+else
+  fail artifact-status 'missing slide STATUS failed for an unrelated reason'
+fi
+mv -- "$test_root/STATUS.slides.md" \
+  "$presentation_project/draft/STATUS.slides.md"
 
 paper_metadata_project=$project/paper-metadata-notes
 make_isolated_project "$paper_metadata_project"

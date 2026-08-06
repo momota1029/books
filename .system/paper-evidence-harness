@@ -33,6 +33,10 @@ import zipfile
 
 
 SCHEMA_VERSION = 1
+ARTIFACT_ID = re.compile(r"[a-z][a-z0-9-]{0,31}")
+ARTIFACT_SETS = {"notes", "presentation"}
+ARTIFACT_KINDS = {"lecture-notes", "beamer-slides"}
+EVIDENCE_SCOPES = {"all-current", "referenced"}
 TEXT_SUFFIXES = {
     ".bib", ".cfg", ".cls", ".csv", ".ipynb", ".jl", ".json", ".md",
     ".py", ".r", ".rst", ".sty", ".tex", ".toml", ".tsv", ".txt",
@@ -311,10 +315,45 @@ def read_json(path: pathlib.Path) -> dict:
     return value
 
 
-def default_config(project: pathlib.Path) -> dict:
+def default_artifacts(artifact_set: str) -> dict[str, dict]:
+    if artifact_set == "notes":
+        return {
+            "notes": {
+                "kind": "lecture-notes",
+                "source_root": ".workspace/source",
+                "status": "draft/STATUS.md",
+                "evidence_scope": "all-current",
+                "requires_evidence_index": True,
+            },
+        }
+    if artifact_set == "presentation":
+        return {
+            "notes": {
+                "kind": "lecture-notes",
+                "source_root": ".workspace/source/notes",
+                "status": "draft/STATUS.notes.md",
+                "evidence_scope": "all-current",
+                "requires_evidence_index": True,
+            },
+            "slides": {
+                "kind": "beamer-slides",
+                "source_root": ".workspace/source/slides",
+                "status": "draft/STATUS.slides.md",
+                "evidence_scope": "referenced",
+                "requires_evidence_index": False,
+            },
+        }
+    raise HarnessError(f"unsupported artifact set: {artifact_set}")
+
+
+def default_config(project: pathlib.Path, artifact_set: str = "notes") -> dict:
+    if artifact_set not in ARTIFACT_SETS:
+        raise HarnessError(f"unsupported artifact set: {artifact_set}")
     return {
         "schema_version": SCHEMA_VERSION,
         "project": project.name,
+        "artifact_set": artifact_set,
+        "artifacts": default_artifacts(artifact_set),
         "discovery_scope": (
             "adopted local inputs and canonical note source, plus their direct URLs; "
             "downloaded pages are not crawled until explicitly adopted"
@@ -343,6 +382,69 @@ def default_config(project: pathlib.Path) -> dict:
             "max_rendered_bytes": 536870912,
         },
     }
+
+
+def artifact_specs(project: pathlib.Path, config: dict) -> dict[str, dict]:
+    artifact_set = config.get("artifact_set", "notes")
+    if artifact_set not in ARTIFACT_SETS:
+        raise HarnessError("unsupported artifact set")
+    expected_artifacts = default_artifacts(artifact_set)
+    raw_artifacts = config.get("artifacts")
+    if raw_artifacts is None:
+        raw_artifacts = default_artifacts("notes")
+    if not isinstance(raw_artifacts, dict) or not raw_artifacts:
+        raise HarnessError("artifact configuration must be a non-empty object")
+    expected_ids = {"notes"} if artifact_set == "notes" else {"notes", "slides"}
+    if set(raw_artifacts) != expected_ids:
+        raise HarnessError("artifact configuration does not match artifact_set")
+
+    source_parent = ensure_within(project / ".workspace" / "source", project)
+    draft_parent = ensure_within(project / "draft", project)
+    normalized: dict[str, dict] = {}
+    source_paths: list[pathlib.Path] = []
+    status_paths: set[pathlib.Path] = set()
+    for artifact_id, raw_spec in sorted(raw_artifacts.items()):
+        if not ARTIFACT_ID.fullmatch(artifact_id) or not isinstance(raw_spec, dict):
+            raise HarnessError("artifact configuration contains an invalid artifact ID")
+        if raw_spec != expected_artifacts[artifact_id]:
+            raise HarnessError(
+                f"artifact configuration does not match the fixed profile: {artifact_id}"
+            )
+        kind = raw_spec.get("kind")
+        evidence_scope = raw_spec.get("evidence_scope")
+        requires_index = raw_spec.get("requires_evidence_index")
+        if kind not in ARTIFACT_KINDS:
+            raise HarnessError(f"artifact kind is invalid: {artifact_id}")
+        if evidence_scope not in EVIDENCE_SCOPES:
+            raise HarnessError(f"artifact evidence scope is invalid: {artifact_id}")
+        if not isinstance(requires_index, bool):
+            raise HarnessError(f"artifact index requirement is invalid: {artifact_id}")
+        source_value = raw_spec.get("source_root")
+        status_value = raw_spec.get("status")
+        if not isinstance(source_value, str) or not isinstance(status_value, str):
+            raise HarnessError(f"artifact paths are invalid: {artifact_id}")
+        for value in (source_value, status_value):
+            pure = pathlib.PurePosixPath(value)
+            if pure.is_absolute() or ".." in pure.parts:
+                raise HarnessError(f"artifact path is unsafe: {artifact_id}")
+        source_path = ensure_within(project / source_value, source_parent)
+        status_path = ensure_within(project / status_value, draft_parent)
+        if status_path.parent != draft_parent or status_path in status_paths:
+            raise HarnessError(f"artifact STATUS path is invalid or duplicated: {artifact_id}")
+        status_paths.add(status_path)
+        source_paths.append(source_path)
+        normalized[artifact_id] = {
+            "kind": kind,
+            "source_root": source_path.relative_to(project).as_posix(),
+            "status": status_path.relative_to(project).as_posix(),
+            "evidence_scope": evidence_scope,
+            "requires_evidence_index": requires_index,
+        }
+    for index, source_path in enumerate(source_paths):
+        for other in source_paths[index + 1:]:
+            if source_path == other or source_path in other.parents or other in source_path.parents:
+                raise HarnessError("artifact source roots overlap")
+    return normalized
 
 
 def default_registry(project: pathlib.Path, config: dict) -> dict:
@@ -427,18 +529,29 @@ def validate_registry_shape(registry: dict) -> None:
         raise HarnessError("registry build receipts must be an array")
 
 
-def initialize(project: pathlib.Path) -> tuple[dict, dict]:
+def initialize(
+    project: pathlib.Path, requested_artifact_set: str | None = None,
+) -> tuple[dict, dict]:
     paths = managed_paths(project)
     for key in ("config", "registry", "audit", "ingestion", "transaction"):
         reject_symlink_chain(paths[key], project)
     if paths["config"].exists():
         config = read_json(paths["config"])
     else:
-        config = default_config(project)
+        config = default_config(project, requested_artifact_set or "notes")
     if config.get("schema_version") != SCHEMA_VERSION:
         raise HarnessError("unsupported config schema version")
     if config.get("project") != project.name:
         raise HarnessError("config project identity does not match the selected project")
+    configured_artifact_set = config.get("artifact_set", "notes")
+    if (
+        requested_artifact_set is not None
+        and configured_artifact_set != requested_artifact_set
+    ):
+        raise HarnessError(
+            "existing evidence harness uses a different artifact set"
+        )
+    artifacts = artifact_specs(project, config)
     if paths["registry"].exists():
         registry = read_json(paths["registry"])
     else:
@@ -453,6 +566,8 @@ def initialize(project: pathlib.Path) -> tuple[dict, dict]:
         "scan_tmp", "visual_reviews", "visual_review_tmp",
     ):
         secure_directory(paths[key], project)
+    for spec in artifacts.values():
+        secure_directory(project / spec["source_root"], project)
     if not paths["config"].exists():
         write_json(paths["config"], config)
     if not paths["registry"].exists():
@@ -1614,8 +1729,28 @@ def github_repository(url: str) -> tuple[str, str, str, bool] | None:
     return owner, repository, revision, revision_requires_review
 
 
-def note_source_texts(project: pathlib.Path, config: dict):
-    source_root = ensure_within(project / config["note_source"], project)
+def source_artifact_id(
+    project: pathlib.Path, config: dict, path: pathlib.Path,
+) -> str:
+    for artifact_id, spec in artifact_specs(project, config).items():
+        source_root = ensure_within(project / spec["source_root"], project)
+        if path == source_root or source_root in path.parents:
+            return artifact_id
+    return ""
+
+
+def note_source_texts(
+    project: pathlib.Path, config: dict, artifact_id: str | None = None,
+):
+    artifacts = artifact_specs(project, config)
+    if artifact_id is not None:
+        if artifact_id not in artifacts:
+            raise HarnessError(f"unknown artifact: {artifact_id}")
+        source_root = ensure_within(
+            project / artifacts[artifact_id]["source_root"], project,
+        )
+    else:
+        source_root = ensure_within(project / config["note_source"], project)
     generated_root = managed_paths(project)["generated"]
     for path in sorted(source_root.rglob("*")):
         if not path.is_file() or path.is_symlink() or generated_root in path.parents:
@@ -1623,7 +1758,8 @@ def note_source_texts(project: pathlib.Path, config: dict):
         if path.suffix.lower() in TEXT_SUFFIXES:
             snapshot = stable_file_snapshot(path, capture_limit=20 * 1024 * 1024)
             content = snapshot.get("data", b"").decode("utf-8", errors="replace")
-            yield path, content, snapshot
+            owning_artifact = artifact_id or source_artifact_id(project, config, path)
+            yield path, content, snapshot, owning_artifact
 
 
 def strip_tex_comments(content: str) -> str:
@@ -1653,18 +1789,23 @@ def strip_tex_comments(content: str) -> str:
     return literal_environment.sub("", without_comments)
 
 
-def collect_note_references(project: pathlib.Path, config: dict) -> tuple[list[dict], set[str], set[str], list[dict]]:
+def collect_note_references(
+    project: pathlib.Path, config: dict, artifact_id: str | None = None,
+) -> tuple[list[dict], set[str], set[str], list[dict]]:
     references: list[dict] = []
     all_text: list[str] = []
     tex_text: list[str] = []
     source_files: list[dict] = []
-    for path, content, snapshot in note_source_texts(project, config):
+    for path, content, snapshot, owning_artifact in note_source_texts(
+        project, config, artifact_id,
+    ):
         relative = path.relative_to(project).as_posix()
         if not snapshot["stable"]:
             raise HarnessError(f"canonical source changed while hashing: {relative}")
         source_files.append({
             "path": relative, "size": snapshot["size"],
             "mtime_ns": snapshot["mtime_ns"], "sha256": snapshot["sha256"],
+            "artifact": owning_artifact,
         })
         suffix = path.suffix.lower()
         if suffix == ".tex":
@@ -1676,31 +1817,45 @@ def collect_note_references(project: pathlib.Path, config: dict) -> tuple[list[d
             continue
         for line_number, line in enumerate(content.splitlines(), 1):
             for match in NOTE_REF_RE.finditer(line):
-                references.append({
+                reference = {
                     "kind": match.group(1).lower(), "id": match.group(2),
                     "path": relative, "line": line_number,
-                })
+                }
+                if owning_artifact:
+                    reference["artifact"] = owning_artifact
+                references.append(reference)
             for match in ORIGINAL_CAPTION_RE.finditer(line):
-                references.append({
+                original_caption = {
                     "kind": "original-caption", "id": match.group(1),
                     "path": relative, "line": line_number,
-                })
-                references.append({
+                }
+                visual_reference = {
                     "kind": "visual", "id": match.group(1),
                     "path": relative, "line": line_number,
-                })
+                }
+                if owning_artifact:
+                    original_caption["artifact"] = owning_artifact
+                    visual_reference["artifact"] = owning_artifact
+                references.append(original_caption)
+                references.append(visual_reference)
             if suffix == ".tex":
                 for match in VISUAL_PLACEMENT_RE.finditer(line):
-                    references.append({
+                    reference = {
                         "kind": "visual-placement", "id": match.group(1),
                         "backing_id": match.group(2),
                         "path": relative, "line": line_number,
-                    })
+                    }
+                    if owning_artifact:
+                        reference["artifact"] = owning_artifact
+                    references.append(reference)
                 for match in CODE_PLACEMENT_RE.finditer(line):
-                    references.append({
+                    reference = {
                         "kind": "code-placement", "id": match.group(1),
                         "path": relative, "line": line_number,
-                    })
+                    }
+                    if owning_artifact:
+                        reference["artifact"] = owning_artifact
+                    references.append(reference)
     joined = "\n".join(all_text)
     input_pattern = re.compile(r"\\(?:input|include)\s*\{([^}]*)\}")
     inputs = [
@@ -1803,6 +1958,17 @@ def discover(project: pathlib.Path, config: dict, previous: dict) -> dict:
     registry["visuals"] = visuals
 
     note_refs, note_urls, integrations, source_files = collect_note_references(project, config)
+    artifact_scans: dict[str, dict] = {}
+    for artifact_id, spec in artifact_specs(project, config).items():
+        _, _, artifact_integrations, artifact_source_files = collect_note_references(
+            project, config, artifact_id,
+        )
+        artifact_scans[artifact_id] = {
+            "kind": spec["kind"],
+            "integrations": sorted(artifact_integrations),
+            "source_files": artifact_source_files,
+            "source_fingerprint": manifest_fingerprint(artifact_source_files),
+        }
     for url in note_urls:
         discovered_urls.setdefault(url, set()).add("canonical-note-source")
     resources: dict[str, dict] = {}
@@ -1909,6 +2075,8 @@ def discover(project: pathlib.Path, config: dict, previous: dict) -> dict:
         "completed_at": now_utc(), "integrations": sorted(integrations),
         "note_source_files": source_files,
         "source_fingerprint": manifest_fingerprint(source_files),
+        "artifact_set": config.get("artifact_set", "notes"),
+        "artifacts": artifact_scans,
         "asset_count": len([a for a in assets.values() if a.get("state") == "current"]),
         "visual_count": len([v for v in visuals.values() if v.get("state") == "current"]),
         "resource_count": len([r for r in resources.values() if r.get("state") == "current"]),
@@ -1940,6 +2108,8 @@ def discovery_fingerprint(registry: dict) -> str:
     view["note_references"] = registry.get("note_references", [])
     view["integrations"] = registry.get("scan", {}).get("integrations", [])
     view["note_source_files"] = registry.get("scan", {}).get("note_source_files", [])
+    view["artifact_set"] = registry.get("scan", {}).get("artifact_set", "notes")
+    view["artifacts"] = registry.get("scan", {}).get("artifacts", {})
     payload = json.dumps(view, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -2066,9 +2236,21 @@ def record_ingestion(project: pathlib.Path, config: dict, registry: dict, args: 
     return manifest
 
 
-def status_fields(project: pathlib.Path) -> dict[str, str]:
-    preferred = project / "draft" / "STATUS.md"
-    candidates = [preferred] if preferred.is_file() else sorted((project / "draft").glob("STATUS*"))
+def status_fields(
+    project: pathlib.Path, config: dict | None = None,
+    artifact_id: str | None = None,
+) -> dict[str, str]:
+    if config is not None and artifact_id is not None:
+        artifacts = artifact_specs(project, config)
+        if artifact_id not in artifacts:
+            raise HarnessError(f"unknown artifact: {artifact_id}")
+        preferred = ensure_within(
+            project / artifacts[artifact_id]["status"], project / "draft",
+        )
+        candidates = [preferred] if preferred.is_file() else []
+    else:
+        preferred = project / "draft" / "STATUS.md"
+        candidates = [preferred] if preferred.is_file() else sorted((project / "draft").glob("STATUS*"))
     if not candidates:
         return {}
     path = candidates[0]
@@ -2393,6 +2575,53 @@ def reference_ids(registry: dict, kind: str | None = None) -> set[str]:
     }
 
 
+def artifact_reference_records(registry: dict, artifact_id: str) -> list[dict]:
+    configured_ids = set(registry.get("scan", {}).get("artifacts", {}))
+    legacy_single = not configured_ids or configured_ids == {"notes"}
+    return [
+        reference for reference in registry.get("note_references", [])
+        if reference.get("artifact") == artifact_id
+        or (
+            artifact_id == "notes"
+            and legacy_single
+            and not reference.get("artifact")
+        )
+    ]
+
+
+def artifact_scan_state(registry: dict, artifact_id: str) -> dict:
+    state = registry.get("scan", {}).get("artifacts", {}).get(artifact_id)
+    if isinstance(state, dict):
+        return state
+    if artifact_id == "notes":
+        return {
+            "kind": "lecture-notes",
+            "integrations": registry.get("scan", {}).get("integrations", []),
+            "source_files": registry.get("scan", {}).get("note_source_files", []),
+            "source_fingerprint": registry.get("scan", {}).get("source_fingerprint", ""),
+        }
+    return {}
+
+
+def artifact_evidence_ids(
+    registry: dict, artifact_id: str, evidence_scope: str,
+) -> set[str]:
+    entries = all_entries(registry)
+    if evidence_scope == "all-current":
+        return {
+            entry_id for entry_id, (_, entry) in entries.items()
+            if entry.get("state", "current") == "current"
+        }
+    if evidence_scope != "referenced":
+        raise HarnessError(f"unknown artifact evidence scope: {evidence_scope}")
+    return {
+        reference.get("id", "")
+        for reference in artifact_reference_records(registry, artifact_id)
+        if reference.get("id") in entries
+        and entries[reference["id"]][1].get("state", "current") == "current"
+    }
+
+
 def is_code_asset(asset: dict) -> bool:
     if asset.get("kind") == "source-code":
         return True
@@ -2402,7 +2631,9 @@ def is_code_asset(asset: dict) -> bool:
     )
 
 
-def required_placement_ids(registry: dict) -> tuple[set[str], set[str]]:
+def required_placement_ids(
+    registry: dict, evidence_ids: set[str] | None = None,
+) -> tuple[set[str], set[str]]:
     required_visuals = {
         visual_id for visual_id, visual in registry.get("visuals", {}).items()
         if visual.get("state", "current") == "current"
@@ -2414,6 +2645,9 @@ def required_placement_ids(registry: dict) -> tuple[set[str], set[str]]:
         and asset.get("annotations", {}).get("disposition") == "explain"
         and is_code_asset(asset)
     }
+    if evidence_ids is not None:
+        required_visuals &= evidence_ids
+        required_code &= evidence_ids
     return required_visuals, required_code
 
 
@@ -2480,28 +2714,46 @@ def visual_backing_publication_error(asset: dict) -> str:
     return ""
 
 
-def required_rendered_placements(registry: dict) -> tuple[set[tuple[str, str]], set[str]]:
-    required_visuals, required_code = required_placement_ids(registry)
+def required_rendered_placements(
+    registry: dict, artifact_id: str | None = None,
+    evidence_ids: set[str] | None = None,
+) -> tuple[set[tuple[str, str]], set[str]]:
+    required_visuals, required_code = required_placement_ids(registry, evidence_ids)
+    references = (
+        artifact_reference_records(registry, artifact_id)
+        if artifact_id is not None else registry.get("note_references", [])
+    )
     visual_pairs = {
         (reference.get("id", ""), reference.get("backing_id", ""))
-        for reference in registry.get("note_references", [])
+        for reference in references
         if reference.get("kind") == "visual-placement"
         and reference.get("id") in required_visuals
     }
-    code_ids = reference_ids(registry, "code-placement") & required_code
+    code_ids = {
+        reference.get("id", "") for reference in references
+        if reference.get("kind") == "code-placement"
+    } & required_code
     return visual_pairs, code_ids
 
 
 def build_placement_bindings(
     project: pathlib.Path, registry: dict, input_paths: set[pathlib.Path],
+    artifact_id: str | None = None, evidence_ids: set[str] | None = None,
 ) -> dict[str, dict[str, object]]:
-    required_visuals, required_code = required_placement_ids(registry)
+    required_visuals, required_code = required_placement_ids(registry, evidence_ids)
+    references = (
+        artifact_reference_records(registry, artifact_id)
+        if artifact_id is not None else registry.get("note_references", [])
+    )
     visual_records: dict[str, list[dict]] = {}
-    for reference in registry.get("note_references", []):
+    for reference in references:
         if reference.get("kind") == "visual-placement":
             visual_records.setdefault(reference.get("id", ""), []).append(reference)
     visual_markers = set(visual_records)
-    code_markers = reference_ids(registry, "code-placement")
+    code_markers = {
+        reference.get("id", "") for reference in references
+        if reference.get("kind") == "code-placement"
+    }
     missing_visual_markers = sorted(required_visuals - visual_markers)
     missing_code_markers = sorted(required_code - code_markers)
     if missing_visual_markers:
@@ -2662,7 +2914,6 @@ def inspect_gate(project: pathlib.Path, config: dict, registry: dict, phase: str
     original_caption_refs = reference_ids(registry, "original-caption")
     visual_placement_refs = reference_ids(registry, "visual-placement")
     code_placement_refs = reference_ids(registry, "code-placement")
-    integrations = set(registry.get("scan", {}).get("integrations", []))
     for _, entry in entries.values():
         inspect_reader_visibility(entry, strict, errors, warnings)
     if managed_paths(project)["transaction"].exists():
@@ -2743,10 +2994,21 @@ def inspect_gate(project: pathlib.Path, config: dict, registry: dict, phase: str
         if strict and not adopted_papers:
             errors.append("isolated project has no adopted source paper with a Paper ID")
 
-    if "index" not in integrations:
-        (errors if strict else warnings).append("canonical note source does not input evidence-index.tex")
-    if "macros" not in integrations:
-        (errors if strict else warnings).append("canonical note source does not input evidence-macros.tex")
+    for artifact_id, spec in artifact_specs(project, config).items():
+        artifact_state = artifact_scan_state(registry, artifact_id)
+        integrations = set(artifact_state.get("integrations", []))
+        if not artifact_state.get("source_files"):
+            (errors if strict else warnings).append(
+                f"canonical source is empty for artifact: {artifact_id}"
+            )
+        if spec["requires_evidence_index"] and "index" not in integrations:
+            (errors if strict else warnings).append(
+                f"canonical source does not input evidence-index.tex for artifact: {artifact_id}"
+            )
+        if "macros" not in integrations:
+            (errors if strict else warnings).append(
+                f"canonical source does not input evidence-macros.tex for artifact: {artifact_id}"
+            )
     fingerprint = catalog_fingerprint(registry)
     for name in ("evidence-index.tex", "evidence-macros.tex"):
         path = managed_paths(project)["generated"] / name
@@ -3161,81 +3423,180 @@ def inspect_gate(project: pathlib.Path, config: dict, registry: dict, phase: str
 
     if strict:
         builds = registry.get("receipts", {}).get("builds", [])
-        current_builds = [build for build in builds if build.get("catalog_fingerprint") == fingerprint]
-        valid_builds = []
-        for build in current_builds:
-            try:
-                fls = ensure_within(project / build.get("fls", ""), project)
-                pdf = ensure_within(project / build.get("pdf", ""), project)
-                valid = (
-                    fls.is_file() and not fls.is_symlink()
-                    and pdf.is_file() and not pdf.is_symlink()
-                    and sha256_file(fls) == build.get("fls_sha256")
-                    and sha256_file(pdf) == build.get("pdf_sha256")
-                    and build.get("source_fingerprint") == registry.get("scan", {}).get("source_fingerprint")
-                    and build.get("ingestion_fingerprint") == current_ingestion_fingerprint
+        artifacts = artifact_specs(project, config)
+        multiple_artifacts = len(artifacts) > 1
+        selected_builds: dict[str, list[dict]] = {}
+        status_pdfs: dict[str, tuple[pathlib.Path, str]] = {}
+        for artifact_id, artifact in artifacts.items():
+            suffix = f" for artifact {artifact_id}" if multiple_artifacts else ""
+            artifact_source_fingerprint = artifact_scan_state(
+                registry, artifact_id,
+            ).get("source_fingerprint", "")
+            expected_ids = artifact_evidence_ids(
+                registry, artifact_id, artifact["evidence_scope"],
+            )
+            current_builds = [
+                build for build in builds
+                if build.get("catalog_fingerprint") == fingerprint
+                and (
+                    build.get("artifact_id") == artifact_id
+                    or (
+                        not multiple_artifacts
+                        and artifact_id == "notes"
+                        and not build.get("artifact_id")
+                    )
                 )
-                if valid:
-                    expected_ids = {
-                        entry_id for entry_id, (_, entry) in entries.items()
-                        if entry.get("state", "current") == "current"
-                    }
-                    rendered_visuals, rendered_code = required_rendered_placements(registry)
-                    pages, _ = validate_pdf_file(
-                        pdf, expected_ids, rendered_visuals, rendered_code,
-                    )
-                    expected_bindings = build_placement_bindings(
-                        project, registry,
-                        fls_input_paths(project, fls.read_text(encoding="utf-8", errors="replace")),
-                    )
+            ]
+            valid_builds = []
+            for build in current_builds:
+                try:
+                    fls = ensure_within(project / build.get("fls", ""), project)
+                    pdf = ensure_within(project / build.get("pdf", ""), project)
                     valid = (
-                        pages == build.get("pdf_pages")
-                        and sorted(expected_ids) == build.get("evidence_ids")
-                        and expected_bindings == build.get(
-                            "placement_bindings", {"visuals": {}, "code": {}}
-                        )
+                        fls.is_file() and not fls.is_symlink()
+                        and pdf.is_file() and not pdf.is_symlink()
+                        and sha256_file(fls) == build.get("fls_sha256")
+                        and sha256_file(pdf) == build.get("pdf_sha256")
+                        and build.get("source_fingerprint") == artifact_source_fingerprint
+                        and build.get("ingestion_fingerprint") == current_ingestion_fingerprint
                     )
-            except (HarnessError, OSError):
-                valid = False
-            if valid:
-                valid_builds.append(build)
-            else:
-                warnings.append(f"current-catalog build receipt no longer matches its files: {build.get('recorded_at')}")
-        if not valid_builds:
-            errors.append("no build receipt matches the current catalog")
-        elif promotion and not any(build.get("offline") is True for build in valid_builds):
-            errors.append("promotion requires a current offline build receipt")
-        fields = status_fields(project)
-        if not fields:
-            errors.append("draft STATUS is missing")
-        else:
+                    if valid:
+                        rendered_visuals, rendered_code = required_rendered_placements(
+                            registry, artifact_id, expected_ids,
+                        )
+                        allowed_rendered_ids = (
+                            artifact_allowed_rendered_ids(
+                                registry, artifact_id, expected_ids,
+                            )
+                            if artifact["evidence_scope"] == "referenced" else None
+                        )
+                        pages, _ = validate_pdf_file(
+                            pdf, expected_ids, rendered_visuals, rendered_code,
+                            allowed_rendered_ids,
+                        )
+                        input_paths = fls_input_paths(
+                            project,
+                            fls.read_text(encoding="utf-8", errors="replace"),
+                        )
+                        validate_artifact_input_isolation(
+                            project, config, artifact_id, input_paths,
+                        )
+                        expected_bindings = build_placement_bindings(
+                            project, registry,
+                            input_paths,
+                            artifact_id,
+                            expected_ids,
+                        )
+                        valid = (
+                            pages == build.get("pdf_pages")
+                            and sorted(expected_ids) == build.get("evidence_ids")
+                            and expected_bindings == build.get(
+                                "placement_bindings", {"visuals": {}, "code": {}}
+                            )
+                        )
+                except (HarnessError, OSError):
+                    valid = False
+                if valid:
+                    valid_builds.append(build)
+                else:
+                    warnings.append(
+                        "current-catalog build receipt no longer matches its files"
+                        f"{suffix}: {build.get('recorded_at')}"
+                    )
+            if not valid_builds:
+                errors.append(f"no build receipt matches the current catalog{suffix}")
+            elif promotion and not any(
+                build.get("offline") is True for build in valid_builds
+            ):
+                errors.append(
+                    f"promotion requires a current offline build receipt{suffix}"
+                )
+            fields = status_fields(project, config, artifact_id)
+            if not fields:
+                errors.append(f"draft STATUS is missing{suffix}")
+                continue
+            if multiple_artifacts and fields.get("evidence_artifact_id") != artifact_id:
+                errors.append(f"draft STATUS evidence_artifact_id is missing or stale{suffix}")
             state = fields.get("state", "").lower()
             if not state or any(word in state for word in ("stale", "failed", "building")):
-                errors.append("draft STATUS does not describe a current readable result")
+                errors.append(
+                    f"draft STATUS does not describe a current readable result{suffix}"
+                )
             if promotion and any(word in state for word in ("wip", "blocked")):
-                errors.append("promotion STATUS still declares WIP or blocked work")
+                errors.append(f"promotion STATUS still declares WIP or blocked work{suffix}")
             if promotion:
                 for key in ("WIP_units", "blocked_units"):
                     value = fields.get(key, "").strip().lower()
                     if value and value not in {"0", "none", "なし", "[]"}:
-                        errors.append(f"promotion STATUS has unresolved {key}")
+                        errors.append(f"promotion STATUS has unresolved {key}{suffix}")
             expected_fields = {
                 "evidence_catalog_fingerprint": fingerprint,
-                "evidence_source_fingerprint": registry.get("scan", {}).get("source_fingerprint", ""),
+                "evidence_source_fingerprint": artifact_source_fingerprint,
                 "evidence_ingestion_fingerprint": current_ingestion_fingerprint,
             }
             for key, expected in expected_fields.items():
                 if not expected or fields.get(key) != expected:
-                    errors.append(f"draft STATUS {key} is missing or stale")
+                    errors.append(f"draft STATUS {key} is missing or stale{suffix}")
             try:
-                draft_pdf = ensure_within(project / "draft" / fields.get("evidence_pdf", ""), project / "draft")
-                pdf_hash = sha256_file(draft_pdf) if draft_pdf.is_file() and not draft_pdf.is_symlink() else ""
+                draft_pdf = ensure_within(
+                    project / "draft" / fields.get("evidence_pdf", ""),
+                    project / "draft",
+                )
+                pdf_hash = (
+                    sha256_file(draft_pdf)
+                    if draft_pdf.is_file() and not draft_pdf.is_symlink() else ""
+                )
                 if not pdf_hash or pdf_hash != fields.get("evidence_pdf_sha256"):
-                    errors.append("draft STATUS PDF/hash is missing or stale")
-                elif not any(build.get("pdf_sha256") == pdf_hash for build in valid_builds):
-                    errors.append("draft STATUS PDF does not match a current build receipt")
+                    errors.append(f"draft STATUS PDF/hash is missing or stale{suffix}")
+                else:
+                    matching_builds = [
+                        build for build in valid_builds
+                        if build.get("pdf_sha256") == pdf_hash
+                    ]
+                    if matching_builds:
+                        selected_builds[artifact_id] = matching_builds
+                        status_pdfs[artifact_id] = (draft_pdf, pdf_hash)
+                    else:
+                        errors.append(
+                            f"draft STATUS PDF does not match a current build receipt{suffix}"
+                        )
             except (HarnessError, OSError):
-                errors.append("draft STATUS PDF path is invalid")
+                errors.append(f"draft STATUS PDF path is invalid{suffix}")
+        artifact_ids = sorted(artifacts)
+        for index, artifact_id in enumerate(artifact_ids):
+            for other_id in artifact_ids[index + 1:]:
+                status_identity = status_pdfs.get(artifact_id)
+                other_status_identity = status_pdfs.get(other_id)
+                if (
+                    status_identity is not None
+                    and other_status_identity is not None
+                    and (
+                        status_identity[0] == other_status_identity[0]
+                        or status_identity[1] == other_status_identity[1]
+                    )
+                ):
+                    errors.append(
+                        f"draft STATUS PDF is shared by artifacts: "
+                        f"{artifact_id}, {other_id}"
+                    )
+                for build in selected_builds.get(artifact_id, []):
+                    for other_build in selected_builds.get(other_id, []):
+                        if (
+                            build.get("fls") == other_build.get("fls")
+                            or build.get("fls_sha256") == other_build.get("fls_sha256")
+                        ):
+                            errors.append(
+                                f"build recorder file is shared by artifacts: "
+                                f"{artifact_id}, {other_id}"
+                            )
+                        if (
+                            build.get("pdf") == other_build.get("pdf")
+                            or build.get("pdf_sha256") == other_build.get("pdf_sha256")
+                        ):
+                            errors.append(
+                                f"build PDF is shared by artifacts: "
+                                f"{artifact_id}, {other_id}"
+                            )
     if promotion:
         for section in ("assets", "visuals", "resources", "software", "runs"):
             for entry in registry.get(section, {}).values():
@@ -4568,6 +4929,7 @@ def validate_pdf_file(
     path: pathlib.Path, evidence_ids: set[str] | None = None,
     visual_placements: set[tuple[str, str]] | None = None,
     code_placements: set[str] | None = None,
+    allowed_evidence_ids: set[str] | None = None,
 ) -> tuple[int, str]:
     if sniff_type(path) != "application/pdf":
         raise HarnessError("build receipt PDF does not have a PDF signature")
@@ -4588,9 +4950,19 @@ def validate_pdf_file(
     text_status, pdf_text, text_error = run_tool(["pdftotext", "-layout", str(path), "-"], timeout=120)
     if text_status != 0:
         raise HarnessError(f"build receipt PDF text could not be inspected: {text_error.strip()[:300]}")
-    missing_ids = sorted((evidence_ids or set()) - set(re.findall(r"(?:ASSET|VIS|RES|SW|RUN)-[A-Z0-9-]+", pdf_text)))
+    rendered_ids = set(
+        re.findall(r"(?:ASSET|VIS|RES|SW|RUN)-[A-Z0-9-]+", pdf_text)
+    )
+    missing_ids = sorted((evidence_ids or set()) - rendered_ids)
     if missing_ids:
         raise HarnessError(f"rendered evidence index is missing IDs: {', '.join(missing_ids)}")
+    if allowed_evidence_ids is not None:
+        unexpected_ids = sorted(rendered_ids - allowed_evidence_ids)
+        if unexpected_ids:
+            raise HarnessError(
+                "rendered PDF contains evidence outside the artifact scope: "
+                + ", ".join(unexpected_ids)
+            )
     rendered_visuals = set(re.findall(
         r"placed\s+visual\s*:\s*(VIS-[A-Z0-9-]+)\s+via\s+(ASSET-[A-Z0-9-]+)",
         pdf_text, re.IGNORECASE,
@@ -4632,29 +5004,116 @@ def fls_input_paths(project: pathlib.Path, fls_text: str) -> set[pathlib.Path]:
     return result
 
 
+def artifact_allowed_rendered_ids(
+    registry: dict, artifact_id: str, evidence_ids: set[str],
+) -> set[str]:
+    allowed = set(evidence_ids)
+    for reference in artifact_reference_records(registry, artifact_id):
+        if (
+            reference.get("kind") == "visual-placement"
+            and reference.get("id") in evidence_ids
+            and reference.get("backing_id")
+        ):
+            allowed.add(reference["backing_id"])
+    return allowed
+
+
+def validate_artifact_input_isolation(
+    project: pathlib.Path, config: dict, artifact_id: str,
+    input_paths: set[pathlib.Path],
+) -> None:
+    artifacts = artifact_specs(project, config)
+    artifact = artifacts[artifact_id]
+    evidence_index = (
+        managed_paths(project)["generated"] / "evidence-index.tex"
+    ).resolve()
+    if not artifact["requires_evidence_index"] and evidence_index in input_paths:
+        raise HarnessError(
+            f"artifact must not input evidence-index.tex: {artifact_id}"
+        )
+    for other_id, other in artifacts.items():
+        if other_id == artifact_id:
+            continue
+        other_root = (project / other["source_root"]).resolve()
+        mixed_inputs = sorted(
+            path.relative_to(project).as_posix()
+            for path in input_paths
+            if path == other_root or other_root in path.parents
+        )
+        if mixed_inputs:
+            raise HarnessError(
+                f"build input for artifact {artifact_id} includes canonical source "
+                f"from artifact {other_id}: {', '.join(mixed_inputs)}"
+            )
+
+
+def reject_cross_artifact_build_reuse(
+    registry: dict, artifact_id: str, catalog: str,
+    fls_relative: str, fls_hash: str, pdf_relative: str, pdf_hash: str,
+) -> None:
+    for receipt in registry.get("receipts", {}).get("builds", []):
+        other_id = receipt.get("artifact_id", "notes")
+        if other_id == artifact_id or receipt.get("catalog_fingerprint") != catalog:
+            continue
+        if receipt.get("fls") == fls_relative or receipt.get("fls_sha256") == fls_hash:
+            raise HarnessError(
+                f"build recorder file is already bound to artifact: {other_id}"
+            )
+        if receipt.get("pdf") == pdf_relative or receipt.get("pdf_sha256") == pdf_hash:
+            raise HarnessError(
+                f"build PDF is already bound to artifact: {other_id}"
+            )
+
+
 def record_build(project: pathlib.Path, config: dict, registry: dict, args: argparse.Namespace) -> None:
+    artifacts = artifact_specs(project, config)
+    artifact_id = args.artifact
+    if artifact_id is None:
+        if len(artifacts) != 1:
+            raise HarnessError("record-build requires --artifact for a multi-artifact project")
+        artifact_id = next(iter(artifacts))
+    if artifact_id not in artifacts:
+        raise HarnessError(f"unknown artifact: {artifact_id}")
+    artifact = artifacts[artifact_id]
     fls = ensure_within(project / args.fls, project)
     pdf = ensure_within(project / args.pdf, project)
     if not fls.is_file() or fls.is_symlink() or not pdf.is_file() or pdf.is_symlink():
         raise HarnessError("build receipt inputs are invalid")
-    current_evidence_ids = {
-        entry_id for entry_id, (_, entry) in all_entries(registry).items()
-        if entry.get("state", "current") == "current"
-    }
-    rendered_visuals, rendered_code = required_rendered_placements(registry)
+    current_evidence_ids = artifact_evidence_ids(
+        registry, artifact_id, artifact["evidence_scope"],
+    )
+    rendered_visuals, rendered_code = required_rendered_placements(
+        registry, artifact_id, current_evidence_ids,
+    )
+    allowed_rendered_ids = (
+        artifact_allowed_rendered_ids(registry, artifact_id, current_evidence_ids)
+        if artifact["evidence_scope"] == "referenced" else None
+    )
     pages, encrypted = validate_pdf_file(
         pdf, current_evidence_ids, rendered_visuals, rendered_code,
+        allowed_rendered_ids,
     )
-    _, _, _, live_source_files = collect_note_references(project, config)
+    _, _, _, live_source_files = collect_note_references(
+        project, config, artifact_id,
+    )
     source_fingerprint = manifest_fingerprint(live_source_files)
-    if source_fingerprint != registry.get("scan", {}).get("source_fingerprint"):
-        raise HarnessError("canonical source changed after the last scan")
+    expected_source_fingerprint = artifact_scan_state(
+        registry, artifact_id,
+    ).get("source_fingerprint")
+    if source_fingerprint != expected_source_fingerprint:
+        raise HarnessError(
+            f"canonical source changed after the last scan for artifact: {artifact_id}"
+        )
     fls_text = fls.read_text(encoding="utf-8", errors="replace")
     input_paths = fls_input_paths(project, fls_text)
+    validate_artifact_input_isolation(project, config, artifact_id, input_paths)
     required_paths = {
-        (managed_paths(project)["generated"] / "evidence-index.tex").resolve(),
         (managed_paths(project)["generated"] / "evidence-macros.tex").resolve(),
     }
+    if artifact["requires_evidence_index"]:
+        required_paths.add(
+            (managed_paths(project)["generated"] / "evidence-index.tex").resolve()
+        )
     missing = sorted(path.name for path in required_paths - input_paths)
     if missing:
         raise HarnessError(f"build recorder did not find generated input in .fls: {', '.join(missing)}")
@@ -4666,16 +5125,28 @@ def record_build(project: pathlib.Path, config: dict, registry: dict, args: argp
                 missing_source.append(item["path"])
     if missing_source:
         raise HarnessError(f"build recorder did not find canonical TeX input in .fls: {', '.join(missing_source)}")
-    placement_bindings = build_placement_bindings(project, registry, input_paths)
+    placement_bindings = build_placement_bindings(
+        project, registry, input_paths, artifact_id, current_evidence_ids,
+    )
     newest_source_mtime = max((item["mtime_ns"] for item in live_source_files), default=0)
     if fls.stat().st_mtime_ns < newest_source_mtime or pdf.stat().st_mtime_ns < newest_source_mtime:
         raise HarnessError("build files predate the current canonical source")
+    catalog = catalog_fingerprint(registry)
+    fls_relative = fls.relative_to(project).as_posix()
+    pdf_relative = pdf.relative_to(project).as_posix()
+    fls_hash = sha256_file(fls)
+    pdf_hash = sha256_file(pdf)
+    reject_cross_artifact_build_reuse(
+        registry, artifact_id, catalog,
+        fls_relative, fls_hash, pdf_relative, pdf_hash,
+    )
     registry.setdefault("receipts", {}).setdefault("builds", []).append({
-        "recorded_at": now_utc(), "catalog_fingerprint": catalog_fingerprint(registry),
+        "recorded_at": now_utc(), "catalog_fingerprint": catalog,
+        "artifact_id": artifact_id,
         "source_fingerprint": source_fingerprint,
         "ingestion_fingerprint": ingestion_fingerprint(load_ingestion_manifest(project)),
-        "fls": fls.relative_to(project).as_posix(), "fls_sha256": sha256_file(fls),
-        "pdf": pdf.relative_to(project).as_posix(), "pdf_sha256": sha256_file(pdf),
+        "fls": fls_relative, "fls_sha256": fls_hash,
+        "pdf": pdf_relative, "pdf_sha256": pdf_hash,
         "pdf_pages": pages, "pdf_encrypted": encrypted,
         "evidence_ids": sorted(current_evidence_ids),
         "placement_bindings": placement_bindings,
@@ -4685,6 +5156,13 @@ def record_build(project: pathlib.Path, config: dict, registry: dict, args: argp
 
 def status_summary(registry: dict) -> str:
     lines = [f"catalog={catalog_fingerprint(registry)}"]
+    for artifact_id, artifact in sorted(
+        registry.get("scan", {}).get("artifacts", {}).items()
+    ):
+        lines.append(
+            f"artifact={artifact_id} kind={artifact.get('kind', '')} "
+            f"source={artifact.get('source_fingerprint', '')}"
+        )
     for section in ("assets", "visuals", "resources", "software", "runs"):
         entries = [entry for entry in registry.get(section, {}).values() if entry.get("state", "current") == "current"]
         pending = sum(1 for entry in entries if entry.get("annotations", {}).get("disposition") == "pending")
@@ -4701,7 +5179,11 @@ def add_common_parser(subparsers, name: str, help_text: str):
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=".system/paper-evidence-harness")
     subparsers = parser.add_subparsers(dest="command", required=True)
-    add_common_parser(subparsers, "init", "initialize the private project ledger")
+    init = add_common_parser(subparsers, "init", "initialize the private project ledger")
+    init.add_argument(
+        "--artifact-set", choices=sorted(ARTIFACT_SETS),
+        help="notes only, or coordinated lecture notes plus self-contained Beamer slides",
+    )
     add_common_parser(subparsers, "scan", "scan accepted inputs and canonical source")
     add_common_parser(subparsers, "status", "summarize the current catalog")
     add_common_parser(subparsers, "render-index", "regenerate TeX and Markdown indexes")
@@ -4837,6 +5319,10 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--fls", required=True)
     build.add_argument("--pdf", required=True)
     build.add_argument("--offline", choices=("yes", "no"), required=True)
+    build.add_argument(
+        "--artifact", choices=("notes", "slides"),
+        help="required when the project contains more than one output artifact",
+    )
     build.add_argument("--source-revision", help="optional human-readable label; source hashes are recorded automatically")
 
     gate = add_common_parser(subparsers, "gate", "run a phase-specific fail-closed audit")
@@ -4849,7 +5335,10 @@ def main() -> int:
     try:
         project = project_path(args.project)
         with project_lock(project):
-            config, registry = initialize(project)
+            config, registry = initialize(
+                project,
+                args.artifact_set if args.command == "init" else None,
+            )
             paths = managed_paths(project)
             if paths["transaction"].exists() and args.command not in {"scan", "gate", "status"}:
                 raise HarnessError("interrupted catalog transaction detected; run scan to recover")
