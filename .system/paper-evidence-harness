@@ -4503,6 +4503,151 @@ def fetch_resource(project: pathlib.Path, entry: dict, max_bytes: int) -> None:
         }
 
 
+def acquire_entries(
+    project: pathlib.Path, registry: dict, entry_ids: list[str], max_bytes: int,
+) -> None:
+    """Verify and fetch explicitly selected resources/software in one operation."""
+    if not entry_ids or len(entry_ids) != len(set(entry_ids)):
+        raise HarnessError("acquire requires one or more distinct resource/software IDs")
+    if max_bytes <= 0:
+        raise HarnessError("acquire resource byte limit must be positive")
+    for entry_id in entry_ids:
+        section, entry = find_entry(registry, entry_id)
+        if entry.get("state", "current") != "current":
+            raise HarnessError(f"acquire requires a current entry: {entry_id}")
+        if section == "resources":
+            verify_resource(entry)
+            entry.setdefault("annotations", {})["link_review_status"] = "complete"
+            fetch_resource(project, entry, max_bytes)
+            print(f"acquired resource {entry_id}")
+        elif section == "software":
+            if entry.get("revision_requires_review") and not entry.get("requested_revision"):
+                raise HarnessError(
+                    f"software revision is ambiguous; annotate --revision first: {entry_id}"
+                )
+            fetch_software(project, registry, entry, None)
+            print(f"acquired software {entry_id} at {entry.get('resolved_revision', '')}")
+        else:
+            raise HarnessError(f"acquire accepts resource/software IDs only: {entry_id}")
+
+
+def copy_verified_resource(
+    project: pathlib.Path,
+    source: pathlib.Path,
+    destination: pathlib.Path,
+    expected_size: int,
+    expected_sha256: str,
+) -> None:
+    """Copy a fetched cache object without following links or trusting live metadata."""
+    secure_directory(destination.parent, project)
+    reject_symlink_chain(source, project)
+    if destination.exists() or destination.is_symlink():
+        if destination.is_symlink() or not destination.is_file():
+            raise HarnessError("adopted resource destination is unsafe")
+        snapshot = stable_file_snapshot(destination)
+        if (
+            not snapshot["stable"]
+            or snapshot["size"] != expected_size
+            or snapshot["sha256"] != expected_sha256
+        ):
+            raise HarnessError("adopted resource destination conflicts with fetched bytes")
+        return
+
+    source_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        source_fd = os.open(source, source_flags)
+    except OSError as exc:
+        raise HarnessError("fetched resource cache could not be opened safely") from exc
+    temp_fd, temp_name = tempfile.mkstemp(prefix=".adopt-", dir=destination.parent)
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        before = os.fstat(source_fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise HarnessError("fetched resource cache is not a regular file")
+        with os.fdopen(temp_fd, "wb") as target:
+            while True:
+                chunk = os.read(source_fd, 1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > expected_size:
+                    raise HarnessError("fetched resource grew while being adopted")
+                digest.update(chunk)
+                target.write(chunk)
+            target.flush()
+            os.fsync(target.fileno())
+        after = os.fstat(source_fd)
+        if (
+            before.st_size != after.st_size
+            or before.st_mtime_ns != after.st_mtime_ns
+            or before.st_ino != after.st_ino
+            or before.st_dev != after.st_dev
+            or size != expected_size
+            or digest.hexdigest() != expected_sha256
+        ):
+            raise HarnessError("fetched resource cache changed or failed receipt verification")
+        os.replace(temp_name, destination)
+    finally:
+        os.close(source_fd)
+        pathlib.Path(temp_name).unlink(missing_ok=True)
+
+
+def adopt_resource(
+    project: pathlib.Path, config: dict, registry: dict,
+    entry_id: str, relation_kind: str,
+) -> None:
+    """Promote reviewed quarantine bytes to a new, immutable inbox snapshot."""
+    section, entry = find_entry(registry, entry_id)
+    if section != "resources" or entry.get("state", "current") != "current":
+        raise HarnessError("adopt-resource requires a current resource ID")
+    retrieval = entry.get("retrieval", {})
+    if not retrieval.get("ok"):
+        raise HarnessError("adopt-resource requires a successfully fetched resource")
+    raw_size = retrieval.get("size")
+    expected_sha256 = retrieval.get("sha256", "")
+    if not isinstance(raw_size, int) or raw_size < 0 or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+        raise HarnessError("fetched resource receipt is invalid")
+    source = ensure_within(
+        project / retrieval.get("cache_path", ""), managed_paths(project)["external_cache"],
+    )
+    reject_symlink_chain(source, project)
+    if not source.is_file():
+        raise HarnessError("fetched resource cache path is unavailable")
+
+    destination_root = project / "inbox" / "acquired" / entry_id
+    secure_directory(destination_root, project)
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", source.name)[:190]
+    if not safe_name:
+        safe_name = f"{expected_sha256}-download.bin"
+    destination = destination_root / safe_name
+    copy_verified_resource(
+        project, source, destination, raw_size, expected_sha256,
+    )
+
+    fresh = discover(project, config, registry)
+    relative = destination.relative_to(project).as_posix()
+    adopted = [
+        asset for asset in fresh.get("assets", {}).values()
+        if relative in asset.get("locations", []) and asset.get("state") == "current"
+    ]
+    if len(adopted) != 1:
+        raise HarnessError("adopted resource was not uniquely discovered as an asset")
+    relation = {
+        "from": entry_id, "kind": relation_kind,
+        "to": adopted[0]["id"], "automatic": False,
+    }
+    relation_error = relation_type_error(relation, all_entries(fresh))
+    if relation_error:
+        raise HarnessError(relation_error)
+    if relation not in fresh["relations"]:
+        fresh["relations"].append(relation)
+    registry.clear()
+    registry.update(fresh)
+    print(adopted[0]["id"])
+    print(relative)
+
+
 def git_environment() -> dict[str, str]:
     environment = {
         "PATH": os.environ.get("PATH", os.defpath),
@@ -4781,10 +4926,12 @@ def fetch_software(project: pathlib.Path, registry: dict, entry: dict, revision_
         reject_symlink_chain(cache_root, project)
         temp = pathlib.Path(tempfile.mkdtemp(prefix=f".{entry['id']}.", dir=cache_root))
         try:
-            result = git_network_run([
+            clone_command = [
                 "git", "-c", "protocol.file.allow=never", "clone", "--bare",
-                "--filter=blob:none", "--no-tags", url, str(temp),
-            ], url)
+                "--depth=1", "--single-branch", "--no-tags",
+            ]
+            clone_command.extend([url, str(temp)])
+            result = git_network_run(clone_command, url)
             if result.returncode != 0:
                 raise HarnessError("bare software clone failed")
             verify = git_run(["git", f"--git-dir={temp}", "cat-file", "-e", f"{resolved}^{{commit}}"])
@@ -4815,7 +4962,7 @@ def fetch_software(project: pathlib.Path, registry: dict, entry: dict, revision_
         "ok": True, "retrieved_at": now_utc(), "resolved_commit": resolved,
         "requested_revision": requested,
         "cache_path": destination.relative_to(project).as_posix(),
-        "storage": "content-addressed bare partial clone; no checkout, hooks, submodules, or LFS objects executed/fetched",
+        "storage": "content-addressed shallow bare clone with commit tree and ordinary blobs; no checkout, hooks, submodules, or LFS objects executed/fetched",
         "cache_entry_count": cache_entries, "cache_size": cache_size,
         **inventory,
     }
@@ -5298,6 +5445,23 @@ def build_parser() -> argparse.ArgumentParser:
     fetch.add_argument("entry_id")
     fetch.add_argument("--max-bytes", type=int, default=104857600)
 
+    acquire = add_common_parser(
+        subparsers, "acquire",
+        "verify and fetch selected supplement/resource/software IDs",
+    )
+    acquire.add_argument("entry_ids", nargs="+")
+    acquire.add_argument("--max-resource-bytes", type=int, default=104857600)
+
+    adopt = add_common_parser(
+        subparsers, "adopt-resource",
+        "copy one fetched resource from quarantine to a new accepted inbox snapshot",
+    )
+    adopt.add_argument("entry_id")
+    adopt.add_argument(
+        "--relation", choices=("supplements", "documents", "explains"),
+        default="supplements",
+    )
+
     software = add_common_parser(subparsers, "fetch-software", "pin and fetch a GitHub repository without checkout")
     software.add_argument("entry_id")
     software.add_argument("--revision")
@@ -5391,6 +5555,14 @@ def main() -> int:
                 if section != "resources":
                     raise HarnessError("fetch-resource requires a resource ID")
                 fetch_resource(project, entry, args.max_bytes)
+            elif args.command == "acquire":
+                acquire_entries(
+                    project, registry, args.entry_ids, args.max_resource_bytes,
+                )
+            elif args.command == "adopt-resource":
+                adopt_resource(
+                    project, config, registry, args.entry_id, args.relation,
+                )
             elif args.command == "fetch-software":
                 section, entry = find_entry(registry, args.entry_id)
                 if section != "software":

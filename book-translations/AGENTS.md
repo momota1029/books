@@ -144,8 +144,9 @@ ingestion と source analysis・destination authoring を分離し、受け入�
 ## draft と out
 
 - `draft/` の PDF は途中成果であり final と呼ばない。`out/` への移動・複製は、完了条件を確認した明示的な promotion とする。
-- 公開済み draft を何らかの変更後に再公開する場合は、affected work unit の再 review を完了し、変更後 snapshot に対する quality gate と `draft/STATUS.*` の review 状態を更新する。
+- 外部の読者へ渡す shared draft を何らかの変更後に再公開する場合は、affected work unit の再 review を完了し、変更後 snapshot に対する quality gate と `draft/STATUS.*` の review 状態を更新する。この条件を project owner またはその明示的に認めた共同学習者が見る `unreviewed internal WIP` PDF に適用して生成を止めない。
 - 各制作 cycle で、完了済み work unit と進行中 work unit を含む可読かつ追跡可能な PDF を `draft/` へ公開する。未完成部分は章節等の境界で隔離し、本文と `draft/STATUS.*` の双方で `reviewed` と WIP、その範囲を明示する。WIP を無表示で完成済み本文へ混在させない。
+- internal WIP preview は学習と早期フィードバックのための必須 live view である。build が成功する限り、raw inventory、coverage、mapping、claim audit、independent review、索引、権利・配布判定の未完了を `STATUS` に `pending`、`unknown`、`WIP` または `blocked` として記録して PDF を出す。これらの全件完了は shared draft の該当範囲を `reviewed` と表示する条件または `out/` promotion 条件であって、internal WIP PDF を初めて生成する条件ではない。
 - 公開状態を `draft/STATUS.*` 等へ記録し、少なくとも build 日時、成功・失敗・陳腐化、source revision または commit、採用した inbox source snapshot、work unit ごとの `reviewed` / WIP 状態、通過済み・未通過の quality gate、残件、対応する PDF 名を含める。
 - `draft/STATUS.*` には再構成ハーネスの最新 snapshot と、Candidate Source の検出・採用・保留・合意除外・阻害、Source Unit、coverage、依存、claim、演習に関する完全性会計を含める。未処理または未検証の件数がある draft は `unreviewed internal WIP` とし、0 件でない項目と影響範囲を明示する。
 - `draft/STATUS.*` では `raw_inventory_review`、`coverage_gate`、`mapping_edge_semantic_review`、`lecture_note_identity_gate` を別項目とし、それぞれの対象 source snapshot、canonical source revision、coverage matrix revision、reviewer、合否、全件/未検証件数、stale の有無、open finding/ID 一覧への参照を示す。百分率または「ほぼ完了」だけを表示せず、いずれか一つでも未通過または stale の draft を完全、reviewed、final と表示しない。WIP ではどの gate が開いているかと影響範囲を明示する。

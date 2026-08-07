@@ -1780,6 +1780,129 @@ else
   fail 9 'secret URL handling'
 fi
 
+if python3 - "$repo_dir/.system/paper-evidence-harness" "$test_root" <<'PY'
+import pathlib
+import runpy
+import sys
+
+module = runpy.run_path(sys.argv[1])
+HarnessError = module["HarnessError"]
+actions = []
+module["verify_resource"].__globals__["safe_open"] = None
+module["acquire_entries"].__globals__["verify_resource"] = (
+    lambda entry: actions.append(("verify", entry["id"]))
+)
+module["acquire_entries"].__globals__["fetch_resource"] = (
+    lambda project, entry, limit: actions.append(("resource", entry["id"], limit))
+)
+module["acquire_entries"].__globals__["fetch_software"] = (
+    lambda project, registry, entry, revision: (
+        actions.append(("software", entry["id"], revision)),
+        entry.update({"resolved_revision": "a" * 40}),
+    )
+)
+registry = {
+    "assets": {}, "visuals": {}, "runs": {}, "relations": [],
+    "resources": {
+        "RES-DIRECT": {
+            "id": "RES-DIRECT", "state": "current",
+            "annotations": {},
+        },
+    },
+    "software": {
+        "SW-CODE": {
+            "id": "SW-CODE", "state": "current",
+            "requested_revision": "v1", "revision_requires_review": False,
+            "annotations": {},
+        },
+        "SW-AMBIGUOUS": {
+            "id": "SW-AMBIGUOUS", "state": "current",
+            "requested_revision": "", "revision_requires_review": True,
+            "annotations": {},
+        },
+    },
+}
+module["acquire_entries"](
+    pathlib.Path(sys.argv[2]), registry, ["RES-DIRECT", "SW-CODE"], 1234,
+)
+assert actions == [
+    ("verify", "RES-DIRECT"),
+    ("resource", "RES-DIRECT", 1234),
+    ("software", "SW-CODE", None),
+]
+assert registry["resources"]["RES-DIRECT"]["annotations"]["link_review_status"] == "complete"
+try:
+    module["acquire_entries"](
+        pathlib.Path(sys.argv[2]), registry, ["SW-AMBIGUOUS"], 1234,
+    )
+except HarnessError:
+    pass
+else:
+    raise AssertionError("ambiguous software revision was accepted")
+PY
+then
+  pass acquire-selected 'selected supplement/software acquisition is explicit and ambiguity-safe'
+else
+  fail acquire-selected 'selected acquisition workflow'
+fi
+
+adopt_project=$project/adopt-notes
+make_isolated_project "$adopt_project"
+"$repo_dir/.system/paper-evidence-harness" init "$adopt_project" >/dev/null
+adopt_resource_id=$("$repo_dir/.system/paper-evidence-harness" add-resource "$adopt_project" \
+  --url https://example.org/supplement.csv | head -n 1)
+"$repo_dir/.system/paper-evidence-harness" scan "$adopt_project" >/dev/null
+adopt_cache=$adopt_project/.workspace/cache/external/$adopt_resource_id/fixture.csv
+mkdir -p "$(dirname -- "$adopt_cache")"
+printf '%s\n' 'value' '1' >"$adopt_cache"
+python3 - "$adopt_project/.workspace/records/evidence/registry.json" \
+  "$adopt_resource_id" "$adopt_cache" "$adopt_project" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+registry_path = pathlib.Path(sys.argv[1])
+resource_id = sys.argv[2]
+cache_file = pathlib.Path(sys.argv[3])
+project = pathlib.Path(sys.argv[4])
+data = cache_file.read_bytes()
+registry = json.loads(registry_path.read_text())
+registry["resources"][resource_id]["retrieval"] = {
+    "ok": True,
+    "cache_path": cache_file.relative_to(project).as_posix(),
+    "size": len(data),
+    "sha256": hashlib.sha256(data).hexdigest(),
+}
+registry_path.write_text(
+    json.dumps(registry, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+)
+PY
+adopt_asset=$("$repo_dir/.system/paper-evidence-harness" adopt-resource \
+  "$adopt_project" "$adopt_resource_id" --relation supplements | head -n 1)
+if python3 - "$adopt_project/.workspace/records/evidence/registry.json" \
+  "$adopt_resource_id" "$adopt_asset" <<'PY'
+import json
+import pathlib
+import sys
+
+registry = json.loads(pathlib.Path(sys.argv[1]).read_text())
+resource_id, asset_id = sys.argv[2:]
+asset = registry["assets"][asset_id]
+assert asset["role"] == "external-input"
+assert asset["kind"] == "source-data"
+assert any(path.startswith(f"inbox/acquired/{resource_id}/") for path in asset["locations"])
+assert {
+    "from": resource_id, "kind": "supplements",
+    "to": asset_id, "automatic": False,
+} in registry["relations"]
+PY
+then
+  pass adopt-resource 'quarantined supplement becomes a traced immutable inbox candidate'
+else
+  fail adopt-resource 'fetched resource adoption workflow'
+fi
+
 cache_project=$project/cache-notes
 make_isolated_project "$cache_project"
 "$repo_dir/.system/paper-evidence-harness" init "$cache_project" >/dev/null

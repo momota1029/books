@@ -93,6 +93,7 @@ project 名と案件内容は repository mode にかかわらず、外部共有�
 - draft 同期は少なくとも、別 task への切替前、担当または file ownership の移管前、長時間の build・test・調査前、ユーザーへの進捗報告前、および作業 turn・session の終了前に行う。同期できない blocker がある場合は、古い draft を無表示で残さず `STATUS` とユーザー報告の双方へ記録する。
 - 領域別規約が draft 再公開前の review を要求する場合、その要件は変更後 snapshot を `reviewed` と表示し続ける場合、または読者への共有・配布境界に適用する。現在状態を明示した `unreviewed internal WIP` の live 同期は独立 review の完了まで延期せず、変更前 revision の review 結果を変更後 revision に流用しない。
 - `draft/` の更新は完成、review 済み、配布可能を意味しない。途中成果物には親規約と領域別規約に従って WIP、未通過 gate、未完了範囲、blocking finding を表示し、`out/` への promotion と明確に分離する。
+- project owner またはその明示的に認めた共同学習者が進捗を確認する private な `draft/` PDF は `internal WIP preview` とし、不特定または外部の読者へ渡す `shared draft`、公開、配布、`out/` promotion と区別する。owner 自身が PDF を開いて学習・確認することを「読者への共有」と解釈しない。build 可能な source がある限り、未完了 unit、open finding、未通過 review、coverage・索引・権利の未確定は preview の状態表示と隔離条件であり、internal WIP PDF の生成自体を完成時まで延期する理由にしない。内容上の blocking finding があっても該当範囲を `WIP` または `blocked` と表示して preview に反映し、compile 不能、preview 自体が安全・契約・権利上許されない場合だけ生成を止めて `STATUS` に理由を記録する。
 
 ## self-contained 性と局所・大域 navigation
 
@@ -224,7 +225,7 @@ RISKS: 残る懸念、判断待ち、または none
 
 数学内容を含む翻訳、論文、ノートは追跡可能な work unit に分け、unit 完成時と semantic change 後の checkpoint で affected unit と影響範囲を `MATH_PROSE_REVIEW.md` に従いレビューする。structural change と editorial change は上記の分類に従い、変更がない unit の review を機械的にやり直さない。
 
-private な内部確認用 preview は、`unreviewed internal WIP` と input snapshot、未通過 gate、未完了範囲を明記し、配布対象から隔離する場合に限り、独立 review または全体 gate の前にも生成してよい。draft PDF を公開または読者へ共有する前には、その input snapshot と含まれる全 unit の review status を確定し、`reviewed` とする各 unit が `MATH_PROSE_REVIEW.md` の unit gate を満たすことを確認する。変更後に draft を再公開する場合は、変更分類に応じた affected scope の再検証を完了し、変更後 snapshot に対する gate と review status を更新する。draft は可読な進捗成果物とし、input snapshot、review status、WIP とその未完了範囲を本文で明示する。
+private な内部確認用 preview は、project owner またはその明示的に認めた共同学習者による学習・途中確認を含む。`unreviewed internal WIP` と input snapshot、未通過 gate、未完了範囲を明記し、配布対象から隔離する場合は、独立 review または全体 gate の前にも生成し、build 可能な最新 source を完成時まで PDF 化せずに置かない。外部の読者へ `shared draft` として公開・共有する前には、その input snapshot と含まれる全 unit の review status を確定し、`reviewed` とする各 unit が `MATH_PROSE_REVIEW.md` の unit gate を満たすことを確認する。変更後に shared draft を再公開する場合は、変更分類に応じた affected scope の再検証を完了し、変更後 snapshot に対する gate と review status を更新する。draft は可読な進捗成果物とし、input snapshot、review status、WIP とその未完了範囲を本文で明示する。
 - blocking gap、unlabeled formal claim、broken reference のいずれかがある unit を `reviewed` と表示して draft PDF を公開または共有しない。
 - formal claim は意味に合う番号付き semantic environment に置き、自動生成番号と一意で安定した `label` を付ける。直前の theorem-like statement を証明する通常の proof は、見出しを原則として「証明」とする bare な無番号 proof environment に置き、proof 番号、proof 自体の `label`、対象 statement への明示的な cross-reference を付けない。statement から離れた証明・解答には対象 statement への `label` による cross-reference を含む無番号の説明見出しを用いてよい。番号付き proof は、複数の証明・別証明を区別する場合、または proof 自体が他所から参照される場合に限り、一意で安定した `label` と対象 statement への cross-reference を持たせる。
 - formal claim の判定は、原資料または現原稿の環境名、段落種別、主張の一般性や長さではなく、文の数学的役割で行う。example、remark、caption、脚注、導入 prose 等の内部でも、特定の対象について性質・関係・存在・一意性・等式・不等式等を真であると assertion し、「実際」「なぜなら」「これを見るには」等に続けて根拠を与える部分は formal claim と proof の強い候補である。単一対象に固有でも、独立した真偽判定を持つ assertion とその論証は意味に合う theorem-like statement と proof へ抽出し、元の構成・適用・解釈だけを example 等に残す。各 unit で prose と全 semantic environment を走査し、未抽出の formal assertion を 0 件にする。
