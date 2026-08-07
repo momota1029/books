@@ -35,12 +35,12 @@ self-contained-math-notes/
   .workspace/
 ```
 
-- `inbox/`: ユーザーが参考資料、追加指示、画像、データ等を置く受け入れ口。原則 read-only とし、エージェントは中身を編集、改名、移動、削除、上書きしない。権利不明、秘密、巨大なファイルを自動で Git に追加しない。
+- `inbox/`: ユーザーが参考資料、追加指示、画像、データ等を置く受け入れ口。原則 read-only とし、エージェントは中身を編集、改名、移動、削除、上書きしない。public mode では private input を Git に追加せず、verified private mode では安定性、authentication secret、明示的な保存禁止、repository の運用上限を確認して recovery snapshot に含める。
 - `draft/`: ユーザーが確認する途中成果。PDF と、必要なら `STATUS` や変更要約を置けるが、人手編集する正本にはしない。
 - `out/`: 検証済みかつ承認済みの最終成果だけを置く。ビルドコマンドの直接出力先にしない。
 - `.workspace/`: 通常ユーザーが触らない内部領域。ただし秘密保管場所ではない。`source/` は人が修正する canonical source、`records/` は永続台帳、`tools/` は案件固有の設定・adapter・lockfile の永続領域とする。`build/`、`cache/`、`tmp/`、`logs/` は再生成可能領域である。Git で扱える範囲は後述の repository mode と権利条件に従う。
 
-`.workspace/` 全体をキャッシュや削除可能領域とみなしてはならない。`.workspace/source/`、`.workspace/records/`、`.workspace/tools/` を clean で削除しない。参考資料、参照情報と所在は案件固有の private data として扱い、private mode でも保存・commit の権利と契約条件を個別に確認する。
+`.workspace/` 全体をキャッシュや削除可能領域とみなしてはならない。`.workspace/source/`、`.workspace/records/`、`.workspace/tools/` を clean で削除しない。参考資料、参照情報と所在は案件固有の private data として扱う。verified private mode は安全な復旧用保存境界とし、configured private remote への保存自体を明示的に禁ずる具体的条件だけを個別に確認する。
 
 複数案件で再利用できる prompt、template、script、build/QA tool、test、fix は案件名、資料内容、書誌、ファイル名、権利情報等を除去して generic 化し、privacy review と共通の検証を通して repository root の public shared system へ upstream する。generic な改善を `.workspace/` だけに残さない。案件固有の data、config、adapter は private area に置く。
 
@@ -50,8 +50,8 @@ repository mode は親の規則と `../.system/repository-mode` に従う。
 
 - public mode では、`inbox/`、`draft/`、`out/`、`.workspace/` の4 private 領域とその全内容、project 名、manifest のファイル名・hash、PDF、原稿、講義ノート、台帳、案件固有の data・config・tool を stage、commit、push しない。この project 内で Git 対象にできるのは privacy review 済みの `AGENTS.md` だけである。
 - verified private mode では、configured remote の同一性と GitHub visibility が `PRIVATE` と検証できる場合に限り、4 private 領域を含む processing document を通常の `git add` で stage、commit できる。互換用の `../.system/repository-mode add -- <paths>` も利用できるが、`git add -f` は使わない。
-- private mode でも credential、secret、token、鍵、契約・ライセンス上保存できない data、権利上 commit できない参考資料は commit しない。private remote の存在は取得、保存、利用、配布の権限を与えない。
-- `out/` の配布承認と GitHub repository の visibility・commit 可否は別に判定する。配布承認済みでも GitHub に置けるとは限らず、private GitHub に置けても配布できるとは限らない。
+- verified private mode への通常の commit・push は安全な復旧用保存とし、credential、token、鍵等の authentication secret、および configured private remote への保存自体を明示的に禁ずる具体的条件がある data だけを除外する。privacy、利用権、公開・再配布条件が未確定であることだけでは private recovery snapshot を止めない。資料の新規取得、利用、外部公開・配布の権限は別に確認する。
+- `out/` の配布承認と verified private GitHub への保存は別に判定する。配布承認の有無にかかわらず private repository へ recovery snapshot を保存でき、private に保存できることを外部配布の承認とは扱わない。
 
 `.gitignore`、`../.system/repository-mode`、hook を回避せず、`git add -f` や `--no-verify` を使わない。status、diff、作業報告にも、私的な資料内容、題名、著者、研究内容、ファイル一覧、hash を必要なく転記しない。この構造と ignore 規則は defense in depth にすぎず、secret store、暗号化、アクセス制御の境界ではない。
 
@@ -79,7 +79,7 @@ ingestion と数学的執筆を分離し、受け入れが確定したスナッ�
 1. 作業開始時、各処理バッチ開始時、PDF を `draft/` へ公開する直前、`out/` へ昇格する直前に `inbox/` を再走査する。
 2. 検出結果を `.workspace/records/reference-ingestion-manifest.*` に追記する。各 revision について、少なくとも相対パス、バイトサイズ、更新時刻、強い content hash の方式と値、初回検出時刻、処理状態、採用・保留・除外理由を保持する。採用する revision は全内容を読み取った強い content hash を必須とし、省略しない。
 3. 同一性をパス、ファイル名、時刻だけで判断しない。採用前に時間を置いて2回以上検査し、各回で hash 計算の直前と直後の size、mtime 等の利用可能な stat が一致し、全内容の読み取りが成功し、全回の強い content hash が一致することを要求する。同名、同 size/mtime の内容変更も hash で新 revision として検出し、定義、証明、権利、既存 PDF への影響を評価する。
-4. 書き込み・同期・ロック中、一時拡張子、stat/hash の不一致、読み取り・parse 失敗は `pending` として処理しない。ユーザーの完了合図は安定確認の代替ではなく再検査のトリガーに限り、長い固定 sleep を前提にしない。採用後は権利・機密上許される場合に限り、immutable snapshot を `.workspace/` 内の案件に適した永続・保護領域へ保存し、その所在と hash を manifest に記録する。保存しない、または保存できない場合は、入力を使用するたびと `draft/`・`out/` への公開直前に記録済み hash を再検証する。`.workspace/` 自体を秘密保管場所とはみなさない。
+4. 書き込み・同期・ロック中、一時拡張子、stat/hash の不一致、読み取り・parse 失敗は `pending` として処理しない。ユーザーの完了合図は安定確認の代替ではなく再検査のトリガーに限り、長い固定 sleep を前提にしない。採用後は verified private mode を安全な保存境界として immutable snapshot を `.workspace/` 内の案件に適した永続・保護領域へ保存し、その所在と hash を manifest に記録する。authentication secret または configured private remote への明示的な保存禁止により保存できない場合は、入力を使用するたびと `draft/`・`out/` への公開直前に記録済み hash を再検証する。`.workspace/` 自体を authentication secret store とはみなさない。
 5. アーカイブは自動展開しない。形式、path traversal、symlink、巨大展開、入れ子、暗号化の有無を先に検査し、安全と判断したものだけを `.workspace/tmp/` の隔離先へ展開する。展開物も個別に受け入れ判定する。
 6. PDF、Office、画像等を信頼して実行せず、マクロ、埋め込み、外部リンク、偽装形式に注意する。必要なら内容を検証し、関連性、権利、重複、既存成果への影響を記録する。
 7. ユーザーが入力を削除しても manifest の検出・採用・削除履歴は消さず `missing` として影響を確認する。制作中の追加・更新を見つけても、既存ユーザー入力を移動・削除せず、作業を黙って巻き戻さない。

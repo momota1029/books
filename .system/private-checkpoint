@@ -8,9 +8,10 @@ usage() {
 usage: .system/private-checkpoint --scope <project-root> --message <message> \
   --confirm-storage-reviewed
 
-Creates and pushes a verified private recovery checkpoint. The caller must
-first review every file in inbox/, draft/, out/, and .workspace/ for secrets,
-credentials, storage restrictions, rights restrictions, and task ownership.
+Creates and pushes a verified private recovery checkpoint. Verified private
+pushes are treated as safe recovery storage, not publication. The caller must
+first review every file in inbox/, draft/, out/, and .workspace/ for
+authentication secrets, explicit storage prohibitions, and task ownership.
 USAGE
 }
 
@@ -195,7 +196,7 @@ remote_before=$(query_remote_branch_oid) || \
   fail 'pre-existing unpushed or divergent commits prevent a project checkpoint'
 
 printf '%s\n' \
-  'private-checkpoint: caller confirmed storage, rights, secret, and ownership review.' >&2
+  'private-checkpoint: caller confirmed authentication-secret, explicit-storage-prohibition, and ownership review.' >&2
 "$repo_root/.system/repository-mode" add -- "${private_paths[@]}" || \
   fail 'private project state could not be staged'
 

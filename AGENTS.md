@@ -211,7 +211,7 @@ RISKS: 残る懸念、判断待ち、または none
 検査の厳格さは制作中の各編集ではなく、snapshot を `reviewed` または完成と表示する境界で最大化する。頻繁な draft 同期と recovery checkpoint は、各回に完全な品質 gate を要求することを意味しない。領域別規約と `MATH_PROSE_REVIEW.md` は内容固有の検査項目を追加できるが、ユーザーが案件固有の高頻度 review を明示しない限り、検査の実行時期と変更分類は本節を継承する。
 
 - **WIP 制作中**: 意味のある小さな編集単位で canonical source を保存し、上記の live view 規則に従って draft と status を更新する。incremental build、構文、変更箇所の未解決参照、変更ページ・変更図の render 等、短時間で失敗を検出できる検査を行う。build 可能な source を複数の意味ある編集単位にわたって未 build のままにせず、別 task、長時間処理、ownership 移管、進捗報告、turn・session 終了の前には最新 source を反映した incremental build または失敗を記録した `STATUS` を残す。独立 review、全 phase、全ページ・全図、全索引 fixture の検査を各編集のたびに要求しない。既知の blocking finding を隠したり、WIP を `reviewed` または `out` として扱ったりしてはならない。
-- **recovery checkpoint**: 作業消失時にそこから再開でき、採用した `inbox/` snapshot、canonical source、永続台帳、`draft/` の可読成果物と status の関係を説明できる小さな状態を指す。work unit の完成を待たず頻繁に作り、対象差分と短時間の検査を確認して commit・push する。verified private mode では、stable と確認した `inbox/` の新規・変更 input と、更新した `draft/` の PDF・`STATUS`・変更要約も、既知の保存禁止がない限り source・records と同じ recovery checkpoint に含める。未完成または一時的に build 不可でも、状態と既知の問題が明示され、秘密情報・保存自体を禁ずる契約・権利条件・無関係な変更を含まなければ WIP checkpoint としてよい。
+- **recovery checkpoint**: 作業消失時にそこから再開でき、採用した `inbox/` snapshot、canonical source、永続台帳、`draft/` の可読成果物と status の関係を説明できる小さな状態を指す。work unit の完成を待たず頻繁に作り、対象差分と短時間の検査を確認して commit・push する。verified private mode では、stable と確認した `inbox/` の新規・変更 input と、更新した `draft/` の PDF・`STATUS`・変更要約も、authentication secret または明示的な保存禁止がない限り source・records と同じ recovery checkpoint に含める。未完成または一時的に build 不可でも、状態と既知の問題が明示され、configured private remote への保存自体を禁ずる具体的条件・無関係な変更を含まなければ WIP checkpoint としてよい。
 - **quality checkpoint**: 一つの work unit または意味のまとまりの終端で affected scope と依存範囲を確定し、必要な review と build を行う。細かな変更はこの境界まで batch してよいが、recovery checkpoint と draft 同期まで延期しない。各 keystroke や save の前に同じ検査を反復しない。
 - **`reviewed` 表示・promotion 前**: `reviewed` と表示する draft または `out/` へ promotion する input snapshot を固定し、要求される独立 review、全体 build、全ページ・全図、目次、索引、参照の gate を完全に実施する。checkpoint の部分検査だけでこの gate を代替しない。agent が実際に外部送信・公開・配布を行う場合は、artifact の status と別にユーザーの明示指示、privacy、rights、契約をその操作時点で確認する。
 
@@ -258,12 +258,12 @@ draft preview は学習・途中確認のための live view とする。`unrevi
 - 編集開始前に branch、upstream、repository mode、`git status --short`、担当 task の対象 path を確認し、開始時点の既存変更を把握する。作業中に別担当またはユーザーの変更を検出した場合は自分の変更と仮定せず、ownership と差分を再確認する。
 - commit は巨大な work unit の完成時だけでなく、上記の recovery checkpoint ごとに小さく作る。少なくとも別 task への切替、担当・file ownership の移管、長時間処理、破壊的または大規模な書き換え、ユーザーへの進捗報告、turn・session 終了の前に、現在の復旧可能な状態を commit する。各 keystroke や一行ごとの commit は不要だが、session 終了まで未コミットのまま溜めない。
 - recovery checkpoint は canonical source だけを対象にしない。repository mode と保存可否を確認したうえで、採用済みまたは新たに stable と確認した `inbox/` revision、更新した `draft/` の可読成果物・`STATUS`・変更要約、必要な `out/` snapshot、`.workspace/` の canonical source・永続台帳・案件固有 tool を一体として確認する。これらのいずれかが意味ある単位で変わったのに、source だけまたは status だけを commit・push して復旧不能な組合せを作らない。
-- 未完成状態も、`draft/STATUS.*` 等に WIP、未検証範囲、既知の失敗が明記され、再開可能であれば recovery commit に含めてよい。commit したことを品質 gate 通過と扱わず、完成を装う message を付けない。秘密情報、権利上保存できない data、無関係な変更は WIP commit にも含めない。
+- 未完成状態も、`draft/STATUS.*` 等に WIP、未検証範囲、既知の失敗が明記され、再開可能であれば recovery commit に含めてよい。commit したことを品質 gate 通過と扱わず、完成を装う message を付けない。public mode の private data、credential・token・鍵等の authentication secret、configured private remote への保存自体が明示的に禁止された data、無関係な変更は WIP commit に含めない。
 - 大幅な書き換え、削除、一時的な全消去の前には直前の利用可能な状態を先に commit・push する。操作後の途中状態で一旦作業を離れる場合も、source と draft/status を整合させた別の recovery checkpoint を commit・push する。
 - recovery commit 後は、ユーザーが commit・push の停止またはまとめ方を明示した場合を除き、直ちに現在の追跡ブランチへ通常の push を行い、task 完了や quality checkpoint までローカルだけに保持しない。連続したごく短い編集で複数 commit をまとめて push する場合も、別 task への切替、長時間処理、ownership 移管、進捗報告、turn・session 終了より前に必ず push する。push の失敗は放置せず、原因と未送信 commit をユーザーへ報告する。
 - verified private mode では、ユーザーが commit・push の停止を明示しない限り、各 work unit を一つ以上の recovery commit とその push で閉じてから次の work unit へ進む。ここでいう work unit は、計画上の一工程、独立に確認・再開できる source 編集、input の採用、draft/status の同期、build・検査結果に基づく修正等の、意味のある最小の作業単位である。複数の work unit を task または session の最後まで未コミットでまとめず、未完成なら WIP と明示した recovery commit にする。
 - verified private mode の hard checkpoint は、少なくとも work unit の完了後、別の work unit・task へ移る前、長時間処理の前、進捗報告の前、および turn・session の最終報告前に実行する。各 hard checkpoint では、instruction refresh、repository mode、branch・upstream、`git status --short`、task 所有 path の diff と index 全体を確認し、必要な短時間検査と draft/status 同期を済ませ、明示 path だけを stage して commit・push する。その後に task 所有の未コミット差分が 0 件であり、追跡先に対する未送信 commit が 0 件であることを再確認する。差分がない場合は空 commit を作らない。
-- verified private mode の project hard checkpoint は、対象 project の `inbox/`、`draft/`、`out/`、`.workspace/` を秘密情報・credential・保存禁止資料・権利上 commit できない data・task 外変更がないか全件確認した後、原則として agent が `.system/private-checkpoint --scope <project-root> --message <message> --confirm-storage-reviewed` を実行して閉じる。この command は四領域を明示 path として一体で stage・commit・通常 push し、ignored file、既存 index、unsafe entry、dirty state、未送信 commit が残れば fail closed にする。user に command 実行を求めない。
+- verified private mode の project hard checkpoint は、対象 project の `inbox/`、`draft/`、`out/`、`.workspace/` を credential・token・鍵等の authentication secret、configured private remote への明示的な保存禁止、task 外変更がないか全件確認した後、原則として agent が `.system/private-checkpoint --scope <project-root> --message <message> --confirm-storage-reviewed` を実行して閉じる。private な研究内容、原資料、WIP、権利・再配布条件が未確定の data であること自体は保存禁止にしない。この command は四領域を明示 path として一体で stage・commit・通常 push し、ignored file、既存 index、unsafe entry、dirty state、未送信 commit が残れば fail closed にする。user に command 実行を求めない。
 - verified private mode で task 所有の未コミット差分または未送信 commit が残っている状態は、hard checkpoint の完了とみなさない。その状態で次の work unit へ進んだり、作業を完了したと報告したりしてはならない。安全に分離できない既存差分、検査失敗、remote 検証失敗、push 失敗等で checkpoint を閉じられない場合は、無関係な差分を巻き込まず、残存 path、未送信 commit、原因、再開条件をユーザーへ明示する。
 - verified private mode の進捗報告と最終報告には、直近 checkpoint の commit ID と push 結果を含める。task に file 変更がなかった場合は、その旨と dirty/ahead が 0 件であることを確認した結果を記す。自己申告だけで完了とせず、実際の Git 状態をこの報告の直前に確認する。
 - 並行作業では task ごとに file ownership と commit 対象 path を分け、commit も task ごとに分離する。同じ file、Git index、生成先を複数担当が同時に変更しない。Git index の操作と commit は一時点で一担当だけが行い、他担当の編集が進行中でも対象 path の ownership が明確な場合に限って直列に stage する。
@@ -272,7 +272,7 @@ draft preview は学習・途中確認のための live view とする。`unrevi
 - force-push、履歴改変、amend は、ユーザーから明示的な依頼がない限り行わない。
 - ユーザーがコミットや push の停止、まとめてのコミット、ローカルのみなどを指定した場合は、その指示を優先する。
 - PR 作成はユーザーが明示的に求めた場合にだけ行う。
-- 秘密情報や巨大な生成物をコミットしない。公開前には作業担当と親 Codex が対象と差分を確認する。親が直接作業した場合は、risk と適用される品質 gate に応じて別担当による確認を追加する。
+- credential・token・鍵等の authentication secret や、repository の運用上限を超える巨大な生成物をコミットしない。外部公開前には作業担当と親 Codex が対象と差分を確認する。親が直接作業した場合は、risk と適用される品質 gate に応じて別担当による確認を追加する。
 
 ## repository mode と Git 境界
 
@@ -295,12 +295,12 @@ mode の切り替え、pre-commit、pre-push の各時点で `.system/repository
 - private 作業内容は通常の `git add` で stage できる。`.system/repository-mode add -- <paths>` は remote を stage 時にも検証する互換用 wrapper として利用できるが、必須ではない。`git add -f` と hook の `--no-verify` による回避は禁止する。
 - mode 切り替え、pre-commit、pre-push のたびに private remote の同一性と visibility を再検証する。互換用 `add` wrapper を使う場合は stage 時にも検証する。
 - 実際に push する remote は configured private remote と完全に一致し、その時点でも GitHub visibility が `PRIVATE` でなければならない。
-- private mode では `inbox/`、`draft/`、`out/`、`.workspace/`、案件 directory を commit できる。ただし credential、secret、token、鍵、および契約・ライセンス・権利上 commit 自体が許されない data は含めない。
+- verified private mode への通常の commit・push は、ユーザーが安全な復旧用保存として包括承認した操作とし、外部公開・配布とは扱わない。`inbox/`、`draft/`、`out/`、`.workspace/`、案件 directory、private な原資料・研究内容・WIP を commit できる。除外するのは credential、token、鍵等の authentication secret と、configured private remote への保存自体をユーザーまたは具体的な契約条件が明示的に禁止する data に限る。
 - verified private mode では、`.workspace/` 配下の通常ファイルを `build/`、`cache/`、`tmp/`、`logs/` を含めて、上記の保存禁止対象を除き全件追跡可能かつ hard checkpoint の対象にする。repository 管理の `.gitignore`、clone-local exclude、または user 固有 exclude により対象ファイルが一件でも ignored のままなら、`git add -f` で迂回せず ignore policy を修正するまで checkpoint を blocker とする。
 - 共有 `.gitignore` には、`*.aux`、`*.log`、`*.fls`、`*.fdb_latexmk`、`*.synctex*`、`*.bbl`、`*.blg`、`*.toc`、`*.out`、`*.run.xml` 等、project の `.workspace/` 内の TeX 生成物に一致する広域 pattern を置かない。public mode で必要な TeX 生成物の除外は `.system/sync-mode-excludes` が clone-local な managed block として設定し、private mode への切替時に外す。private mode ではこれらの生成物も、保存禁止対象でない限り他の `.workspace/` file と同じ recovery checkpoint に含める。
-- private mode では、復旧可能性を既定で優先し、stable な `inbox/` input、canonical source、records、案件固有 tool、可読な `draft/` PDF と `STATUS`、必要な `out/` snapshot を、上記 hard checkpoint 契約に従って work unit ごとに commit・push する。公開・再配布ライセンスが未確定であることだけを理由に private backup から除外しないが、秘密情報、credential、または保存先への複製自体を明示的に禁ずる契約・ライセンス・権利条件がある data は除外して blocker を記録する。private remote への保存と `out/` の配布承認は別に判定する。
+- private mode では、復旧可能性を既定で優先し、stable な `inbox/` input、canonical source、records、案件固有 tool、可読な `draft/` PDF と `STATUS`、必要な `out/` snapshot を、上記 hard checkpoint 契約に従って work unit ごとに commit・push する。privacy、公開・再配布ライセンス、翻訳権、利用権が未確定であることだけを理由に verified private backup から除外しない。authentication secret、または configured private remote への複製自体を明示的に禁ずる具体的条件がある data だけを除外して blocker を記録する。private remote への保存と `out/` の配布承認は別に判定する。
 - public mode 専用の privacy ignore は clone-local な `.git/info/exclude` の managed block とし、bootstrap、mode 切り替え、post-merge で同期する。private mode ではこの managed block を外し、通常の Git staging を可能にする。managed block 外の user 固有 exclude は保持する。
-- private remote の存在は内容の取得・保存・配布権限を与えない。`out/` の配布可否と GitHub visibility は別に審査する。
+- remote の同一性と GitHub visibility を検証した private mode は、この repository の内容を安全に保存・push する境界として扱う。これは資料の新規取得、利用、翻案、外部公開・配布の権限を与えるものではなく、それらの実操作は別に審査する。
 
 ### mode の移行と共有
 

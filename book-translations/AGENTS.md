@@ -80,8 +80,8 @@ repository mode は親の規則と `../.system/repository-mode` に従う。
 
 - public mode では、すべての `<project-id>/` とその全内容、project 名、原文、原稿、PDF、manifest、台帳、config、案件固有 tool を stage、commit、push しない。`book-translations/` 内で Git 対象にできるのは privacy review 済みの `AGENTS.md` だけである。
 - verified private mode では、configured remote の同一性と GitHub visibility が `PRIVATE` と検証できる場合に限り、inbox、draft、out、`.workspace/` を含む processing document を通常の `git add` で stage、commit する。stable な inbox revision、canonical source、records、draft PDF/`STATUS` を一つの recovery snapshot として、受け入れ確定後、意味のある draft 同期・build 成否の確定後、および親規約の各 checkpoint 境界で小さく commit・push する。互換用の `../.system/repository-mode add -- <paths>` も利用できるが、`git add -f` は使わない。
-- private mode でも credential、secret、token、鍵、および configured private remote への複製自体を明示的に禁ずる契約・ライセンス・権利条件がある data は commit しない。翻訳権・公開権・再配布条件が未確認であることだけでは、stable な inbox revision を未採用の `pending` input として private recovery snapshot に保存しない理由にならない。private remote の存在は資料を翻訳対象として採用する権限や公開・配布する権限を与えず、それらは別に確認する。
-- `out/` の配布承認と GitHub repository の visibility・commit 可否は別の判定である。配布承認済みでも GitHub に置けるとは限らず、private GitHub に置けても配布できるとは限らない。
+- verified private mode への通常の commit・push は安全な復旧用保存とし、credential、token、鍵等の authentication secret、および configured private remote への複製自体を明示的に禁ずる具体的条件がある data だけを除外する。翻訳権・公開権・再配布条件が未確認であることだけでは、stable な inbox revision、canonical source、WIP PDF を private recovery snapshot に保存しない理由にならない。private 保存は資料を翻訳対象として採用する権限や外部公開・配布する権限を与えず、それらは別に確認する。
+- `out/` の配布承認と verified private GitHub への保存は別の判定である。配布承認の有無にかかわらず private repository へ recovery snapshot を保存でき、private に保存できることを外部配布の承認とは扱わない。
 
 `.gitignore`、repository mode、hook を回避せず、`--no-verify` を使わない。status、diff、作業報告にも、私的な原文、タイトル、著者、研究内容、ファイル一覧、hash を必要なく転記しない。この構造と ignore 規則は defense in depth にすぎず、secret store、暗号化、アクセス制御の境界ではない。
 
@@ -133,7 +133,7 @@ ingestion と source analysis・destination authoring を分離し、受け入�
 2. 検出結果を `.workspace/records/source-ingestion-manifest.*` に追記する。各 revision について、少なくとも相対 path、byte size、更新時刻、強い content hash の方式と値、初回検出時刻、処理状態、採用・保留・除外理由を保持する。採用する revision は全内容を読み取った強い content hash を必須とする。
 3. 同一性を path、ファイル名、時刻だけで判断しない。採用前に時間を置いて 2 回以上検査し、各回で hash 計算の直前と直後の size、mtime 等の利用可能な stat が一致し、全内容の読み取りが成功し、全回の強い content hash が一致することを要求する。同名、同 size/mtime の内容変更も hash で新 revision として検出し、翻訳、引用、ページ対応、権利、既存 PDF への影響を評価する。
    変更 revision を採用または旧 revision の supersede として確定した場合は、再構成ハーネスの推移的 invalidation 規則を直ちに適用する。影響評価だけで従前の inventory、coverage、review、build、draft/out status を有効なまま残さない。
-4. 書き込み・同期・lock 中、一時拡張子、stat/hash の不一致、読み取り・parse 失敗は `pending` として処理しない。ユーザーの完了合図は安定確認の代替ではなく再検査の trigger に限り、長い固定 sleep を前提にしない。採用後は権利・機密上許される場合だけ immutable snapshot を `.workspace/` 内の案件に適した永続・保護領域へ保存し、その所在と hash を manifest に記録する。保存しない場合は、入力を使用するたびと `draft/`・`out/` への公開直前に記録済み hash を再検証する。
+4. 書き込み・同期・lock 中、一時拡張子、stat/hash の不一致、読み取り・parse 失敗は `pending` として処理しない。ユーザーの完了合図は安定確認の代替ではなく再検査の trigger に限り、長い固定 sleep を前提にしない。採用後は verified private mode を安全な保存境界として immutable snapshot を `.workspace/` 内の案件に適した永続・保護領域へ保存し、その所在と hash を manifest に記録する。authentication secret または configured private remote への明示的な保存禁止により保存できない場合は、入力を使用するたびと `draft/`・`out/` への公開直前に記録済み hash を再検証する。
 5. archive は自動展開しない。形式、path traversal、symlink、巨大展開、入れ子、暗号化の有無を先に検査し、安全と判断したものだけを `.workspace/tmp/` の隔離先へ展開する。展開物も個別に受け入れ判定する。
 6. PDF、Office、画像等を信頼して実行せず、macro、埋め込みファイル、外部 link、偽装形式に注意する。必要なら内容を検証し、関連性、版、権利、重複、既存成果への影響を記録する。
 7. ユーザーが入力を削除しても manifest の検出・採用・削除履歴は消さず `missing` として影響を確認する。制作中の追加・更新を見つけても、既存ユーザー入力を移動・削除せず、作業を黙って巻き戻さない。
@@ -204,7 +204,7 @@ ingestion と source analysis・destination authoring を分離し、受け入�
 - 定義、列挙、比較、条件、例外、否定、数量、専門用語、引用、数値、数式を重点照合する。訳語変更時は既存箇所を検索し、文脈依存の例外には理由を残す。
 - 「明らか」「容易」「標準的」「同様」等を理由に、原資料または再構成上必要な非自明な推論を削らない。原資料が省略した中間推論も、合意した前提から妥当に復元できる場合は具体的に展開し、復元不能または不成立なら source issue として扱う。
 - 文体、句読点、全半角、固有名詞、原語併記、敬体・常体、数字・単位、脚注形式を glossary または style 台帳で統一する。要約・簡略化で条件、例外、論理関係を落として誤解を招かないよう translation decisions と照合する。
-- 翻訳対象として採用するのは利用権限を確認できる資料だけとする。直接引用は必要最小限とし、rights ledger の URL、参照日、license・許諾、翻訳権、翻案・編集、図版、公開・配布条件を確認する。個人情報、秘密情報、購入資格情報、契約制限素材、DRM 回避物を commit・公開せず、権利未確認素材を翻訳済み本文や公開物へ入れない。verified private mode では、保存先への複製自体が禁止されていない stable な inbox input を、権利確認前にも `pending` と明示して recovery snapshot へ含めてよいが、採用・翻訳・配布の許可とは扱わない。
+- 翻訳対象として採用するのは利用権限を確認できる資料だけとする。直接引用は必要最小限とし、rights ledger の URL、参照日、license・許諾、翻訳権、翻案・編集、図版、公開・配布条件を確認する。個人情報、秘密情報、購入資格情報、契約制限素材、DRM 回避物を public Git または外部公開物へ入れず、権利未確認素材を翻訳済み本文や公開物へ入れない。verified private mode では、保存先への複製自体が明示的に禁止されていない stable な inbox input を、権利確認前にも `pending` と明示して recovery snapshot へ含めてよいが、採用・翻訳・配布の許可とは扱わない。
 
 ## 数式・図表・PDF 品質
 

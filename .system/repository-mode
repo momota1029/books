@@ -10,10 +10,10 @@ usage:
   repository-mode private <remote>
   repository-mode add -- <path>...
 
-Private mode permits ordinary Git staging and commits only while the configured
-push remote remains verified private. The add command is retained as a checked
-convenience wrapper. Neither path permits credentials, secrets, tokens, keys,
-or rights-restricted material that may not be stored in the repository.
+Private mode treats ordinary commits and pushes as safe recovery storage while
+the configured push remote remains verified private. The add command is retained
+as a checked convenience wrapper. Neither path permits authentication secrets
+or material whose storage on that configured remote is explicitly prohibited.
 USAGE
 }
 
@@ -157,7 +157,7 @@ case "$command_name" in
     [[ -x $verify_private_remote ]] || die 'private remote verifier is unavailable'
     "$verify_private_remote" "$remote_name"
     printf '%s\n' \
-      'repository-mode: credentials, secrets, tokens, keys, and rights-restricted material must not be staged.' >&2
+      'repository-mode: authentication secrets and material explicitly prohibited from this private remote must not be staged.' >&2
     git add -A -- "$@" >/dev/null 2>&1 || die 'staging failed'
     printf 'repository-mode: requested paths staged in private mode\n'
     ;;

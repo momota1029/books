@@ -29,7 +29,7 @@ case "$mode" in
 
     "$repo_root/.system/verify-private-remote" "$private_remote"
     printf '%s\n' \
-      'pre-commit: private mode does not permit credentials, secrets, or rights-restricted data.' >&2
+      'pre-commit: private mode is safe recovery storage; exclude authentication secrets and data explicitly prohibited from this remote.' >&2
     ;;
   *)
     printf 'pre-commit: invalid repository mode; refusing commit.\n' >&2
