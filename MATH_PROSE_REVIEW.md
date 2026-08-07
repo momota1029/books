@@ -37,9 +37,9 @@ severity は次のように分類する。
 レビューの単位となる work unit は、subsection、定理とその証明の cluster、一続きの導出、exercise set、translation batch など、依存関係と変更影響を追跡できるまとまりとして、制作前または分割時に定義する。
 各 unit の範囲、source revision、依存先、状態、最終 review revision を review artifact に記録する。
 
-- WIP 制作中、checkpoint、配布・promotion 前の gate と、semantic、structural、editorial の変更分類は親 `AGENTS.md` に従う。細かな編集は checkpoint まで batch し、各 save または revision ごとに同じ review を反復しない。
+- WIP 制作中、checkpoint、`reviewed` 表示・promotion 前の gate と、semantic、structural、editorial の変更分類は親 `AGENTS.md` に従う。細かな編集は checkpoint まで batch し、各 save または revision ごとに同じ review を反復しない。
 - 各 unit の完成時と semantic change 後の checkpoint で、affected unit、その直接依存、直接の利用箇所への波及を review する。authoring 担当とは分けた independent review は semantic change に必須とし、structural change では意味・定義順序・依存・読者解釈へ波及する範囲に限定して行う。editorial change は差分確認、関連する incremental build、必要な変更ページの render で再検証し、independent review を再度開かなくてよい。
-- draft PDF を公開または読者へ共有する前に、その snapshot に含まれるすべての unit の status と必要な review を確定する。公開済み draft を変更後に再公開する場合は、変更分類に応じた affected scope の再検証を完了し、変更後 snapshot に対する gate と review status を更新する。`unreviewed internal WIP` と snapshot、未通過 gate、未完了範囲を明記して配布対象から隔離した private preview は、全体 review 前にも生成してよい。
+- draft PDF は全体 review 前にも生成・更新してよく、snapshot、未通過 gate、未完了範囲を `unreviewed WIP` として本文と `STATUS` に明記する。PDF の閲覧者、所在、copy の可否を review gate にせず、変更後も WIP のまま速やかに再生成する。`reviewed` と表示する unit だけは必要な review を完了し、変更分類に応じた affected scope の再検証後に review status を更新する。外部への送信・公開・配布を agent が実行する場合の承認・privacy・rights 判定は、この数学的 status と別に扱う。
 - `reviewed`、`unreviewed`、`WIP` を project の `STATUS` と成果物本文の双方で識別し、snapshot と表示が一致していることを確認する。open blocking finding がある unit を `reviewed` と表示してはならない。
 - draft は、読者が完成範囲と未完成範囲を正しく判断できる可読品質にする。未完成の後半は明示した placeholder または roadmap として隔離し、未完成の証明を完成済みの本文のように掲載しない。
 - `out/` への promotion 前には、unit ごとの既存 review に依存せず、成果物全体を一つの snapshot として全 phase で再 review する。

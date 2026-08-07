@@ -78,7 +78,7 @@ harness の `pass` は実装された機械的条件を満たしたことだけ�
 ### AI の判断を信頼しすぎないための検証
 
 - primary Codex は結論だけでなく、再確認可能な locator、引用可能な短い根拠、推論過程、反証候補、限界を review record に残す。
-- shared draft または promotion に含める source code の意味説明は、authoring に関与していない別 identity の Codex が同じ固定 revision の実 source を開いて read-only で再確認し、要約や primary receipt の言い換えだけで済ませない。
+- `reviewed` draft または promotion に含める source code の意味説明は、authoring に関与していない別 identity の Codex が同じ固定 revision の実 source を開いて read-only で再確認し、要約や primary receipt の言い換えだけで済ませない。
 - independent reviewer は少なくとも excerpt の正確性、前後の文脈、依存先、paper-to-code 対応、主張の強さ、未確認範囲、権利表示を確認し、finding と再検証結果を private record に残す。
 - 実行、unit test、再計算、static analysis は解釈を支える証拠として使えるが、未実行 path、環境差、test が主張していない性質、論文の一般的 claim まで証明したものと扱わない。
 - AI 間で結論が一致しても正しさの保証にはならないため、原資料が不完全、意味が一意でない、専門判断や権利判断が不足する場合は、確信度を上げて閉じずユーザーまたは domain expert へ escalation する。
@@ -87,7 +87,7 @@ harness の `pass` は実装された機械的条件を満たしたことだけ�
 
 - 新しい command、schema field、gate を追加する前に、それが安全性、再現性、provenance、構造的一貫性のどの客観的不変条件を検査するかを本ガイドへ記述する。
 - 同じ要件を Python と prose に二重実装するときは、Python を機械的な下限、`AGENTS.md` と review を意味上の正本とし、双方の変更と test を同じ quality checkpoint で確認する。
-- WIP の semantic authoring は `internal-wip` で pending を明示して進めてよく、完全な catalog と厳格 gate を各段落の執筆前提にしない。
+- WIP の semantic authoring は `wip` gate で pending を明示して進めてよく、完全な catalog と厳格 gate を各段落の執筆前提にしない。
 - harness の規模や厳格さを品質そのものとみなさず、運用負荷が読解・執筆・独立 review を圧迫する場合は、機械的安全性を保ったまま command、schema、module、gate の責務を分割・簡素化する。
 
 ## ワークスペースの契約
@@ -134,7 +134,7 @@ repository mode は親の規則と repository root の `.system/repository-mode`
 - `.workspace/records/figure-trace.*`: 図表、実験値、データ、元番号、扱い、権利、再描画・再現条件の対応。
 - `.workspace/records/interpretation-questions.*`: 解釈、外部知識、未解決の疑問、反例、再現不能、次の確認方法。
 - `.workspace/records/recalculations.*`: 次元、符号、境界、特殊例、数値、小規模再現等の独立検証。
-- `.workspace/records/presentation-profile.*`: `presentation` 構成の想定聴衆、発表時間、使用言語、発表目的、既知としてよい前提、扱う claim・proof・figure の範囲、表示環境、質疑時間、採用した frame budget。未確定項目を推測で確定せず、WIP と共有可能状態を分ける。
+- `.workspace/records/presentation-profile.*`: `presentation` 構成の想定聴衆、発表時間、使用言語、発表目的、既知としてよい前提、扱う claim・proof・figure の範囲、表示環境、質疑時間、採用した frame budget。未確定項目を推測で確定せず、WIP と `reviewed` の状態を分ける。
 - `.workspace/records/paper-ingestion-manifest.*`: `inbox/` の検出履歴と、採用した入力スナップショット。人向け履歴を Markdown に残してよいが、gate と build receipt が読む現行判断は harness の `record-ingestion` が管理する JSON に記録する。
 - `.workspace/records/evidence/registry.json`: harness が管理する asset、visual、resource、software、run、relation、本文参照、build receipt の機械可読正本。手作業で構造を書き換えず、harness の command で更新する。
 - `.workspace/records/evidence/last-audit.json`: 最新 phase gate の対象 catalog fingerprint、finding、結果。過去 cycle の review record の代用にはしない。
@@ -167,9 +167,9 @@ ingestion と読解・執筆を分離し、受け入れが確定したスナッ�
 ## draft と out
 
 - `draft/` の PDF は途中成果であり final と呼ばない。`out/` への移動・複製は、完了条件を確認した明示的な promotion とする。
-- 外部の読者へ渡す shared draft を何らかの変更後に再公開する場合は、affected work unit の再 review を完了し、変更後 snapshot に対する gate と `draft/STATUS.*` の review 状態を更新する。この条件を project owner またはその明示的に認めた共同学習者が見る `unreviewed internal WIP` PDF に適用して生成を止めない。
+- draft PDF は閲覧者や copy の可否にかかわらず WIP artifact とし、変更後も affected work unit を `WIP` または `blocked` に戻して速やかに再生成する。`reviewed` と表示する範囲だけは affected work unit の再 review と変更後 snapshot の gate を完了して `draft/STATUS.*` を更新する。外部への送信・公開・配布の可否は draft/out の所在と別に判断する。
 - 各制作・レビュー cycle の終了時に、その時点の完成 unit と WIP を含む通読可能な draft PDF を作る。WIP は本文中で開始・終了と未完了範囲を明示し、欠落した証明や未検証の主張を完成済みに見せない。
-- internal WIP preview は学習と早期フィードバックのための必須 live view である。build が成功する限り、未取得 supplement/code、pending evidence、未完了 review、未確定 rights、未通過 shared-draft gate を artifact 固有 `STATUS` に明記して PDF を出す。これらは shared draft の該当範囲を `reviewed` と表示する条件または `out/` promotion 条件であって、internal WIP PDF を初めて生成する条件ではない。
+- WIP preview は学習と早期フィードバックのための必須 live view である。build が成功する限り、未取得 supplement/code、pending evidence、未完了 review、未確定 rights、未通過 reviewed gate を artifact 固有 `STATUS` に明記して PDF を出す。これらは該当範囲を `reviewed` と表示する条件または `out/` promotion 条件であって、WIP PDF を初めて生成する条件ではない。
 - 公開状態を artifact ごとの `draft/STATUS.*` へ記録し、少なくとも project ID、artifact ID、ビルド日時、成功・失敗・陳腐化、source revision または commit、採用した inbox snapshot、採用 Paper ID と revision、work unit ごとの `reviewed` / `WIP` / `blocked`、検証状態、残件、対応する PDF 名を含める。`notes` 構成では `draft/STATUS.md`、`presentation` 構成では `draft/STATUS.notes.md` と `draft/STATUS.slides.md` を使い、一方を他方の状態表示に流用しない。direct-child project の PDF 名は project ID から始め、artifact を識別できる名前にする。harness 用に `evidence_artifact_id`、`evidence_catalog_fingerprint`、artifact 固有の `evidence_source_fingerprint`、`evidence_ingestion_fingerprint`、`evidence_pdf`、`evidence_pdf_sha256` を一行一 field で併記する。`reviewed` は該当 artifact/unit の必須 review gate を満たした場合だけ付与する。
 - 新しいビルドを開始した時、inbox revision や canonical source が変わった時、またはビルドが失敗した時は、残っている古い成功 PDF を最新版と誤認しないよう `STATUS` を先に `building`、`failed` または `stale` に更新する。
 - `out/` の既存成果を直接上書きする前に、対象名、版、検証結果、承認を確認する。可能なら成果物と共にビルド日時、source revision/commit、採用 inbox snapshot、検証状態を記録する。`out/` に含める work unit の WIP は 0 件でなければならず、WIP 表示を外すだけで promotion gate を通過したことにはしない。
@@ -202,7 +202,7 @@ repository root から、事前に確定した current project root を第一引
 .system/paper-evidence-harness status <project-root>
 .system/paper-evidence-harness record-build <project-root> --artifact notes ...
 .system/paper-evidence-harness record-build <project-root> --artifact slides ...
-.system/paper-evidence-harness gate <project-root> --phase internal-wip
+.system/paper-evidence-harness gate <project-root> --phase wip
 ```
 
 - `init`: private な catalog、config、asset/figure/software-output 用 canonical directory、quarantine cache、生成 index を初期化する。講義ノートだけなら既定の `notes`、発表目的なら agent が `--artifact-set presentation` を指定し、重ならない `notes` / `slides` source root と artifact 固有 STATUS path を初期化する。既存 config の artifact set を黙って変更せず、既存 source や input を上書きしない。
@@ -219,9 +219,9 @@ repository root から、事前に確定した current project root を第一引
 - `record-run`: harness 外で明示的に隔離・承認して行った実行の receipt だけを記録する。harness は外部 code を自動実行しない。run ID は immutable とし、再実行は新しい ID で記録して古い execution lineage を改変しない。環境、command、exact software revision、dependency lock または container digest、seed、input ID、output hash と、記録時に直接生成した visual ID を固定し、dependency lock は path、size、hash を gate ごとに再照合する。input→run、output/direct-output-visual→run、run→software の execution relation を生成する。後続 scan の visual 候補や手動 panel は run 直結を自動要求せず、resource→run の `documents` 等、execution receipt でない型付き関係は追加できる。入力がない生成処理はその理由を記録する。
 - `render-index`: catalog fingerprint 付きの TeX/Markdown view と、本文参照・visual placement・code placement 用 macro を再生成する。source または catalog が変わった後の古い生成 index や macro を共有しない。
 - `record-build`: artifact を一つ明示し、その artifact の `.fls` exact path で生成 macro、必要な場合の index、その artifact の全 canonical TeX source が実際に読まれたことに加え、当該 PDF で必要な included/explained visual の明示された backing asset と explained code asset が実ビルドで読まれ、placement 固有表示が PDF text に描画されたことを検査する。visual が元 asset と別の backing asset を使う場合は `derived-from` lineage も要求する。構造検証済み PDF の hash・頁数、artifact 固有 source fingerprint、ingestion fingerprint、offline build の成否、および placement binding を artifact ID と current catalog fingerprint に束縛する。別 artifact の source や receipt、任意の revision label、索引上の ID、未ビルド source 上の placement macro、または backing input だけでは build receipt としない。
-- `gate`: `internal-wip`、`shared-draft`、`promotion` の順に fail-closed 検査を行う。interrupted transaction、input の same-size 差し替え、二回安定観測、ingestion/status/build の同一 fingerprint、orphan ID・型違い・cycle edge、stale index、未分類項目、由来・rights・alt text・本文参照の欠落、図と説明用 code の本文 placement・backing build input の欠落、included/explained source document と visual の current primary/independent review pair、未固定 software、cache bytes/commit/tree inventory、生成物と exact run の断線、危険 archive、未解決 attachment/member、secret URLを検査する。複数 artifact では各 canonical source、build receipt、PDF hash、`STATUS` を別々に検査し、一方の成功を他方へ流用しない。
+- `gate`: artifact の表示状態に対応する `wip`、`reviewed`、`promotion` の順に fail-closed 検査を行う。旧 command の `internal-wip` と `shared-draft` はそれぞれ `wip` と `reviewed` の互換 alias に限り、閲覧者や配布範囲を表す別状態とは扱わない。interrupted transaction、input の same-size 差し替え、二回安定観測、ingestion/status/build の同一 fingerprint、orphan ID・型違い・cycle edge、stale index、未分類項目、由来・rights・alt text・本文参照の欠落、図と説明用 code の本文 placement・backing build input の欠落、included/explained source document と visual の current primary/independent review pair、未固定 software、cache bytes/commit/tree inventory、生成物と exact run の断線、危険 archive、未解決 attachment/member、secret URLを検査する。複数 artifact では各 canonical source、build receipt、PDF hash、`STATUS` を別々に検査し、一方の成功を他方へ流用しない。
 
-`internal-wip` は pending を warning として許すが、安全・参照整合性・snapshot freshness の error は許さない。`shared-draft` は読者に見える全項目の採否、権利、由来、説明、current build receipt と上記の二重 visual review を要求する。`promotion` はさらに pending 0、current catalog に対する offline build receipt を要求する。decoder/render の成功を科学的意味の自動判定と混同せず、Codex が図の内容を明示的に読み、根拠、限界、`not-applicable`、finding を receipt に記録する。tool と二重 review は誤りの可能性をゼロにする保証ではないため、判断不能事項だけを隠さず escalation する。
+`wip` は pending を warning として許すが、安全・参照整合性・snapshot freshness の error は許さない。`reviewed` はその状態で表示する全項目の採否、権利、由来、説明、current build receipt と上記の二重 visual review を要求する。`promotion` はさらに pending 0、current catalog に対する offline build receipt を要求する。decoder/render の成功を科学的意味の自動判定と混同せず、Codex が図の内容を明示的に読み、根拠、限界、`not-applicable`、finding を receipt に記録する。tool と二重 review は誤りの可能性をゼロにする保証ではないため、判断不能事項だけを隠さず escalation する。
 
 ## 標準ワークフロー
 
@@ -235,8 +235,8 @@ repository root から、事前に確定した current project root を第一引
 8. 原論文、解釈、外部知識、未解決の疑問を識別し、不確かな点を推測で埋めない。
 9. 引用精度、主張の強さ、仮定、式・図表対応、理解検証、および途中の推論・導出・計算・図の読み方・software 再現条件に欠落がないことをレビューする。
 10. 数学を含む範囲では、work unit 完成時と semantic change 後の checkpoint で repository root の `MATH_PROSE_REVIEW.md` の affected phase を authoring 担当とは分けた read-only review phase として実施し、finding と再検証結果を private records に保存する。structural change と editorial change は親 `AGENTS.md` の分類に従って検査範囲を絞る。
-11. WIP 制作中は artifact ごとに変更箇所を incremental build し、checkpoint で受け入れ snapshot、catalog fingerprint、artifact 固有 source fingerprint、影響範囲を再確認する。読者へ共有する draft または `out/` 候補では artifact ごとのログ、evidence build receipt、全ページ表示を検証して公開する。
-12. 権利、ライセンス、配布範囲、不要物混入、直前の inbox と catalog 状態を確認し、承認後にだけ `out/` へ昇格する。
+11. WIP 制作中は artifact ごとに変更箇所を incremental build し、checkpoint で受け入れ snapshot、catalog fingerprint、artifact 固有 source fingerprint、影響範囲を再確認する。`reviewed` と表示する draft または `out/` 候補では artifact ごとのログ、evidence build receipt、全ページ表示を検証して公開する。
+12. 成果物の生成・保存に必要な権利・ライセンス、不要物混入、直前の inbox と catalog 状態を確認し、承認後にだけ `out/` へ昇格する。外部送信・公開・配布の条件は、その操作を実際に行う時点で別に確認する。
 
 ## Beamer 発表スライド固有の契約
 
@@ -328,10 +328,10 @@ repository root から、事前に確定した current project root を第一引
 - source code を説明する場合、固定 revision の実 source に対する確認範囲、entry point、主要依存、paper-to-code 対応、掲載 excerpt の locator と権利、観察・推論・未確認事項の区別が記録され、別 identity の Codex による semantic code review が完了している。
 - 全 work unit について作成・最終修正後の affected-unit review が記録され、成果物に含まれる unit がすべて `reviewed` で WIP が 0 件である。数学を含む場合は repository root の `MATH_PROSE_REVIEW.md` の独立 read-only review が完了し、definition-before-use violation、unlabeled formal claim、broken reference、未追跡依存、open blocking finding が 0 件である。
 - 全 current asset、visual、resource、software が講義ノートの evidence index に載り、採否が確定している。説明対象は本文の evidence reference を持ち、全 included/explained visual は図表本体、実描画 asset を明示した visual placement、必要な lineage を持ち、全 explained code asset は読者に必要な listing と code placement を持つ。各 backing file が current build receipt の input と一致し、各 placement 固有表示が PDF に存在している。全 source document と全 included/explained visual に current preparation と primary/independent Codex review pair があり、全 source visual の完全性確認、全 note visual の origin・rights・alt text、全 software の exact revision・license・環境・利用法・出力 lineage が確定している。
-- evidence catalog、生成 index、source revision、software/run receipt、PDF build receipt、`draft/STATUS` が同じ fingerprint/snapshot を指し、`shared-draft` または `promotion` の該当 gate を通過している。`out/` は pending 0 かつ offline build receipt を持つ promotion gate の pass を必須とする。
+- evidence catalog、生成 index、source revision、software/run receipt、PDF build receipt、`draft/STATUS` が同じ fingerprint/snapshot を指し、`reviewed` または `promotion` の該当 gate を通過している。`out/` は pending 0 かつ offline build receipt を持つ promotion gate の pass を必須とする。
 - 合意した手順で再生成でき、警告、参照、目次、数式、フォント、全ページのレイアウト検証を通過し、参照成果物がある場合は house style を一組として actual-size と fit-width の両方で比較済みである。
 - 採用 inbox snapshot、source revision、検証結果、承認が記録され、最終成果だけが `out/` に明示的に昇格されている。
-- 配布物に秘密情報や権利不明素材がなく、公開・配布条件が確認されている。
+- 実際に外部送信・公開・配布する場合は、対象に秘密情報や権利不明素材がなく、その操作に必要な条件が確認されている。
 - `presentation` 構成では、講義ノートと Beamer スライドの canonical source、PDF、`STATUS`、work unit review、build receipt、全ページ render、promotion 判断が artifact ごとに完了し、同じ採用 input・Paper ID・catalog fingerprint を指しながら source fingerprint と PDF hash が正しい artifact に束縛されている。
 - Beamer スライドは presentation profile の聴衆・時間・言語・目的・既知前提・表示条件に適合し、講義ノート参照なしで発表範囲を理解でき、definition-before-use、claim/proof dependency、図表の読み方、出典、限界、takeaway が frame 順で完結している。
 - timing review と全 frame の投影可読性検査が完了し、時間超過、overfull、切断、重なり、読めない文字・式・図表・引用、必須内容を隠す overlay が 0 件である。

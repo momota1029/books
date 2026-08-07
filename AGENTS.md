@@ -91,9 +91,9 @@ project 名と案件内容は repository mode にかかわらず、外部共有�
 - 大幅な書き換えのため source を一旦空にする、骨組みだけにする、内容を退避する等、途中状態が大きく後退して見える操作も現在の作業状態である。操作前に直前の復旧可能な状態を commit・push し、操作後は `draft/STATUS.*` を先に更新して、空、再構成中、build 不可、未検証等の実態と対象範囲を明示する。build 可能なら、その不完全な状態も WIP と明記した可読成果物へ速やかに反映する。
 - source 変更後に新しい可読成果物をまだ生成できない場合、直前の成功 PDF 等を最新版に見せてはならない。`STATUS` を直ちに `building`、`stale`、`failed` または `WIP` にし、対応する source revision、最後に成功した revision、未反映範囲、次の更新条件を記録する。古い成果物を残す場合も historical/stale であることをファイル名または隣接する status から一目で判別可能にする。
 - draft 同期は少なくとも、別 task への切替前、担当または file ownership の移管前、長時間の build・test・調査前、ユーザーへの進捗報告前、および作業 turn・session の終了前に行う。同期できない blocker がある場合は、古い draft を無表示で残さず `STATUS` とユーザー報告の双方へ記録する。
-- 領域別規約が draft 再公開前の review を要求する場合、その要件は変更後 snapshot を `reviewed` と表示し続ける場合、または読者への共有・配布境界に適用する。現在状態を明示した `unreviewed internal WIP` の live 同期は独立 review の完了まで延期せず、変更前 revision の review 結果を変更後 revision に流用しない。
+- 領域別規約が draft の review を要求する場合、その要件は変更後 snapshot を `reviewed` と表示する条件として扱う。PDF を誰が開くか、または利用者が file を copy できることを、WIP draft の生成・更新を止める gate にしない。現在状態を明示した `unreviewed WIP` の live 同期は独立 review の完了まで延期せず、変更前 revision の review 結果を変更後 revision に流用しない。
 - `draft/` の更新は完成、review 済み、配布可能を意味しない。途中成果物には親規約と領域別規約に従って WIP、未通過 gate、未完了範囲、blocking finding を表示し、`out/` への promotion と明確に分離する。
-- project owner またはその明示的に認めた共同学習者が進捗を確認する private な `draft/` PDF は `internal WIP preview` とし、不特定または外部の読者へ渡す `shared draft`、公開、配布、`out/` promotion と区別する。owner 自身が PDF を開いて学習・確認することを「読者への共有」と解釈しない。build 可能な source がある限り、未完了 unit、open finding、未通過 review、coverage・索引・権利の未確定は preview の状態表示と隔離条件であり、internal WIP PDF の生成自体を完成時まで延期する理由にしない。内容上の blocking finding があっても該当範囲を `WIP` または `blocked` と表示して preview に反映し、compile 不能、preview 自体が安全・契約・権利上許されない場合だけ生成を止めて `STATUS` に理由を記録する。
+- `draft/` PDF は、閲覧者、所在、copy の可否にかかわらず WIP artifact とする。build 可能な source がある限り、未完了 unit、open finding、未通過 review、coverage・索引・権利の未確定は `STATUS` と本文の状態表示・隔離条件であり、WIP PDF の生成自体を完成時まで延期する理由にしない。内容上の blocking finding があっても該当範囲を `WIP` または `blocked` と表示して反映し、compile 不能、PDF 生成自体が安全・契約・権利上許されない場合だけ生成を止めて `STATUS` に理由を記録する。`out/` は完成条件を満たした snapshot の置場であって配布許可を与える仕組みではなく、外部への送信・公開・配布は artifact の所在と分離し、実際にその操作を行う時点でユーザーの明示指示、privacy、rights、契約を別に確認する。
 
 ## self-contained 性と局所・大域 navigation
 
@@ -208,25 +208,25 @@ RISKS: 残る懸念、判断待ち、または none
 
 ### 制作ループと品質ゲート
 
-検査の厳格さは制作中の各編集ではなく、成果物を確定・共有する境界で最大化する。頻繁な draft 同期と recovery checkpoint は、各回に完全な品質 gate を要求することを意味しない。領域別規約と `MATH_PROSE_REVIEW.md` は内容固有の検査項目を追加できるが、ユーザーが案件固有の高頻度 review を明示しない限り、検査の実行時期と変更分類は本節を継承する。
+検査の厳格さは制作中の各編集ではなく、snapshot を `reviewed` または完成と表示する境界で最大化する。頻繁な draft 同期と recovery checkpoint は、各回に完全な品質 gate を要求することを意味しない。領域別規約と `MATH_PROSE_REVIEW.md` は内容固有の検査項目を追加できるが、ユーザーが案件固有の高頻度 review を明示しない限り、検査の実行時期と変更分類は本節を継承する。
 
 - **WIP 制作中**: 意味のある小さな編集単位で canonical source を保存し、上記の live view 規則に従って draft と status を更新する。incremental build、構文、変更箇所の未解決参照、変更ページ・変更図の render 等、短時間で失敗を検出できる検査を行う。build 可能な source を複数の意味ある編集単位にわたって未 build のままにせず、別 task、長時間処理、ownership 移管、進捗報告、turn・session 終了の前には最新 source を反映した incremental build または失敗を記録した `STATUS` を残す。独立 review、全 phase、全ページ・全図、全索引 fixture の検査を各編集のたびに要求しない。既知の blocking finding を隠したり、WIP を `reviewed` または `out` として扱ったりしてはならない。
 - **recovery checkpoint**: 作業消失時にそこから再開でき、採用した `inbox/` snapshot、canonical source、永続台帳、`draft/` の可読成果物と status の関係を説明できる小さな状態を指す。work unit の完成を待たず頻繁に作り、対象差分と短時間の検査を確認して commit・push する。verified private mode では、stable と確認した `inbox/` の新規・変更 input と、更新した `draft/` の PDF・`STATUS`・変更要約も、既知の保存禁止がない限り source・records と同じ recovery checkpoint に含める。未完成または一時的に build 不可でも、状態と既知の問題が明示され、秘密情報・保存自体を禁ずる契約・権利条件・無関係な変更を含まなければ WIP checkpoint としてよい。
 - **quality checkpoint**: 一つの work unit または意味のまとまりの終端で affected scope と依存範囲を確定し、必要な review と build を行う。細かな変更はこの境界まで batch してよいが、recovery checkpoint と draft 同期まで延期しない。各 keystroke や save の前に同じ検査を反復しない。
-- **配布・promotion 前**: 読者への共有、公開、または `out/` への promotion に使う input snapshot を固定し、要求される独立 review、全体 build、全ページ・全図、目次、索引、参照、権利、privacy の gate を完全に実施する。checkpoint の部分検査だけでこの gate を代替しない。
+- **`reviewed` 表示・promotion 前**: `reviewed` と表示する draft または `out/` へ promotion する input snapshot を固定し、要求される独立 review、全体 build、全ページ・全図、目次、索引、参照の gate を完全に実施する。checkpoint の部分検査だけでこの gate を代替しない。agent が実際に外部送信・公開・配布を行う場合は、artifact の status と別にユーザーの明示指示、privacy、rights、契約をその操作時点で確認する。
 
-反復検査には risk と作業規模に応じた時間予算を置き、時間のかかる全体 build、全 fixture、全ページ検査は入力または依存が変わった必要範囲だけ実行し、その他は checkpoint または配布・promotion 前へ繰り越す。入力 snapshot と tool version が同じ検査結果および安全な build cache は再利用してよい。時間予算の超過を gate 通過とは扱わず、配布・promotion に必須の未完検査は最終的に完了させる。`.system/bootstrap` と `.system/doctor` は clone 後の必須実行に加え、shared tool・環境の変更時または異常の診断時に再実行し、変更のない通常の制作 cycle ごとには反復しない。
+反復検査には risk と作業規模に応じた時間予算を置き、時間のかかる全体 build、全 fixture、全ページ検査は入力または依存が変わった必要範囲だけ実行し、その他は checkpoint または `reviewed` 表示・promotion 前へ繰り越す。入力 snapshot と tool version が同じ検査結果および安全な build cache は再利用してよい。時間予算の超過を gate 通過とは扱わず、`reviewed` 表示・promotion に必須の未完検査は最終的に完了させる。`.system/bootstrap` と `.system/doctor` は clone 後の必須実行に加え、shared tool・環境の変更時または異常の診断時に再実行し、変更のない通常の制作 cycle ごとには反復しない。
 
 変更は次の三種類に分類し、迷う場合は一段上の分類を使う。
 
 - **semantic**: 定義、主張、証明、数式、依存、事実、翻訳の意味、用語の意味、図の geometry または semantics を変える変更。checkpoint で affected unit と依存範囲を求め、authoring 担当とは別の independent read-only review を行い、記録を project の private area に保存する。
-- **structural**: label/ref、番号、章節構成、索引 entry、図表配置、caption の番号・配置・style、build・組版設定等を変えるが、内容の意味を直接は変えない変更。caption 本文の意味変更は semantic とする。対象を絞った自動検査と render 検査を行い、意味、定義順序、依存または読者解釈へ波及する場合、および配布・promotion 前に必要な範囲だけ独立 review を行う。
+- **structural**: label/ref、番号、章節構成、索引 entry、図表配置、caption の番号・配置・style、build・組版設定等を変えるが、内容の意味を直接は変えない変更。caption 本文の意味変更は semantic とする。対象を絞った自動検査と render 検査を行い、意味、定義順序、依存または読者解釈へ波及する場合、および `reviewed` 表示・promotion 前に必要な範囲だけ独立 review を行う。
 - **editorial**: 意味、定義、参照、依存、文書構造を変えず、表示への影響が局所的な誤字、句読点、空白、表記統一、局所的な言い換え。差分確認と関連する incremental build を行い、表示が変わる場合は変更ページを render で確認すれば、数学文章の independent review を再度開かなくてよい。pagination、番号、参照または広域 layout へ波及した場合は structural に上げる。分類、対象 snapshot、確認結果は次の checkpoint 記録へまとめてよい。
 
 数学内容を含む翻訳、論文、ノートは追跡可能な work unit に分け、unit 完成時と semantic change 後の checkpoint で affected unit と影響範囲を `MATH_PROSE_REVIEW.md` に従いレビューする。structural change と editorial change は上記の分類に従い、変更がない unit の review を機械的にやり直さない。
 
-private な内部確認用 preview は、project owner またはその明示的に認めた共同学習者による学習・途中確認を含む。`unreviewed internal WIP` と input snapshot、未通過 gate、未完了範囲を明記し、配布対象から隔離する場合は、独立 review または全体 gate の前にも生成し、build 可能な最新 source を完成時まで PDF 化せずに置かない。外部の読者へ `shared draft` として公開・共有する前には、その input snapshot と含まれる全 unit の review status を確定し、`reviewed` とする各 unit が `MATH_PROSE_REVIEW.md` の unit gate を満たすことを確認する。変更後に shared draft を再公開する場合は、変更分類に応じた affected scope の再検証を完了し、変更後 snapshot に対する gate と review status を更新する。draft は可読な進捗成果物とし、input snapshot、review status、WIP とその未完了範囲を本文で明示する。
-- blocking gap、unlabeled formal claim、broken reference のいずれかがある unit を `reviewed` と表示して draft PDF を公開または共有しない。
+draft preview は学習・途中確認のための live view とする。`unreviewed WIP` と input snapshot、未通過 gate、未完了範囲を明記し、独立 review または全体 gate の前にも生成して、build 可能な最新 source を完成時まで PDF 化せずに置かない。`reviewed` と表示する各 unit は `MATH_PROSE_REVIEW.md` の unit gate を満たし、変更後は変更分類に応じた affected scope の再検証を完了してから review status を更新する。誰が draft を閲覧または copy できるかは、この status 判定を変えない。draft は可読な進捗成果物とし、input snapshot、review status、WIP とその未完了範囲を本文で明示する。
+- blocking gap、unlabeled formal claim、broken reference のいずれかがある unit を `reviewed` と表示しない。該当 unit は状態と影響範囲を示した `WIP` または `blocked` として draft PDF に含めてよい。
 - formal claim は意味に合う番号付き semantic environment に置き、自動生成番号と一意で安定した `label` を付ける。直前の theorem-like statement を証明する通常の proof は、見出しを原則として「証明」とする bare な無番号 proof environment に置き、proof 番号、proof 自体の `label`、対象 statement への明示的な cross-reference を付けない。statement から離れた証明・解答には対象 statement への `label` による cross-reference を含む無番号の説明見出しを用いてよい。番号付き proof は、複数の証明・別証明を区別する場合、または proof 自体が他所から参照される場合に限り、一意で安定した `label` と対象 statement への cross-reference を持たせる。
 - formal claim の判定は、原資料または現原稿の環境名、段落種別、主張の一般性や長さではなく、文の数学的役割で行う。example、remark、caption、脚注、導入 prose 等の内部でも、特定の対象について性質・関係・存在・一意性・等式・不等式等を真であると assertion し、「実際」「なぜなら」「これを見るには」等に続けて根拠を与える部分は formal claim と proof の強い候補である。単一対象に固有でも、独立した真偽判定を持つ assertion とその論証は意味に合う theorem-like statement と proof へ抽出し、元の構成・適用・解釈だけを example 等に残す。各 unit で prose と全 semantic environment を走査し、未抽出の formal assertion を 0 件にする。
 - proof に非自明な gap を残さない。十分な長さは `MATH_PROSE_REVIEW.md` の proof dependency trace の基準で判定し、任意の語数または page 数を要件にしない。
@@ -246,7 +246,7 @@ private な内部確認用 preview は、project owner またはその明示的�
 - 自由な近似、目視だけによる作図、見た目だけの代用を原図の再現として扱わない。投影、視点、曲率、位相、接続、遮蔽、前後関係、立体面を含む幾何学的構造を原図と照合し、要素の欠落または意味を変える歪みは blocking finding とする。
 - 原画像の利用権を確認できない場合は、TeX、TikZ、PGFPlots、SVG などの repository-native な vector source で再構成し、権利確認なしに原画像をコピーしない。
 - 簡略化または省略は、ユーザーが明示的に許可した場合に限る。その決定内容と成果物への影響を review 記録に残す。
-- 図表の semantic change を含む affected unit は checkpoint で authoring 担当と分けた independent review を行い、原図と要素単位に比較して全要素の presence、placement、semantics に加え、geometry、投影、遮蔽、前後関係、曲面・立体面の全面積と可視範囲を確認する。球面、半球面等の曲面・立体面を輪郭線だけで代用してはならない。WIP 制作中は変更図と影響ページを検査し、配布・promotion 前には実際の render を全ページ・全図について検査する。要素または曲面・立体面の欠落、意味を変える歪みその他の blocking finding がある unit は `reviewed` とせず、解消またはユーザーが明示的に合意した対応が記録されるまで draft PDF を公開・共有せず、`out/` へ promotion しない。
+- 図表の semantic change を含む affected unit は checkpoint で authoring 担当と分けた independent review を行い、原図と要素単位に比較して全要素の presence、placement、semantics に加え、geometry、投影、遮蔽、前後関係、曲面・立体面の全面積と可視範囲を確認する。球面、半球面等の曲面・立体面を輪郭線だけで代用してはならない。WIP 制作中は変更図と影響ページを検査し、`reviewed` 表示・promotion 前には実際の render を全ページ・全図について検査する。要素または曲面・立体面の欠落、意味を変える歪みその他の blocking finding がある unit は `reviewed` とせず、状態と影響範囲を示した `WIP` または `blocked` として draft PDF に反映する。解消またはユーザーが明示的に合意した対応が記録されるまで `out/` へ promotion しない。
 
 ## 安全性と Git
 

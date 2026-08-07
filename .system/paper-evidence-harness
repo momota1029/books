@@ -2904,12 +2904,23 @@ def inspect_visual_review_target(
         (errors if strict else warnings).append(f"independent Codex visual re-review is missing: {target_id}")
 
 
+GATE_PHASE_ALIASES = {"internal-wip": "wip", "shared-draft": "reviewed"}
+
+
+def canonical_gate_phase(phase: str) -> str:
+    canonical = GATE_PHASE_ALIASES.get(phase, phase)
+    if canonical not in {"wip", "reviewed", "promotion"}:
+        raise HarnessError(f"unknown gate phase: {phase}")
+    return canonical
+
+
 def inspect_gate(project: pathlib.Path, config: dict, registry: dict, phase: str) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
     entries = all_entries(registry)
-    strict = phase in {"shared-draft", "promotion"}
-    promotion = phase == "promotion"
+    canonical_phase = canonical_gate_phase(phase)
+    strict = canonical_phase in {"reviewed", "promotion"}
+    promotion = canonical_phase == "promotion"
     note_refs = reference_ids(registry)
     original_caption_refs = reference_ids(registry, "original-caption")
     visual_placement_refs = reference_ids(registry, "visual-placement")
@@ -5490,7 +5501,11 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--source-revision", help="optional human-readable label; source hashes are recorded automatically")
 
     gate = add_common_parser(subparsers, "gate", "run a phase-specific fail-closed audit")
-    gate.add_argument("--phase", choices=("internal-wip", "shared-draft", "promotion"), required=True)
+    gate.add_argument(
+        "--phase",
+        choices=("wip", "reviewed", "promotion", "internal-wip", "shared-draft"),
+        required=True,
+    )
     return parser
 
 
@@ -5573,28 +5588,31 @@ def main() -> int:
             elif args.command == "record-build":
                 record_build(project, config, registry, args)
             elif args.command == "gate":
+                canonical_phase = canonical_gate_phase(args.phase)
                 fresh = discover(project, config, registry)
                 stored_discovery = registry.get("scan", {}).get("discovery_fingerprint")
                 current_discovery = fresh.get("scan", {}).get("discovery_fingerprint")
-                errors, warnings = inspect_gate(project, config, registry, args.phase)
+                errors, warnings = inspect_gate(project, config, registry, canonical_phase)
                 if not stored_discovery or stored_discovery != current_discovery:
                     errors.append("discovery inputs changed after the last scan; run scan again")
                     errors = sorted(set(errors))
                 audit = {
-                    "checked_at": now_utc(), "phase": args.phase,
+                    "checked_at": now_utc(), "phase": canonical_phase,
                     "catalog_fingerprint": catalog_fingerprint(registry),
                     "errors": errors, "warnings": warnings,
                     "result": "fail" if errors else "pass",
                 }
+                if canonical_phase != args.phase:
+                    audit["requested_phase_alias"] = args.phase
                 write_json(paths["audit"], audit)
                 for warning in warnings:
                     print(f"WARNING: {warning}", file=sys.stderr)
                 for error in errors:
                     print(f"ERROR: {error}", file=sys.stderr)
                 if errors:
-                    print(f"paper-evidence-harness: gate {args.phase} failed ({len(errors)} errors)", file=sys.stderr)
+                    print(f"paper-evidence-harness: gate {canonical_phase} failed ({len(errors)} errors)", file=sys.stderr)
                     return 1
-                print(f"paper-evidence-harness: gate {args.phase} ok")
+                print(f"paper-evidence-harness: gate {canonical_phase} ok")
                 return 0
             else:
                 raise HarnessError("unsupported command")

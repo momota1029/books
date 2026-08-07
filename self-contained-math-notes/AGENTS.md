@@ -110,7 +110,7 @@ coverage harness が読む canonical record は schema version を持つ機械�
 ## draft と out
 
 - `draft/` の PDF は途中成果であり final と呼ばない。`out/` への移動・複製は、完了条件を確認した明示的な promotion とする。
-- 各 work unit の checkpoint ごとに、必要ならその時点で通読可能な PDF を `draft/` へ公開する。公開状態を `draft/STATUS.*` 等へ記録し、少なくともビルド日時、成功・失敗・陳腐化、source revision または commit、採用した inbox input snapshot、coverage record/report snapshot、work unit ごとの `reviewed` / `WIP`、検証状態、未反映 Source Unit・未統合演習・未解決補完の件数、残件、対応する PDF 名を含める。checkpoint 前の private preview は `unreviewed internal WIP` として配布対象から隔離する。
+- 各 work unit の意味のある小さな更新ごとに、その時点で通読可能な PDF を `draft/` へ公開する。公開状態を `draft/STATUS.*` 等へ記録し、少なくともビルド日時、成功・失敗・陳腐化、source revision または commit、採用した inbox input snapshot、coverage record/report snapshot、work unit ごとの `reviewed` / `WIP`、検証状態、未反映 Source Unit・未統合演習・未解決補完の件数、残件、対応する PDF 名を含める。checkpoint 前でも `unreviewed WIP` として生成し、閲覧者や copy の可否を生成 gate にしない。
 - `reviewed` と表示する work unit は、当該 input snapshot に対する独立レビューと再検証を完了し、数学的 gap、未定義語・記号、未追跡依存、壊れた参照を 0 件にする。未完の work unit は `WIP` として完成部分から隔離し、PDF 本文と `STATUS` の双方で未完了範囲と依存不能範囲を明示する。
 - 新しいビルドを開始した時、inbox revision や canonical source が変わった時、またはビルドが失敗した時は、残っている古い成功 PDF を最新版と誤認しないよう `STATUS` を先に `building`、`failed` または `stale` に更新する。
 - `out/` の既存成果を直接上書きする前に、対象名、版、検証結果、承認を確認する。可能なら成果物と共にビルド日時、source revision/commit、採用 inbox snapshot、検証状態を記録する。
@@ -141,9 +141,9 @@ coverage harness が読む canonical record は schema version を持つ機械�
 8. work unit の完成時と semantic change 後の checkpoint で、新規の語・記号、証明の各推論、参照先、例、および必要な推論・計算・場合分けに欠落がないことを検証し、authoring 担当とは別の独立レビューを完了してから `reviewed` とする。structural change と editorial change は親 `AGENTS.md` の分類に従って検査範囲を絞る。
 9. coverage harness、依存グラフ、記号表、用語索引、相互参照を更新し、未反映 Source Unit、未統合演習、由来不明補完、循環、重複定義、意味変化、前方依存、章間の gap、未解決 conflict を全体検証する。
 10. 初学者が局所的に追えるか、後続の修士水準で必要な厳密さ・一般性を損なわないかをレビューする。
-11. checkpoint では `../MATH_PROSE_REVIEW.md` の affected phase と affected coverage を authoring 担当とは分けた read-only review phase として実施し、finding と再検証結果を private records に保存する。配布・promotion 前には同文書の全 phase と全件 coverage review を実施する。
-12. WIP 制作中は変更箇所を incremental build し、checkpoint で受け入れ snapshot、record snapshot、影響範囲を再確認する。読者へ共有する draft または `out/` 候補ではログと全ページ表示を検証して公開する。
-13. 権利、ライセンス、配布範囲、不要物混入、直前の inbox 状態、coverage harness の 0 件条件を確認し、承認後にだけ `out/` へ昇格する。
+11. checkpoint では `../MATH_PROSE_REVIEW.md` の affected phase と affected coverage を authoring 担当とは分けた read-only review phase として実施し、finding と再検証結果を private records に保存する。`reviewed` 表示・promotion 前には同文書の全 phase と全件 coverage review を実施する。
+12. WIP 制作中は変更箇所を incremental build し、checkpoint で受け入れ snapshot、record snapshot、影響範囲を再確認する。`reviewed` と表示する draft または `out/` 候補ではログと全ページ表示を検証して公開する。
+13. 成果物の生成・保存に必要な権利・ライセンス、不要物混入、直前の inbox 状態、coverage harness の 0 件条件を確認し、承認後にだけ `out/` へ昇格する。外部送信・公開・配布の条件は、その操作を実際に行う時点で別に確認する。
 
 ## work unit と制作サイクル
 
@@ -231,4 +231,4 @@ coverage harness が読む canonical record は schema version を持つ機械�
 - 合意した手順で再生成でき、警告、参照、目次、数式、フォント、全ページのレイアウト検証を通過し、参照成果物がある場合は house style を一組として actual-size と fit-width の両方で比較済みである。
 - 採用 inbox snapshot、source revision、coverage record/report snapshot、canonical source revision、schema・validator・shared tool version、検証結果、承認が一致する組として記録され、authoring から独立した全件 coverage review を通過した最終成果だけが `out/` に明示的に昇格されている。
 - 各 affected work unit の independent review が記録され、draft の `reviewed` unit に gap・未定義・壊れた参照がなく、`WIP` は隔離・明示され、`out/` の `WIP` と unresolved blocking は 0 件である。
-- 配布物に秘密情報や権利不明素材がなく、公開・配布条件が確認されている。
+- 実際に外部送信・公開・配布する場合は、対象に秘密情報や権利不明素材がなく、その操作に必要な条件が確認されている。

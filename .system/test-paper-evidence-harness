@@ -445,15 +445,15 @@ for artifact_id in ("notes", "slides"):
     )
 PY
 if "$repo_dir/.system/paper-evidence-harness" gate \
-    "$presentation_project" --phase shared-draft >/dev/null; then
-  pass artifact-gate 'shared-draft gate requires and validates both independent artifacts'
+    "$presentation_project" --phase reviewed >/dev/null; then
+  pass artifact-gate 'reviewed gate requires and validates both independent artifacts'
 else
   fail artifact-gate 'completed presentation artifact pair'
 fi
 mv -- "$presentation_project/draft/STATUS.slides.md" \
   "$test_root/STATUS.slides.md"
 if "$repo_dir/.system/paper-evidence-harness" gate \
-    "$presentation_project" --phase shared-draft \
+    "$presentation_project" --phase reviewed \
     >"$test_root/missing-slide-status.log" 2>&1; then
   fail artifact-status 'multi-artifact gate accepted a missing slide STATUS'
 elif grep -Fq 'draft STATUS is missing for artifact slides' \
@@ -535,7 +535,7 @@ fi
 
 rewrite_with_sed 's/"paper_scope": "Sections 1--3"/"paper_scope": ""/' \
   "$paper_metadata_project/.workspace/records/paper-ingestion-manifest.json"
-"$repo_dir/.system/paper-evidence-harness" gate "$paper_metadata_project" --phase internal-wip \
+"$repo_dir/.system/paper-evidence-harness" gate "$paper_metadata_project" --phase wip \
   >"$test_root/paper-scope.log" 2>&1 || true
 if grep -Fq 'adopted paper lacks a scope' "$test_root/paper-scope.log"; then
   pass paper-gate 'gate rejects an adopted paper with incomplete attribution'
@@ -604,8 +604,8 @@ printf '%s\n' \
 
 if "$repo_dir/.system/paper-evidence-harness" scan "$project" >/dev/null &&
   "$repo_dir/.system/paper-evidence-harness" gate "$project" --phase internal-wip >/dev/null &&
-  expect_failure "$repo_dir/.system/paper-evidence-harness" gate "$project" --phase shared-draft; then
-  pass 2 'discovery succeeds while shared gate fails closed on pending evidence'
+  expect_failure "$repo_dir/.system/paper-evidence-harness" gate "$project" --phase reviewed; then
+  pass 2 'discovery succeeds while reviewed gate fails closed on pending evidence'
 else
   fail 2 'discovery and pending gate behavior'
 fi

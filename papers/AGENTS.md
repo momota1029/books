@@ -166,7 +166,7 @@ truth status は親の `MATH_PROSE_REVIEW.md` の `proved`、`conditional`、`he
 
 - `.workspace/` の canonical source を build し、生成物はまず `.workspace/build/` に置く。成功、ログ、参照、引用、font、ページを検証後、`draft/` の一時名から原子的に公開する。`draft/` と `out/` を compiler の直接出力先にしない。
 - `draft/STATUS.*` には build 時刻、source revision/commit、採用 inbox snapshot、成果物名、段階、日英同期 revision、unit ごとの `reviewed` / `WIP` / `blocked`、検査結果、open finding、次の作業を記す。source または入力変更時は古い PDF を `stale` とする。
-- draft 本文にも `unreviewed internal WIP`、未完了範囲、未通過 gate を表示する。未証明の主張や失敗した証明を完成済みに見せず、open blocking finding がある unit を `reviewed` としない。
+- draft 本文にも `unreviewed WIP`、未完了範囲、未通過 gate を表示する。未証明の主張や失敗した証明を完成済みに見せず、open blocking finding がある unit を `reviewed` としない。閲覧者や copy の可否は draft の生成または数学的 status を変えない。
 - 証明・例集、日本語論文、英語論文は別々に完成させて `out/` へ promotion できる。`out/STATUS.*` または manifest で各成果物の source revision、review、承認、build、hash、後続成果物との同期状態を示す。
 - build 失敗時は `out/` を変更しない。既存 `out/` を上書きする前に対象、版、承認を確認し、可能なら版を保持する。clean は再生成可能領域だけに限定する。
 
