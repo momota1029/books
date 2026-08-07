@@ -40,12 +40,14 @@ required_scripts=(
   .system/doctor
   .system/instruction-refresh
   .system/standards-migration
+  .system/book-draft-preview
   .system/book-claim-harness
   .system/verify-private-remote
   .system/repository-mode
   .system/sync-mode-excludes
   .system/test-instruction-refresh
   .system/test-standards-migration
+  .system/test-book-draft-preview
   .system/test-book-claim-harness
   .system/test-repository-mode
   .system/new-book-project
@@ -92,6 +94,8 @@ done
   fail "offline instruction refresh test failed"
 .system/test-standards-migration >/dev/null 2>&1 || \
   fail "offline standards migration test failed"
+.system/test-book-draft-preview >/dev/null 2>&1 || \
+  fail "offline book draft preview test failed"
 .system/test-book-claim-harness >/dev/null 2>&1 || \
   fail "offline book claim harness test failed"
 .system/test-new-book-project >/dev/null 2>&1 || \

@@ -33,10 +33,35 @@ expect_failure() {
   fi
 }
 
+check_preview_and_claim_metadata() {
+  python3 - "$1" <<'PY'
+import json
+import pathlib
+import sys
+
+project = pathlib.Path(sys.argv[1])
+config = json.loads(
+    (project / ".workspace/tools/book-draft-preview.json").read_text(encoding="utf-8")
+)
+ledger = json.loads(
+    (project / ".workspace/records/claim-audit.json").read_text(encoding="utf-8")
+)
+raise SystemExit(
+    0
+    if config.get("schema_version") == 2
+    and config.get("active_profile") in config.get("profiles", {})
+    and ledger.get("scan", {}).get("audited_tex_file_count") == 3
+    and ledger.get("scan", {}).get("snapshot_sha256")
+    else 1
+)
+PY
+}
+
 repo_dir=$test_root/repository
 mkdir -p "$repo_dir/.system" "$repo_dir/.githooks" \
   "$repo_dir/book-translations"
 cp -- "$source_root/.system/new-book-project" \
+  "$source_root/.system/book-draft-preview" \
   "$source_root/.system/book-claim-harness" \
   "$source_root/.system/standards-migration" \
   "$source_root/.system/sync-mode-excludes" "$repo_dir/.system/"
@@ -49,6 +74,7 @@ printf 'refresh checker\n' >"$repo_dir/.system/instruction-refresh"
 printf 'post-merge hook\n' >"$repo_dir/.githooks/post-merge"
 printf 'book instructions\n' >"$repo_dir/book-translations/AGENTS.md"
 chmod +x "$repo_dir/.system/new-book-project" \
+  "$repo_dir/.system/book-draft-preview" \
   "$repo_dir/.system/book-claim-harness" \
   "$repo_dir/.system/standards-migration" \
   "$repo_dir/.system/sync-mode-excludes" "$repo_dir/.system/doctor"
@@ -73,6 +99,18 @@ if .system/new-book-project alpha >/dev/null &&
   [[ -f book-translations/alpha/.workspace/records/standards-initialization.json ]] &&
   [[ -f book-translations/alpha/.workspace/records/claim-audit.json ]] &&
   [[ -f book-translations/alpha/.workspace/records/claim-audit-report.json ]] &&
+  [[ -f book-translations/alpha/.workspace/source/book/main.tex ]] &&
+  [[ -f book-translations/alpha/.workspace/source/book/design.tex ]] &&
+  [[ -f book-translations/alpha/.workspace/source/book/content.tex ]] &&
+  [[ -f book-translations/alpha/.workspace/tools/book-draft-preview.json ]] &&
+  [[ -f book-translations/alpha/.workspace/records/book-preview-progress.json ]] &&
+  [[ -f book-translations/alpha/.workspace/records/book-draft-preview-last-success.json ]] &&
+  [[ -s book-translations/alpha/draft/book-wip.pdf ]] &&
+  grep -Fqx 'artifact-status: unreviewed WIP' \
+    book-translations/alpha/draft/STATUS.preview.md &&
+  grep -Fqx 'build-status: success' \
+    book-translations/alpha/draft/STATUS.preview.md &&
+  check_preview_and_claim_metadata book-translations/alpha &&
   [[ -f book-translations/alpha/.workspace/tools/book-claim-audit.json ]] &&
   [[ $(<book-translations/alpha/.workspace/system-version) == \
     $(git rev-parse --verify 'HEAD^{commit}') ]] &&

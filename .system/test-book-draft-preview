@@ -1,0 +1,536 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+export LC_ALL=C
+export GIT_CONFIG_GLOBAL=/dev/null
+export GIT_CONFIG_SYSTEM=/dev/null
+
+source_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+test_root=$(mktemp -d)
+
+cleanup() {
+  if [[ -n ${test_root:-} && -d $test_root && ! -L $test_root ]]; then
+    find "$test_root" -depth -delete
+  fi
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+fail() {
+  printf 'not ok %s - %s\n' "$1" "$2" >&2
+  if [[ -n ${project:-} && \
+        -f $project/.workspace/logs/book-draft-preview.log ]]; then
+    tail -n 40 -- "$project/.workspace/logs/book-draft-preview.log" >&2
+  fi
+  exit 1
+}
+
+pass() {
+  printf 'ok %s - %s\n' "$1" "$2"
+}
+
+expect_failure() {
+  if "$@" >/dev/null 2>&1; then
+    return 1
+  fi
+}
+
+repo_dir=$test_root/repository
+project=$repo_dir/book-translations/alpha
+mkdir -p "$repo_dir/.system" "$repo_dir/.githooks" \
+  "$project/inbox" "$project/draft" "$project/out" \
+  "$project/.workspace/source" "$project/.workspace/records" \
+  "$project/.workspace/tools" "$project/.workspace/build" \
+  "$project/.workspace/cache" "$project/.workspace/tmp" \
+  "$project/.workspace/logs" "$project/.workspace/locks"
+cp -- "$source_root/.system/book-draft-preview" \
+  "$source_root/.system/standards-migration" "$repo_dir/.system/"
+printf 'root instructions\n' >"$repo_dir/AGENTS.md"
+printf 'routing instructions\n' >"$repo_dir/WORKFLOW_ROUTING.md"
+printf 'writing instructions\n' >"$repo_dir/JAPANESE_WRITING.md"
+printf 'review instructions\n' >"$repo_dir/MATH_PROSE_REVIEW.md"
+printf 'refresh checker\n' >"$repo_dir/.system/instruction-refresh"
+printf 'post-merge hook\n' >"$repo_dir/.githooks/post-merge"
+printf 'book instructions\n' >"$repo_dir/book-translations/AGENTS.md"
+chmod +x "$repo_dir/.system/book-draft-preview" \
+  "$repo_dir/.system/standards-migration"
+
+git init -q "$repo_dir"
+cd "$repo_dir"
+git config --local user.name 'Book Preview Test'
+git config --local user.email 'book-preview@example.invalid'
+git add -- .system .githooks AGENTS.md WORKFLOW_ROUTING.md \
+  JAPANESE_WRITING.md MATH_PROSE_REVIEW.md book-translations/AGENTS.md
+git commit -q -m 'test fixture'
+git rev-parse --verify 'HEAD^{commit}' >"$project/.workspace/system-version"
+.system/standards-migration initialize --scope book-translations/alpha >/dev/null
+
+if .system/book-draft-preview init book-translations/alpha >/dev/null &&
+  [[ -s "$project/draft/book-wip.pdf" ]] &&
+  head -c 5 -- "$project/draft/book-wip.pdf" | grep -Fq '%PDF-' &&
+  [[ -f "$project/draft/STATUS.preview.md" ]] &&
+  grep -Fqx 'artifact-status: unreviewed WIP' \
+    "$project/draft/STATUS.preview.md" &&
+  grep -Fqx 'build-status: success' "$project/draft/STATUS.preview.md" &&
+  ! grep -Fq 'footskip is too small' \
+    "$project/.workspace/logs/book-draft-preview.log" &&
+  [[ -f "$project/.workspace/source/book/main.tex" ]] &&
+  [[ -f "$project/.workspace/source/book/design.tex" ]] &&
+  [[ -f "$project/.workspace/source/book/content.tex" ]] &&
+  [[ -f "$project/.workspace/tools/book-draft-preview.json" ]] &&
+  [[ -f "$project/.workspace/records/book-preview-progress.json" ]] &&
+  [[ -f "$project/.workspace/records/book-draft-preview-last-success.json" ]]; then
+  pass 1 'initial design source and WIP PDF publication'
+else
+  fail 1 'initial design source and WIP PDF publication'
+fi
+
+first_pdf_hash=$(sha256sum "$project/draft/book-wip.pdf" | awk '{print $1}')
+first_source_hash=$(awk -F ': ' \
+  '$1 == "source-snapshot-sha256" { print $2 }' \
+  "$project/draft/STATUS.preview.md")
+python3 - "$project/.workspace/records/book-preview-progress.json" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+progress = json.loads(path.read_text(encoding="utf-8"))
+progress["inbox_source_snapshot"] = "fixture-source-snapshot"
+progress["work_units"]["open_ids"] = ["WU-fixture"]
+path.write_text(
+    json.dumps(progress, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+PY
+if .system/book-draft-preview build book-translations/alpha >/dev/null &&
+  grep -Fq '"inbox_source_snapshot": "fixture-source-snapshot"' \
+    "$project/draft/STATUS.preview.md" &&
+  grep -Fq '"open_ids": [' "$project/draft/STATUS.preview.md"; then
+  progress_pdf_hash=$(sha256sum "$project/draft/book-wip.pdf" | awk '{print $1}')
+  progress_source_hash=$(awk -F ': ' \
+    '$1 == "source-snapshot-sha256" { print $2 }' \
+    "$project/draft/STATUS.preview.md")
+  if [[ $first_pdf_hash != "$progress_pdf_hash" &&
+        $first_source_hash == "$progress_source_hash" ]]; then
+    pass 2 'project-maintained progress is composed into status and PDF snapshot'
+  else
+    fail 2 'project-maintained progress snapshot composition'
+  fi
+else
+  fail 2 'project-maintained progress snapshot composition'
+fi
+
+python3 - "$project/.workspace/source/book/chapters/extra.tex" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+path.parent.mkdir()
+path.write_text("canonical source tree coverage\n", encoding="utf-8")
+PY
+if .system/book-draft-preview build book-translations/alpha >/dev/null; then
+  tree_pdf_hash=$(sha256sum "$project/draft/book-wip.pdf" | awk '{print $1}')
+  tree_source_hash=$(awk -F ': ' \
+    '$1 == "source-snapshot-sha256" { print $2 }' \
+    "$project/draft/STATUS.preview.md")
+  if [[ $progress_pdf_hash != "$tree_pdf_hash" &&
+        $progress_source_hash != "$tree_source_hash" ]]; then
+    pass 3 'complete canonical source tree snapshot'
+  else
+    fail 3 'canonical source tree snapshot omitted an added file'
+  fi
+else
+  fail 3 'complete canonical source tree snapshot'
+fi
+
+python3 - "$project/.workspace/source/book/content.tex" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+path.write_text(
+    path.read_text(encoding="utf-8")
+    + "\n\\section{局所的に仮決定した本文}\n"
+    + "この節は早期フィードバックのための実本文であり，後続設計で改稿され得る．\n",
+    encoding="utf-8",
+)
+PY
+if .system/book-draft-preview build book-translations/alpha >/dev/null; then
+  second_pdf_hash=$(sha256sum "$project/draft/book-wip.pdf" | awk '{print $1}')
+  second_source_hash=$(awk -F ': ' \
+    '$1 == "source-snapshot-sha256" { print $2 }' \
+    "$project/draft/STATUS.preview.md")
+  if [[ $tree_pdf_hash != "$second_pdf_hash" &&
+        $tree_source_hash != "$second_source_hash" ]]; then
+    pass 4 'incremental provisional content rebuild'
+  else
+    fail 4 'incremental provisional content rebuild did not change snapshots'
+  fi
+else
+  fail 4 'incremental provisional content rebuild'
+fi
+
+stable_pdf_hash=$(sha256sum "$project/draft/book-wip.pdf" | awk '{print $1}')
+cp -- "$project/.workspace/source/book/content.tex" "$test_root/content.clean.tex"
+python3 - "$project/.workspace/source/book/content.tex" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+path.write_text(
+    path.read_text(encoding="utf-8") + "\n\\UndefinedPreviewCommand\n",
+    encoding="utf-8",
+)
+PY
+if expect_failure .system/book-draft-preview build book-translations/alpha &&
+  grep -Fqx 'build-status: failed' "$project/draft/STATUS.preview.md" &&
+  [[ $(sha256sum "$project/draft/book-wip.pdf" | awk '{print $1}') == \
+    "$stable_pdf_hash" ]]; then
+  pass 5 'failed build marks status and preserves the previous PDF'
+else
+  fail 5 'failed build handling'
+fi
+
+cp -- "$test_root/content.clean.tex" "$project/.workspace/source/book/content.tex"
+.system/book-draft-preview build book-translations/alpha >/dev/null
+stable_pdf_hash=$(sha256sum "$project/draft/book-wip.pdf" | awk '{print $1}')
+mv -- "$project/.workspace/source/book/main.tex" "$test_root/main.tex"
+if expect_failure .system/book-draft-preview build book-translations/alpha &&
+  grep -Fqx 'build-status: failed' "$project/draft/STATUS.preview.md" &&
+  grep -Eq '^last-success-source-snapshot-sha256: [0-9a-f]{64}$' \
+    "$project/draft/STATUS.preview.md" &&
+  [[ $(sha256sum "$project/draft/book-wip.pdf" | awk '{print $1}') == \
+    "$stable_pdf_hash" ]]; then
+  pass 6 'preflight source failure invalidates status and identifies last success'
+else
+  fail 6 'preflight source failure status'
+fi
+mv -- "$test_root/main.tex" "$project/.workspace/source/book/main.tex"
+
+real_latexmk=$(command -v latexmk)
+fake_bin=$test_root/fake-bin
+mkdir -- "$fake_bin"
+python3 - "$fake_bin/latexmk" "$real_latexmk" <<'PY'
+import pathlib
+import shlex
+import sys
+
+path = pathlib.Path(sys.argv[1])
+real = shlex.quote(sys.argv[2])
+path.write_text(
+    "#!/usr/bin/env bash\n"
+    "set +e\n"
+    f"{real} \"$@\"\n"
+    "status=$?\n"
+    "if (( status == 0 )); then printf '%s\\n' '% concurrent source mutation' >>\"$BOOK_PREVIEW_MUTATE\"; fi\n"
+    "exit \"$status\"\n",
+    encoding="utf-8",
+)
+PY
+chmod +x "$fake_bin/latexmk"
+cp -- "$project/.workspace/source/book/content.tex" "$test_root/content.before-race.tex"
+stable_pdf_hash=$(sha256sum "$project/draft/book-wip.pdf" | awk '{print $1}')
+if expect_failure env PATH="$fake_bin:$PATH" \
+    BOOK_PREVIEW_MUTATE="$project/.workspace/source/book/content.tex" \
+    .system/book-draft-preview build book-translations/alpha &&
+  grep -Fqx 'build-status: stale' "$project/draft/STATUS.preview.md" &&
+  [[ $(sha256sum "$project/draft/book-wip.pdf" | awk '{print $1}') == \
+    "$stable_pdf_hash" ]]; then
+  pass 7 'source mutation during compilation prevents publication'
+else
+  fail 7 'source mutation during compilation'
+fi
+cp -- "$test_root/content.before-race.tex" "$project/.workspace/source/book/content.tex"
+.system/book-draft-preview build book-translations/alpha >/dev/null
+
+external_pdf=$test_root/external.pdf
+printf 'external sentinel\n' >"$external_pdf"
+external_hash=$(sha256sum "$external_pdf" | awk '{print $1}')
+malicious_run="$project/.workspace/build/book-draft-preview/malicious/out"
+mkdir -p "$malicious_run"
+ln -s -- "$external_pdf" "$malicious_run/preview-wrapper.pdf"
+stable_pdf_hash=$(sha256sum "$project/draft/book-wip.pdf" | awk '{print $1}')
+if expect_failure .system/book-draft-preview build book-translations/alpha &&
+  [[ $(sha256sum "$external_pdf" | awk '{print $1}') == "$external_hash" ]] &&
+  [[ $(sha256sum "$project/draft/book-wip.pdf" | awk '{print $1}') == \
+    "$stable_pdf_hash" ]] &&
+  grep -Fqx 'build-status: failed' "$project/draft/STATUS.preview.md"; then
+  pass 8 'unsafe stale build output is rejected without following its symlink'
+else
+  fail 8 'safe build output isolation'
+fi
+rm -- "$malicious_run/preview-wrapper.pdf"
+rmdir -- "$malicious_run" "${malicious_run%/out}"
+.system/book-draft-preview build book-translations/alpha >/dev/null
+
+symlink_bin=$test_root/symlink-bin
+mkdir -- "$symlink_bin"
+python3 - "$symlink_bin/latexmk" "$real_latexmk" <<'PY'
+import pathlib
+import shlex
+import sys
+
+path = pathlib.Path(sys.argv[1])
+real = shlex.quote(sys.argv[2])
+path.write_text(
+    "#!/usr/bin/env bash\n"
+    "set +e\n"
+    "outdir=\n"
+    "for argument in \"$@\"; do\n"
+    "  case $argument in -outdir=*) outdir=${argument#-outdir=} ;; esac\n"
+    "done\n"
+    f"{real} \"$@\"\n"
+    "status=$?\n"
+    "if (( status == 0 )); then\n"
+    "  rm -- \"$outdir/preview-wrapper.pdf\"\n"
+    "  ln -s -- \"$BOOK_PREVIEW_EXTERNAL\" \"$outdir/preview-wrapper.pdf\"\n"
+    "fi\n"
+    "exit \"$status\"\n",
+    encoding="utf-8",
+)
+PY
+chmod +x "$symlink_bin/latexmk"
+stable_pdf_hash=$(sha256sum "$project/draft/book-wip.pdf" | awk '{print $1}')
+if expect_failure env PATH="$symlink_bin:$PATH" \
+    BOOK_PREVIEW_EXTERNAL="$external_pdf" \
+    .system/book-draft-preview build book-translations/alpha &&
+  [[ $(sha256sum "$external_pdf" | awk '{print $1}') == "$external_hash" ]] &&
+  [[ $(sha256sum "$project/draft/book-wip.pdf" | awk '{print $1}') == \
+    "$stable_pdf_hash" ]] &&
+  grep -Fqx 'build-status: failed' "$project/draft/STATUS.preview.md"; then
+  pass 9 'a symlinked final build PDF is rejected before publication'
+else
+  fail 9 'final build PDF symlink safety'
+fi
+.system/book-draft-preview build book-translations/alpha >/dev/null
+
+lock_path=$project/.workspace/locks/book-draft-preview.lock
+mv -- "$lock_path" "$test_root/preview.lock"
+ln -s -- "$external_pdf" "$lock_path"
+if expect_failure .system/book-draft-preview build book-translations/alpha &&
+  [[ $(sha256sum "$external_pdf" | awk '{print $1}') == "$external_hash" ]] &&
+  grep -Fqx 'build-status: failed' "$project/draft/STATUS.preview.md"; then
+  pass 10 'unsafe project build lock is rejected without following the symlink'
+else
+  fail 10 'preview lock safety'
+fi
+rm -- "$lock_path"
+mv -- "$test_root/preview.lock" "$lock_path"
+.system/book-draft-preview build book-translations/alpha >/dev/null
+
+stable_pdf_hash=$(sha256sum "$project/draft/book-wip.pdf" | awk '{print $1}')
+printf 'root instructions changed\n' >"$repo_dir/AGENTS.md"
+fingerprint=$(.system/standards-migration fingerprint --scope book-translations/alpha)
+migration_root=".workspace/source/reconstruction-preview-${fingerprint:0:12}"
+python3 - ".system/book-draft-preview" "$project/$migration_root/main.tex" <<'PY'
+import pathlib
+import runpy
+import sys
+
+template = runpy.run_path(sys.argv[1])["MAIN_TEMPLATE"]
+path = pathlib.Path(sys.argv[2])
+path.parent.mkdir()
+path.write_text(template, encoding="utf-8")
+PY
+if expect_failure .system/book-draft-preview build book-translations/alpha &&
+  grep -Fqx 'build-status: failed' "$project/draft/STATUS.preview.md" &&
+  [[ $(sha256sum "$project/draft/book-wip.pdf" | awk '{print $1}') == \
+    "$stable_pdf_hash" ]] &&
+  .system/book-draft-preview init book-translations/alpha >/dev/null; then
+  if [[ -f "$project/$migration_root/main.tex" ]] &&
+    [[ -f "$project/$migration_root/design.tex" ]] &&
+    [[ -f "$project/$migration_root/content.tex" ]] &&
+    grep -Fqx 'standards-migration: stale' "$project/draft/STATUS.preview.md" &&
+    grep -Fqx 'source-role: noncanonical pre-adoption migration-design prototype' \
+      "$project/draft/STATUS.preview.md" &&
+    python3 - "$project/.workspace/tools/book-draft-preview.json" \
+      "$migration_root" <<'PY'
+import json
+import pathlib
+import sys
+
+config = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+active = config["profiles"][config["active_profile"]]
+raise SystemExit(
+    0
+    if len(config["profiles"]) == 2
+    and active["created_for"] == "migration-preview"
+    and active["source_root"] == sys.argv[2]
+    else 1
+)
+PY
+  then
+    pass 11 'migration-required partial initialization resumes in an isolated WIP path'
+  else
+    fail 11 'migration-required pre-adoption preview state'
+  fi
+else
+  fail 11 'migration-required pre-adoption preview initialization'
+fi
+
+replacement_root=.workspace/source/adopted-reconstruction
+mkdir -- "$project/$replacement_root"
+printf '%s\n' \
+  'standards-migration: reconstructing' \
+  "standards-fingerprint: $fingerprint" >"$project/draft/STATUS.preview.md"
+python3 - "$project" "$fingerprint" "$replacement_root" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+project = pathlib.Path(sys.argv[1])
+fingerprint = sys.argv[2]
+replacement_root = sys.argv[3]
+
+
+def digest(path):
+    value = hashlib.sha256()
+    if path.is_file():
+        value.update(b"file\0")
+        value.update(path.read_bytes())
+        return value.hexdigest()
+    value.update(b"directory\0")
+    for entry in sorted(path.rglob("*"), key=lambda item: item.relative_to(path).as_posix()):
+        relative = entry.relative_to(path).as_posix().encode("utf-8")
+        if entry.is_dir():
+            value.update(b"directory-entry\0" + relative + b"\0")
+        else:
+            value.update(b"file-entry\0" + relative + b"\0")
+            value.update(entry.read_bytes())
+    return value.hexdigest()
+
+
+def snapshot(relative):
+    return {"path": relative, "sha256": digest(project / relative)}
+
+
+paths = [entry.name for entry in project.iterdir() if entry.name != ".workspace"]
+paths += [
+    f".workspace/{entry.name}"
+    for entry in (project / ".workspace").iterdir()
+    if entry.name != "records"
+]
+universe = [snapshot(relative) for relative in sorted(paths)]
+audit = {
+    "schema_version": 1,
+    "project_root": "book-translations/alpha",
+    "standards_fingerprint": fingerprint,
+    "review_universe": universe,
+    "evaluated_revisions": {
+        "artifact": snapshot("draft"),
+        "input": snapshot("inbox"),
+        "canonical_source": snapshot(".workspace/source/book"),
+    },
+    "decision": "reconstruct",
+    "disposition_reason": "The replacement boundary differs from the preview prototype.",
+    "current_requirements": [
+        {
+            "gate_id": gate_id,
+            "requirement": "Reconstruct under the current fixture standards.",
+            "status": "fail" if gate_id == "artifact-identity" else "pass",
+            "evidence": "Whole-artifact fixture evidence for " + gate_id,
+        }
+        for gate_id in (
+            "artifact-identity",
+            "scope-coverage",
+            "dependency-order",
+            "quality-review",
+            "build-and-render",
+            "rights-and-privacy",
+        )
+    ],
+    "legacy_artifacts": [
+        {
+            "path": item["path"],
+            "sha256": item["sha256"],
+            "disposition": "rework",
+            "reason": "The fixture reconstructs every current artifact root.",
+        }
+        for item in universe
+    ],
+    "legacy_units": [],
+    "legacy_units_empty_reason": "The fixture evaluates profile transition, not content reuse.",
+    "systemic_findings": [
+        {
+            "finding": "The adopted replacement root differs from the preview root.",
+            "scope": "whole artifact",
+            "severity": "blocking",
+        }
+    ],
+    "whole_artifact_review": True,
+    "replacement_plan": ["Initialize the adopted replacement as a new preview profile."],
+    "legacy_roots": [".workspace/source/book"],
+    "replacement_roots": [replacement_root],
+    "independent_review": {
+        "reviewer": "independent-reviewer-fixture",
+        "independent_from_legacy_authoring": True,
+        "decision_confirmed": True,
+        "evidence": "Read-only whole-artifact fixture review.",
+    },
+    "physical_deletion": {"requested": False},
+    "draft_status": {"path": "draft/STATUS.preview.md"},
+}
+(project / ".workspace/records/profile-transition-audit.json").write_text(
+    json.dumps(audit, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+)
+PY
+if .system/standards-migration adopt --scope book-translations/alpha \
+    --audit .workspace/records/profile-transition-audit.json >/dev/null &&
+  .system/book-draft-preview init book-translations/alpha \
+    --source-root "$replacement_root" >/dev/null &&
+  [[ -f "$project/$migration_root/main.tex" ]] &&
+  [[ -f "$project/$replacement_root/main.tex" ]] &&
+  grep -Fqx 'standards-migration: reconstructing' \
+    "$project/draft/STATUS.preview.md" &&
+  python3 - "$project/.workspace/tools/book-draft-preview.json" \
+    "$replacement_root" <<'PY'
+import json
+import pathlib
+import sys
+
+config = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+active = config["profiles"][config["active_profile"]]
+raise SystemExit(
+    0
+    if len(config["profiles"]) == 3
+    and active["created_for"] == "reconstruct"
+    and active["source_root"] == sys.argv[2]
+    else 1
+)
+PY
+then
+  pass 12 'adopted reconstruction can activate a different source profile'
+else
+  fail 12 'adopted reconstruction profile transition'
+fi
+
+stable_pdf_hash=$(sha256sum "$project/draft/book-wip.pdf" | awk '{print $1}')
+mv -- "$project/$replacement_root/main.tex" "$test_root/reconstruct-main.tex"
+if expect_failure .system/book-draft-preview build book-translations/alpha &&
+  grep -Fqx 'build-status: failed' "$project/draft/STATUS.preview.md" &&
+  grep -Fqx 'standards-migration: reconstructing' \
+    "$project/draft/STATUS.preview.md" &&
+  grep -Fqx "standards-fingerprint: $fingerprint" \
+    "$project/draft/STATUS.preview.md" &&
+  [[ $(sha256sum "$project/draft/book-wip.pdf" | awk '{print $1}') == \
+    "$stable_pdf_hash" ]] &&
+  .system/standards-migration check --scope book-translations/alpha \
+    --operation reconstruct --target "$replacement_root/main.tex" >/dev/null; then
+  pass 13 'reconstruction preflight failure preserves adoption and last PDF'
+else
+  fail 13 'reconstruction failure status continuity'
+fi
+mv -- "$test_root/reconstruct-main.tex" "$project/$replacement_root/main.tex"
+.system/book-draft-preview build book-translations/alpha >/dev/null
+
+if expect_failure .system/book-draft-preview init book-translations/alpha &&
+  expect_failure .system/book-draft-preview build book-translations &&
+  [[ ! -e "$repo_dir/escape" ]]; then
+  pass 14 'duplicate initialization and unsafe scope rejection'
+else
+  fail 14 'duplicate initialization and unsafe scope rejection'
+fi

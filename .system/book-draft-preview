@@ -1,0 +1,1295 @@
+#!/usr/bin/env python3
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import datetime as dt
+import fcntl
+import hashlib
+import json
+import os
+import pathlib
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+from typing import Any
+
+
+SCHEMA_VERSION = 2
+DEFAULT_SOURCE_ROOT = ".workspace/source/book"
+MIGRATION_SOURCE_PREFIX = ".workspace/source/reconstruction-preview-"
+CONFIG_PATH = ".workspace/tools/book-draft-preview.json"
+PDF_PATH = "draft/book-wip.pdf"
+STATUS_PATH = "draft/STATUS.preview.md"
+LAST_SUCCESS_PATH = ".workspace/records/book-draft-preview-last-success.json"
+SOURCE_FILES = ("main.tex", "design.tex", "content.tex")
+
+
+def default_progress() -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "state": "unreviewed WIP",
+        "inbox_source_snapshot": "pending",
+        "work_units": {
+            "reviewed": 0,
+            "wip": 1,
+            "blocked": 0,
+            "open_ids": ["WIP-template-unit"],
+        },
+        "gates": {
+            gate: {
+                "state": "pending",
+                "source_snapshot": "pending",
+                "canonical_source_revision": "pending",
+                "reviewer": "pending",
+                "verified_count": 0,
+                "unverified_count": "unknown",
+                "stale": False,
+                "open_finding_ids": ["pending-initial-assessment"],
+            }
+            for gate in (
+                "raw_inventory_review",
+                "coverage_gate",
+                "mapping_edge_semantic_review",
+                "lecture_note_identity_gate",
+                "claim_audit_gate",
+            )
+        },
+        "rights_and_distribution": {
+            "state": "pending",
+            "distribution_permission": "not granted by this preview",
+        },
+        "rewrite_policy": (
+            "Provisional units become stale and must be rewritten or revalidated "
+            "when later inventory or redesign changes their assumptions, "
+            "dependencies, role, or coverage."
+        ),
+    }
+
+
+MAIN_TEMPLATE = r"""\documentclass[uplatex,dvipdfmx,a4paper,11pt,openany,oneside]{bxjsbook}
+\usepackage[dvipdfmx]{graphicx,xcolor,hyperref}
+\usepackage[normalem]{ulem}
+\usepackage{pxjahyper}
+\usepackage{fancyhdr}
+
+\definecolor{wipred}{RGB}{150,30,30}
+\definecolor{linkblue}{RGB}{0,70,170}
+\hypersetup{
+  colorlinks=true,
+  linkcolor=linkblue,
+  citecolor=linkblue,
+  urlcolor=linkblue,
+  pdftitle={再構成講義ノート（設計中の WIP preview）}
+}
+\providecommand{\PreviewSourceSnapshot}{unknown}
+\providecommand{\PreviewBuildTimestamp}{unknown}
+\providecommand{\PreviewSourceRole}{unknown WIP source role}
+\providecommand{\PreviewProgressSnapshot}{unknown}
+\newcommand{\WIPState}[1]{\textcolor{wipred}{\textbf{#1}}}
+\newenvironment{ProvisionalUnit}[1]
+  {\par\medskip\noindent\WIPState{仮決定 unit：#1}%
+    \par\smallskip\begin{quote}}
+  {\end{quote}\par\medskip}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[C]{\textcolor{wipred}{UNREVIEWED WIP --- 全面改稿され得る}}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\setlength{\footskip}{24pt}
+\fancypagestyle{plain}{%
+  \fancyhf{}%
+  \fancyhead[C]{\textcolor{wipred}{UNREVIEWED WIP --- 全面改稿され得る}}%
+  \fancyfoot[C]{\thepage}%
+  \renewcommand{\headrulewidth}{0.4pt}%
+}
+
+\title{再構成講義ノート\\\large 設計中の WIP preview}
+\author{制作途中の可視化 artifact}
+\date{\PreviewBuildTimestamp}
+
+\begin{document}
+\maketitle
+\thispagestyle{empty}
+\pagestyle{fancy}
+\makeatletter
+\let\ps@plain\ps@fancy
+\let\ps@plainhead\ps@fancy
+\let\ps@plainfoot\ps@fancy
+\makeatother
+
+\noindent\fcolorbox{wipred}{white}{%
+  \begin{minipage}{0.94\linewidth}
+  \WIPState{これは完成稿ではない．}
+  本 PDF は網羅的再設計の現在状態と，局所的に仮決定した本文を早期確認するための live view である．
+  未処理資料，未通過 gate，未検証の依存を含み，後続の inventory・coverage・review により構成と本文を全面的に書き直すことがある．
+  \par\smallskip
+  source snapshot: \texttt{\PreviewSourceSnapshot}
+  \par source role: \PreviewSourceRole
+  \par progress snapshot: \texttt{\PreviewProgressSnapshot}
+  \end{minipage}}
+
+\tableofcontents
+
+\input{design.tex}
+\input{content.tex}
+
+\end{document}
+"""
+
+
+DESIGN_TEMPLATE = r"""\chapter{再設計の現在地}
+\thispagestyle{fancy}
+\noindent\WIPState{unreviewed WIP：この章は再設計の途中状態であり，全面改稿され得る．}
+\par\medskip
+
+\section{成果物 identity の仮決定}
+
+想定読者，self-contained scope，この講義ノートが答える中心的な問いを，判明した範囲から記す．
+未決定事項は未決定のまま明示し，確定事項に見せない．
+
+\section{仮の学習経路と章構成}
+
+現在の concept cluster と dependency に基づく仮目次を記す．
+原書の章順をそのまま作業順にせず，各 unit の目的，前提，到達点を併記する．
+
+\begin{enumerate}
+  \item 仮 unit：中心的な問い，前提，到達点を記す．
+  \item 未決定 unit：依存する inventory または判断を記す．
+\end{enumerate}
+
+\section{未決定事項と書換え条件}
+
+未処理範囲，open finding，未通過 gate，後続判断によって stale になる範囲を記す．
+詳細な完全性会計は \texttt{draft/STATUS.preview.md} と project の private records を参照する．
+"""
+
+
+CONTENT_TEMPLATE = r"""\chapter{仮決定した内容}
+\thispagestyle{fancy}
+
+この章には，安定した source snapshot のうち局所的に確認できた範囲を根拠とし，
+問い・前提・到達点が仮決定した unit から実際の講義本文を置く．
+全体 inventory と再構成計画の完了前は，すべての unit を \WIPState{unreviewed WIP} とする．
+
+\begin{ProvisionalUnit}{最初の可視化単位}
+ここを，確認済み Source Unit と provisional authoring brief に基づく実際の本文へ置き換える．
+未確認の source scope を covered と表示せず，後続の全体設計と齟齬が生じた場合はこの unit を stale に戻して書き直す．
+\end{ProvisionalUnit}
+"""
+
+
+class PreviewError(Exception):
+    def __init__(self, message: str, *, status_recorded: bool = False) -> None:
+        super().__init__(message)
+        self.status_recorded = status_recorded
+
+
+def fail(message: str) -> None:
+    print(f"book-draft-preview: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def ensure_directory(path: pathlib.Path, description: str) -> None:
+    try:
+        metadata = path.lstat()
+        resolved = path.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise PreviewError(f"{description} is unavailable") from exc
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or path.is_symlink()
+        or pathlib.Path(os.path.abspath(path)) != resolved
+    ):
+        raise PreviewError(f"{description} is unsafe")
+
+
+def ensure_regular(path: pathlib.Path, description: str) -> None:
+    try:
+        metadata = path.lstat()
+    except OSError as exc:
+        raise PreviewError(f"{description} is unavailable") from exc
+    if not stat.S_ISREG(metadata.st_mode) or path.is_symlink():
+        raise PreviewError(f"{description} is unsafe")
+
+
+def read_regular_bytes(path: pathlib.Path, description: str) -> bytes:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise PreviewError(f"{description} is unavailable or unsafe") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise PreviewError(f"{description} is unsafe")
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = -1
+            return handle.read()
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def ensure_nonempty_regular(path: pathlib.Path, description: str) -> None:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise PreviewError(f"{description} is unavailable or unsafe") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise PreviewError(f"{description} is unsafe")
+        if metadata.st_size == 0:
+            raise PreviewError(f"{description} is empty")
+    finally:
+        os.close(descriptor)
+
+
+def remove_unsafe_generated_entry(path: pathlib.Path, parent: pathlib.Path) -> None:
+    """Remove only a non-regular entry created at an expected private output path."""
+    ensure_directory(parent, "generated preview output directory")
+    if path.parent != parent or not path.name:
+        raise PreviewError("generated preview output path is unsafe")
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(parent, flags)
+    try:
+        try:
+            metadata = os.stat(path.name, dir_fd=descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        if stat.S_ISREG(metadata.st_mode):
+            return
+        if stat.S_ISDIR(metadata.st_mode):
+            os.rmdir(path.name, dir_fd=descriptor)
+        else:
+            os.unlink(path.name, dir_fd=descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def repository_root() -> pathlib.Path:
+    script = pathlib.Path(__file__)
+    if script.is_symlink():
+        raise PreviewError("script path is unsafe")
+    script = script.resolve(strict=True)
+    result = subprocess.run(
+        ["git", "-C", str(script.parent.parent), "rev-parse", "--show-toplevel"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise PreviewError("repository root is unavailable")
+    root = pathlib.Path(result.stdout.strip()).resolve(strict=True)
+    if script.parent != root / ".system":
+        raise PreviewError("script path is unsafe")
+    return root
+
+
+def resolve_project(root: pathlib.Path, raw_project: str) -> tuple[pathlib.Path, str]:
+    candidate = pathlib.Path(raw_project)
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    candidate = pathlib.Path(os.path.abspath(candidate))
+    try:
+        project = candidate.resolve(strict=True)
+        relative = project.relative_to(root / "book-translations")
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise PreviewError("project is unavailable") from exc
+    if candidate != project or len(relative.parts) != 1:
+        raise PreviewError("project must be a safe direct child of book-translations")
+    ensure_directory(project, "project")
+    for name in (
+        "draft",
+        ".workspace",
+        ".workspace/source",
+        ".workspace/records",
+        ".workspace/tools",
+        ".workspace/build",
+        ".workspace/logs",
+        ".workspace/locks",
+    ):
+        ensure_directory(project / name, f"project {name}")
+    return project, project.relative_to(root).as_posix()
+
+
+def normalize_source_root(project: pathlib.Path, raw_source_root: str) -> tuple[pathlib.Path, str]:
+    pure = pathlib.PurePosixPath(raw_source_root)
+    if pure.is_absolute() or ".." in pure.parts or len(pure.parts) < 3:
+        raise PreviewError("source root is invalid")
+    if pure.parts[:2] != (".workspace", "source"):
+        raise PreviewError("source root must be below .workspace/source")
+    candidate = pathlib.Path(os.path.abspath(project / pure))
+    source_base = (project / ".workspace" / "source").resolve(strict=True)
+    try:
+        candidate.relative_to(source_base)
+    except ValueError as exc:
+        raise PreviewError("source root is outside canonical source") from exc
+    if candidate.exists() or candidate.is_symlink():
+        ensure_directory(candidate, "preview source root")
+    else:
+        parent = candidate.parent
+        ensure_directory(parent, "preview source root parent")
+    return candidate, pure.as_posix()
+
+
+def atomic_write(path: pathlib.Path, content: bytes, prefix: str) -> None:
+    ensure_directory(path.parent, "output parent")
+    if path.exists() or path.is_symlink():
+        ensure_regular(path, "existing output")
+    descriptor, temporary = tempfile.mkstemp(prefix=prefix, dir=path.parent)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def atomic_json_write(path: pathlib.Path, value: dict[str, Any], prefix: str) -> None:
+    atomic_write(
+        path,
+        (json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode(
+            "utf-8"
+        ),
+        prefix,
+    )
+
+
+@contextlib.contextmanager
+def preview_lock(project: pathlib.Path):
+    lock_path = project / ".workspace" / "locks" / "book-draft-preview.lock"
+    ensure_directory(lock_path.parent, "preview lock directory")
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(lock_path, flags, 0o600)
+    except OSError as exc:
+        raise PreviewError("preview lock is unavailable or unsafe") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise PreviewError("preview lock is unsafe")
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def load_json(path: pathlib.Path, description: str) -> dict[str, Any]:
+    value, _ = load_json_snapshot(path, description)
+    return value
+
+
+def load_json_snapshot(
+    path: pathlib.Path, description: str
+) -> tuple[dict[str, Any], bytes]:
+    try:
+        content = read_regular_bytes(path, description)
+        value = json.loads(content.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise PreviewError(f"{description} is invalid") from exc
+    if not isinstance(value, dict):
+        raise PreviewError(f"{description} is invalid")
+    return value, content
+
+
+def migration_check(
+    root: pathlib.Path,
+    project_relative: str,
+    operation: str,
+    target: str | None = None,
+) -> bool:
+    command = [
+        str(root / ".system" / "standards-migration"),
+        "check",
+        "--scope",
+        project_relative,
+        "--operation",
+        operation,
+    ]
+    if operation in {"reconstruct", "preview"}:
+        if target is None:
+            raise PreviewError(f"{operation} requires a target")
+        command.extend(("--target", target))
+    result = subprocess.run(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def standards_fingerprint(root: pathlib.Path, project_relative: str) -> str:
+    result = subprocess.run(
+        [
+            str(root / ".system" / "standards-migration"),
+            "fingerprint",
+            "--scope",
+            project_relative,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    fingerprint = result.stdout.strip()
+    if result.returncode != 0 or len(fingerprint) != 64 or any(
+        character not in "0123456789abcdef" for character in fingerprint
+    ):
+        raise PreviewError("current standards fingerprint is unavailable")
+    return fingerprint
+
+
+def migration_source_root(root: pathlib.Path, project_relative: str) -> str:
+    fingerprint = standards_fingerprint(root, project_relative)
+    return f"{MIGRATION_SOURCE_PREFIX}{fingerprint[:12]}"
+
+
+def config_path(project: pathlib.Path) -> pathlib.Path:
+    return project / CONFIG_PATH
+
+
+def source_digest(source_root: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    for name in SOURCE_FILES:
+        ensure_regular(source_root / name, f"preview source {name}")
+    files: list[pathlib.Path] = []
+    for current, directories, names in os.walk(source_root, followlinks=False):
+        current_path = pathlib.Path(current)
+        ensure_directory(current_path, "preview source directory")
+        directories.sort()
+        names.sort()
+        for directory in directories:
+            if (current_path / directory).is_symlink():
+                raise PreviewError("preview source directory is unsafe")
+        for name in names:
+            path = current_path / name
+            ensure_regular(path, "preview source file")
+            files.append(path)
+    for path in sorted(files, key=lambda item: item.relative_to(source_root).as_posix()):
+        relative = path.relative_to(source_root).as_posix()
+        digest.update(
+            relative.encode("utf-8")
+            + b"\0"
+            + read_regular_bytes(path, "preview source file")
+        )
+    return digest.hexdigest()
+
+
+def git_revision(root: pathlib.Path) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--verify", "HEAD^{commit}"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip() if result.returncode == 0 else "unavailable"
+
+
+def status_text(
+    state: str,
+    built_at: str,
+    fingerprint: str,
+    source_root: str,
+    digest: str,
+    revision: str,
+    operation: str,
+    progress_path: str,
+    progress_digest: str,
+    progress: dict[str, Any],
+    last_success: dict[str, Any] | None,
+    detail: str,
+) -> str:
+    source_roles = {
+        "extend": "current canonical WIP source",
+        "reconstruct": "adopted reconstruction WIP source",
+        "preview": "noncanonical pre-adoption migration-design prototype",
+        "unknown": "unverified WIP source role",
+    }
+    standards_markers = {
+        "extend": "current",
+        "reconstruct": "reconstructing",
+        "preview": "stale",
+        "unknown": "unknown",
+    }
+    last = last_success or {}
+    progress_json = json.dumps(progress, ensure_ascii=False, indent=2, sort_keys=True)
+    return f"""# Book draft preview status
+
+artifact-status: unreviewed WIP
+build-status: {state}
+built-at-utc: {built_at}
+standards-migration: {standards_markers.get(operation, "unknown")}
+standards-fingerprint: {fingerprint}
+source-root: {source_root}
+source-role: {source_roles.get(operation, source_roles["unknown"])}
+source-snapshot-sha256: {digest}
+repository-revision: {revision}
+pdf: {PDF_PATH}
+project-progress-record: {progress_path}
+project-progress-snapshot-sha256: {progress_digest}
+last-success-built-at-utc: {last.get("built_at_utc", "none")}
+last-success-source-snapshot-sha256: {last.get("source_snapshot_sha256", "none")}
+last-success-pdf-sha256: {last.get("pdf_sha256", "none")}
+detail: {detail}
+
+This status and the PDF describe a live design preview. They do not assert completeness, review completion, distribution permission, or promotion readiness.
+
+## Project-maintained progress snapshot
+
+The build tool copies the following structured project state from the record above; it never replaces that record with fixed gate values.
+
+```json
+{progress_json}
+```
+"""
+
+
+def normalize_record_path(
+    project: pathlib.Path, raw_path: str, description: str
+) -> tuple[pathlib.Path, str]:
+    pure = pathlib.PurePosixPath(raw_path)
+    if (
+        pure.is_absolute()
+        or ".." in pure.parts
+        or len(pure.parts) < 3
+        or pure.parts[:2] != (".workspace", "records")
+    ):
+        raise PreviewError(f"{description} path is invalid")
+    candidate = pathlib.Path(os.path.abspath(project / pure))
+    records = (project / ".workspace" / "records").resolve(strict=True)
+    try:
+        candidate.relative_to(records)
+    except ValueError as exc:
+        raise PreviewError(f"{description} path is outside project records") from exc
+    return candidate, pure.as_posix()
+
+
+def progress_path_for(source_root: str) -> str:
+    suffix = hashlib.sha256(source_root.encode("utf-8")).hexdigest()[:12]
+    if source_root == DEFAULT_SOURCE_ROOT:
+        return ".workspace/records/book-preview-progress.json"
+    return f".workspace/records/book-preview-progress-{suffix}.json"
+
+
+def profile_id(source_root: str) -> str:
+    return "source-" + hashlib.sha256(source_root.encode("utf-8")).hexdigest()[:16]
+
+
+def source_templates() -> dict[str, str]:
+    return dict(
+        zip(
+            SOURCE_FILES,
+            (MAIN_TEMPLATE, DESIGN_TEMPLATE, CONTENT_TEMPLATE),
+            strict=True,
+        )
+    )
+
+
+def validate_recoverable_preview_source(source_root: pathlib.Path) -> None:
+    templates = source_templates()
+    ensure_directory(source_root, "partial migration preview source root")
+    for entry in source_root.iterdir():
+        if entry.name not in templates:
+            raise PreviewError(
+                "migration preview source root contains non-generated content"
+            )
+        ensure_regular(entry, "partial migration preview source file")
+        try:
+            content = read_regular_bytes(
+                entry, "partial migration preview source file"
+            ).decode("utf-8")
+        except UnicodeError as exc:
+            raise PreviewError(
+                "partial migration preview source file is invalid"
+            ) from exc
+        if content != templates[entry.name]:
+            raise PreviewError(
+                "migration preview source root contains modified content"
+            )
+
+
+def load_config_document(project: pathlib.Path) -> dict[str, Any]:
+    config = load_json(config_path(project), "book draft preview config")
+    if config.get("schema_version") != SCHEMA_VERSION:
+        raise PreviewError("book draft preview config schema is unsupported")
+    if config.get("pdf") != PDF_PATH or config.get("status") != STATUS_PATH:
+        raise PreviewError("book draft preview config output paths are invalid")
+    profiles = config.get("profiles")
+    active = config.get("active_profile")
+    if not isinstance(profiles, dict) or not isinstance(active, str) or active not in profiles:
+        raise PreviewError("book draft preview config profiles are invalid")
+    return config
+
+
+def load_active_config(
+    project: pathlib.Path,
+) -> tuple[dict[str, Any], dict[str, Any], pathlib.Path, str, pathlib.Path, str]:
+    config = load_config_document(project)
+    active = config["active_profile"]
+    profile = config["profiles"].get(active)
+    if not isinstance(profile, dict):
+        raise PreviewError("active book draft preview profile is invalid")
+    raw_source_root = profile.get("source_root")
+    if not isinstance(raw_source_root, str):
+        raise PreviewError("book draft preview config source_root is invalid")
+    source_root, normalized = normalize_source_root(project, raw_source_root)
+    if normalized != raw_source_root:
+        raise PreviewError("book draft preview config source_root is not normalized")
+    if profile.get("source_files") != list(SOURCE_FILES):
+        raise PreviewError("book draft preview config source_files is invalid")
+    progress_raw = profile.get("progress_record")
+    if not isinstance(progress_raw, str):
+        raise PreviewError("book draft preview progress record is invalid")
+    progress_path, progress_normalized = normalize_record_path(
+        project, progress_raw, "book draft preview progress record"
+    )
+    created_for = profile.get("created_for")
+    if created_for not in {"current", "reconstruct", "migration-preview"}:
+        raise PreviewError("book draft preview profile lifecycle is invalid")
+    return (
+        config,
+        profile,
+        source_root,
+        normalized,
+        progress_path,
+        progress_normalized,
+    )
+
+
+def load_progress(path: pathlib.Path) -> tuple[dict[str, Any], str]:
+    progress, content = load_json_snapshot(
+        path, "book draft preview progress record"
+    )
+    required_gates = {
+        "raw_inventory_review",
+        "coverage_gate",
+        "mapping_edge_semantic_review",
+        "lecture_note_identity_gate",
+        "claim_audit_gate",
+    }
+    if (
+        progress.get("schema_version") != 1
+        or not isinstance(progress.get("work_units"), dict)
+        or not isinstance(progress.get("rights_and_distribution"), dict)
+        or not isinstance(progress.get("gates"), dict)
+        or set(progress["gates"]) != required_gates
+    ):
+        raise PreviewError("book draft preview progress record schema is invalid")
+    return progress, hashlib.sha256(content).hexdigest()
+
+
+def load_last_success(project: pathlib.Path) -> dict[str, Any] | None:
+    path = project / LAST_SUCCESS_PATH
+    if not path.exists() and not path.is_symlink():
+        return None
+    receipt = load_json(path, "book draft preview last-success receipt")
+    if (
+        receipt.get("schema_version") != 1
+        or receipt.get("pdf") != PDF_PATH
+        or not isinstance(receipt.get("built_at_utc"), str)
+        or not isinstance(receipt.get("source_snapshot_sha256"), str)
+        or not isinstance(receipt.get("pdf_sha256"), str)
+    ):
+        raise PreviewError("book draft preview last-success receipt is invalid")
+    return receipt
+
+
+def operation_for_profile(
+    root: pathlib.Path,
+    project_relative: str,
+    profile: dict[str, Any],
+    normalized: str,
+) -> str:
+    target = f"{normalized}/main.tex"
+    if profile["created_for"] == "migration-preview":
+        if migration_check(root, project_relative, "reconstruct", target):
+            return "reconstruct"
+        if migration_check(root, project_relative, "preview", target):
+            return "preview"
+    else:
+        if migration_check(root, project_relative, "reconstruct", target):
+            return "reconstruct"
+        if migration_check(root, project_relative, "extend"):
+            return "extend"
+    raise PreviewError("current standards migration state forbids this preview source")
+
+
+def operation_and_source_for_init(
+    root: pathlib.Path,
+    project: pathlib.Path,
+    project_relative: str,
+    raw_source_root: str | None,
+) -> tuple[str, pathlib.Path, str]:
+    requested = raw_source_root or DEFAULT_SOURCE_ROOT
+    source_root, normalized = normalize_source_root(project, requested)
+    target = f"{normalized}/main.tex"
+    if migration_check(root, project_relative, "extend"):
+        return "extend", source_root, normalized
+    if migration_check(root, project_relative, "reconstruct", target):
+        return "reconstruct", source_root, normalized
+    if raw_source_root is None:
+        requested = migration_source_root(root, project_relative)
+        source_root, normalized = normalize_source_root(project, requested)
+        target = f"{normalized}/main.tex"
+    if migration_check(root, project_relative, "preview", target):
+        return "preview", source_root, normalized
+    raise PreviewError(
+        "current standards state forbids this source root; an adopted reconstruction may require --source-root"
+    )
+
+
+def status_progress_fallback() -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "state": "unavailable",
+        "detail": "The project-maintained progress record could not be read safely.",
+    }
+
+
+def record_status(
+    project: pathlib.Path,
+    root: pathlib.Path,
+    *,
+    state: str,
+    source_root: str,
+    digest: str,
+    operation: str,
+    progress_path: str,
+    progress_digest: str,
+    progress: dict[str, Any],
+    detail: str,
+    built_at: str | None = None,
+) -> str:
+    timestamp = built_at or dt.datetime.now(dt.timezone.utc).replace(
+        microsecond=0
+    ).isoformat()
+    try:
+        fingerprint = standards_fingerprint(
+            root, project.relative_to(root).as_posix()
+        )
+    except (PreviewError, ValueError):
+        fingerprint = "unavailable"
+    try:
+        last_success = load_last_success(project)
+    except PreviewError:
+        last_success = None
+    atomic_write(
+        project / STATUS_PATH,
+        status_text(
+            state,
+            timestamp,
+            fingerprint,
+            source_root,
+            digest,
+            git_revision(root),
+            operation,
+            progress_path,
+            progress_digest,
+            progress,
+            last_success,
+            detail,
+        ).encode("utf-8"),
+        ".preview-status.",
+    )
+    return timestamp
+
+
+def record_failure_status(
+    project: pathlib.Path, root: pathlib.Path, detail: str
+) -> bool:
+    source_root = "unavailable"
+    progress_path = "unavailable"
+    progress_digest = "unavailable"
+    progress = status_progress_fallback()
+    operation = "unknown"
+    try:
+        (
+            _,
+            profile,
+            _,
+            source_root,
+            progress_record,
+            progress_path,
+        ) = load_active_config(project)
+        try:
+            operation = operation_for_profile(
+                root,
+                project.relative_to(root).as_posix(),
+                profile,
+                source_root,
+            )
+        except (PreviewError, ValueError):
+            operation = "unknown"
+        try:
+            progress, progress_digest = load_progress(progress_record)
+        except PreviewError:
+            pass
+    except PreviewError:
+        pass
+    try:
+        record_status(
+            project,
+            root,
+            state="failed",
+            source_root=source_root,
+            digest="unavailable",
+            operation=operation,
+            progress_path=progress_path,
+            progress_digest=progress_digest,
+            progress=progress,
+            detail=(
+                f"{detail} Any retained PDF is the last-success snapshot identified above, not the current source."
+            ),
+        )
+        return True
+    except (OSError, PreviewError):
+        return False
+
+
+def initialize(
+    root: pathlib.Path,
+    project: pathlib.Path,
+    project_relative: str,
+    raw_source_root: str | None,
+) -> None:
+    configuration = config_path(project)
+    operation, source_root, normalized = operation_and_source_for_init(
+        root, project, project_relative, raw_source_root
+    )
+    if configuration.exists() or configuration.is_symlink():
+        config = load_config_document(project)
+        if operation == "extend":
+            raise PreviewError(
+                "book draft preview is already initialized", status_recorded=True
+            )
+    else:
+        config = {
+            "schema_version": SCHEMA_VERSION,
+            "active_profile": "",
+            "profiles": {},
+            "pdf": PDF_PATH,
+            "status": STATUS_PATH,
+            "artifact_status": "unreviewed WIP",
+        }
+    identifier = profile_id(normalized)
+    if identifier in config["profiles"]:
+        raise PreviewError(
+            "book draft preview source profile is already initialized",
+            status_recorded=True,
+        )
+    progress_normalized = progress_path_for(normalized)
+    progress_path, progress_normalized = normalize_record_path(
+        project, progress_normalized, "book draft preview progress record"
+    )
+    recovering_preview = False
+    if operation == "preview" and (source_root.exists() or source_root.is_symlink()):
+        validate_recoverable_preview_source(source_root)
+        recovering_preview = True
+    if progress_path.exists() or progress_path.is_symlink():
+        if not recovering_preview or load_json(
+            progress_path, "partial book draft preview progress record"
+        ) != default_progress():
+            raise PreviewError("book draft preview progress record already exists")
+    progress = default_progress()
+    record_status(
+        project,
+        root,
+        state="building",
+        source_root=normalized,
+        digest="initializing",
+        operation=operation,
+        progress_path=progress_normalized,
+        progress_digest="initializing",
+        progress=progress,
+        detail="A new WIP preview source profile is being initialized.",
+    )
+    try:
+        if not source_root.exists():
+            source_root.mkdir(mode=0o700)
+        ensure_directory(source_root, "preview source root")
+        for name, content in source_templates().items():
+            path = source_root / name
+            if path.exists() or path.is_symlink():
+                ensure_regular(path, "existing partial preview source file")
+                if recovering_preview:
+                    continue
+                raise PreviewError("preview source target already exists")
+            atomic_write(path, content.encode("utf-8"), ".preview-source.")
+        if not progress_path.exists() and not progress_path.is_symlink():
+            atomic_json_write(progress_path, progress, ".book-preview-progress.")
+        config["profiles"][identifier] = {
+            "source_root": normalized,
+            "source_files": list(SOURCE_FILES),
+            "progress_record": progress_normalized,
+            "created_for": {
+                "extend": "current",
+                "reconstruct": "reconstruct",
+                "preview": "migration-preview",
+            }[operation],
+        }
+        config["active_profile"] = identifier
+        atomic_json_write(configuration, config, ".book-draft-preview.")
+        build(root, project, project_relative)
+    except PreviewError as exc:
+        if not exc.status_recorded:
+            record_failure_status(project, root, str(exc))
+        raise PreviewError(str(exc), status_recorded=True) from exc
+    except OSError as exc:
+        record_failure_status(project, root, "preview initialization failed")
+        raise PreviewError(
+            "preview initialization failed", status_recorded=True
+        ) from exc
+
+
+def build(root: pathlib.Path, project: pathlib.Path, project_relative: str) -> None:
+    _, profile, source_root, normalized, progress_path, progress_normalized = (
+        load_active_config(project)
+    )
+    operation = operation_for_profile(root, project_relative, profile, normalized)
+    progress, progress_digest = load_progress(progress_path)
+    built_at = record_status(
+        project,
+        root,
+        state="building",
+        source_root=normalized,
+        digest="calculating",
+        operation=operation,
+        progress_path=progress_normalized,
+        progress_digest=progress_digest,
+        progress=progress,
+        detail="A new build is in progress; any existing PDF is an older WIP snapshot.",
+    )
+    digest = source_digest(source_root)
+    record_status(
+        project,
+        root,
+        state="building",
+        source_root=normalized,
+        digest=digest,
+        operation=operation,
+        progress_path=progress_normalized,
+        progress_digest=progress_digest,
+        progress=progress,
+        detail="Compilation is in progress; any existing PDF is an older WIP snapshot.",
+        built_at=built_at,
+    )
+
+    for command in ("latexmk", "uplatex", "dvipdfmx"):
+        if shutil.which(command) is None:
+            record_status(
+                project,
+                root,
+                state="failed",
+                source_root=normalized,
+                digest=digest,
+                operation=operation,
+                progress_path=progress_normalized,
+                progress_digest=progress_digest,
+                progress=progress,
+                detail=f"Required command is unavailable: {command}.",
+                built_at=built_at,
+            )
+            raise PreviewError(
+                f"required command is unavailable: {command}", status_recorded=True
+            )
+
+    build_root = project / ".workspace" / "build" / "book-draft-preview"
+    log_root = project / ".workspace" / "logs"
+    ensure_directory(project / ".workspace" / "build", "project build directory")
+    ensure_directory(log_root, "project logs directory")
+    if build_root.exists() or build_root.is_symlink():
+        ensure_directory(build_root, "preview build directory")
+    else:
+        build_root.mkdir(mode=0o700)
+    run_root = pathlib.Path(tempfile.mkdtemp(prefix="run-", dir=build_root))
+    ensure_directory(run_root, "preview build run directory")
+    aux_root = run_root / "aux"
+    out_root = run_root / "out"
+    aux_root.mkdir(mode=0o700)
+    out_root.mkdir(mode=0o700)
+    wrapper = run_root / "preview-wrapper.tex"
+    latexmkrc = run_root / "preview.latexmkrc"
+    short_digest = f"sha256:{digest[:16]}"
+    source_role = {
+        "extend": "current canonical WIP source",
+        "reconstruct": "adopted reconstruction WIP source",
+        "preview": "noncanonical pre-adoption migration-design prototype",
+    }[operation]
+    wrapper_text = (
+        f"\\def\\PreviewSourceSnapshot{{{short_digest}}}\n"
+        f"\\def\\PreviewBuildTimestamp{{{built_at}}}\n"
+        f"\\def\\PreviewSourceRole{{{source_role}}}\n"
+        f"\\def\\PreviewProgressSnapshot{{sha256:{progress_digest[:16]}}}\n"
+        f"\\input{{{(source_root / 'main.tex').as_posix()}}}\n"
+    )
+    atomic_write(wrapper, wrapper_text.encode("utf-8"), ".preview-wrapper.")
+    atomic_write(
+        latexmkrc,
+        (
+            "$pdf_mode = 3;\n"
+            "$latex = 'uplatex %O -interaction=nonstopmode -halt-on-error %S';\n"
+            "$dvipdf = 'dvipdfmx %O -o %D %S';\n"
+        ).encode("utf-8"),
+        ".preview-latexmkrc.",
+    )
+    command = [
+        "latexmk",
+        "-r",
+        str(latexmkrc),
+        "-pdfdvi",
+        f"-outdir={out_root}",
+        f"-auxdir={aux_root}",
+        "-emulate-aux-dir",
+        str(wrapper),
+    ]
+    result = subprocess.run(
+        command,
+        cwd=source_root,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    atomic_write(
+        log_root / "book-draft-preview.log",
+        result.stdout,
+        ".preview-log.",
+    )
+    built_pdf = out_root / "preview-wrapper.pdf"
+    if result.returncode != 0:
+        record_status(
+            project,
+            root,
+            state="failed",
+            source_root=normalized,
+            digest=digest,
+            operation=operation,
+            progress_path=progress_normalized,
+            progress_digest=progress_digest,
+            progress=progress,
+            detail="Compilation failed; the previous PDF, if present, is stale. See .workspace/logs/book-draft-preview.log.",
+            built_at=built_at,
+        )
+        raise PreviewError(
+            "build failed; see the project-local preview log", status_recorded=True
+        )
+    try:
+        ensure_nonempty_regular(built_pdf, "generated preview PDF")
+    except PreviewError as exc:
+        try:
+            remove_unsafe_generated_entry(built_pdf, out_root)
+        except (OSError, PreviewError):
+            pass
+        record_status(
+            project,
+            root,
+            state="failed",
+            source_root=normalized,
+            digest=digest,
+            operation=operation,
+            progress_path=progress_normalized,
+            progress_digest=progress_digest,
+            progress=progress,
+            detail=f"{exc}; the previous PDF, if present, is stale.",
+            built_at=built_at,
+        )
+        raise PreviewError(str(exc), status_recorded=True) from exc
+
+    final_digest = source_digest(source_root)
+    _, final_progress_digest = load_progress(progress_path)
+    if final_digest != digest or final_progress_digest != progress_digest:
+        record_status(
+            project,
+            root,
+            state="stale",
+            source_root=normalized,
+            digest=final_digest,
+            operation=operation,
+            progress_path=progress_normalized,
+            progress_digest=final_progress_digest,
+            progress=load_progress(progress_path)[0],
+            detail="Source or project progress changed during compilation; the generated PDF was not published. Rebuild the stable snapshot.",
+            built_at=built_at,
+        )
+        raise PreviewError(
+            "source or project progress changed during compilation",
+            status_recorded=True,
+        )
+
+    destination = project / PDF_PATH
+    if destination.exists() or destination.is_symlink():
+        ensure_regular(destination, "existing preview PDF")
+    descriptor, temporary = tempfile.mkstemp(prefix=".book-wip.", dir=destination.parent)
+    source_descriptor: int | None = None
+    pdf_digest = hashlib.sha256()
+    try:
+        flags = os.O_RDONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        source_descriptor = os.open(built_pdf, flags)
+        source_metadata = os.fstat(source_descriptor)
+        if not stat.S_ISREG(source_metadata.st_mode):
+            raise PreviewError("generated preview PDF is unsafe")
+        with os.fdopen(descriptor, "wb") as output:
+            descriptor = -1
+            with os.fdopen(source_descriptor, "rb") as source:
+                source_descriptor = None
+                while chunk := source.read(1024 * 1024):
+                    output.write(chunk)
+                    pdf_digest.update(chunk)
+            output.flush()
+            os.fsync(output.fileno())
+        publish_digest = source_digest(source_root)
+        publish_progress, publish_progress_digest = load_progress(progress_path)
+        if publish_digest != digest or publish_progress_digest != progress_digest:
+            record_status(
+                project,
+                root,
+                state="stale",
+                source_root=normalized,
+                digest=publish_digest,
+                operation=operation,
+                progress_path=progress_normalized,
+                progress_digest=publish_progress_digest,
+                progress=publish_progress,
+                detail="Source or project progress changed while preparing publication; the generated PDF was not published.",
+                built_at=built_at,
+            )
+            raise PreviewError(
+                "source or project progress changed before publication",
+                status_recorded=True,
+            )
+        os.replace(temporary, destination)
+        temporary = ""
+    except BaseException:
+        if source_descriptor is not None:
+            os.close(source_descriptor)
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            if temporary:
+                os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+    pdf_sha256 = pdf_digest.hexdigest()
+    receipt = {
+        "schema_version": 1,
+        "built_at_utc": built_at,
+        "source_root": normalized,
+        "source_snapshot_sha256": digest,
+        "progress_snapshot_sha256": progress_digest,
+        "pdf": PDF_PATH,
+        "pdf_sha256": pdf_sha256,
+        "repository_revision": git_revision(root),
+    }
+    atomic_json_write(
+        project / LAST_SUCCESS_PATH,
+        receipt,
+        ".book-draft-preview-last-success.",
+    )
+    current_digest = source_digest(source_root)
+    current_progress, current_progress_digest = load_progress(progress_path)
+    if current_digest != digest or current_progress_digest != progress_digest:
+        record_status(
+            project,
+            root,
+            state="stale",
+            source_root=normalized,
+            digest=current_digest,
+            operation=operation,
+            progress_path=progress_normalized,
+            progress_digest=current_progress_digest,
+            progress=current_progress,
+            detail="Source or project progress changed as the PDF was published. The retained PDF is the last-success snapshot identified above and must be rebuilt.",
+            built_at=built_at,
+        )
+        raise PreviewError(
+            "source or project progress changed during publication",
+            status_recorded=True,
+        )
+    record_status(
+        project,
+        root,
+        state="success",
+        source_root=normalized,
+        digest=digest,
+        operation=operation,
+        progress_path=progress_normalized,
+        progress_digest=progress_digest,
+        progress=progress,
+        detail="The PDF reflects the current provisional design, content, and project-progress snapshots.",
+        built_at=built_at,
+    )
+    print(f"book-draft-preview: published {PDF_PATH}; status=unreviewed WIP")
+
+
+def parser() -> argparse.ArgumentParser:
+    result = argparse.ArgumentParser(prog=".system/book-draft-preview")
+    commands = result.add_subparsers(dest="command", required=True)
+    init_parser = commands.add_parser("init")
+    init_parser.add_argument("project")
+    init_parser.add_argument("--source-root")
+    build_parser = commands.add_parser("build")
+    build_parser.add_argument("project")
+    return result
+
+
+def main() -> None:
+    arguments = parser().parse_args()
+    root: pathlib.Path | None = None
+    project: pathlib.Path | None = None
+    try:
+        root = repository_root()
+        project, relative = resolve_project(root, arguments.project)
+        with preview_lock(project):
+            if arguments.command == "init":
+                initialize(root, project, relative, arguments.source_root)
+            elif arguments.command == "build":
+                build(root, project, relative)
+            else:
+                raise PreviewError("unknown command")
+    except PreviewError as exc:
+        if (
+            root is not None
+            and project is not None
+            and arguments.command in {"init", "build"}
+            and not exc.status_recorded
+        ):
+            record_failure_status(project, root, str(exc))
+        fail(str(exc))
+    except OSError as exc:
+        if root is not None and project is not None:
+            record_failure_status(project, root, "preview filesystem operation failed")
+        fail("preview filesystem operation failed")
+
+
+if __name__ == "__main__":
+    main()

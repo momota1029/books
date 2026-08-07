@@ -80,6 +80,9 @@ if .system/standards-migration check --scope projects/example \
     --operation extend >/dev/null &&
   .system/standards-migration check --scope projects/example \
     --operation promotion >/dev/null &&
+  capture_status "$output_file" 4 .system/standards-migration check \
+    --scope projects/example --operation preview \
+    --target .workspace/source/reconstruction-preview-invalid/main.tex &&
   [[ -f projects/example/.workspace/records/standards-initialization.json ]]; then
   pass initialization 'empty project receives a current standards baseline'
 else
@@ -154,6 +157,18 @@ else
 fi
 
 fingerprint=$(.system/standards-migration fingerprint --scope projects/example)
+preview_target=".workspace/source/reconstruction-preview-${fingerprint:0:12}/main.tex"
+if .system/standards-migration check --scope projects/example \
+    --operation preview --target "$preview_target" >/dev/null &&
+  capture_status "$output_file" 1 .system/standards-migration check \
+    --scope projects/example --operation preview \
+    --target .workspace/source/reconstruction-preview-wrong/main.tex &&
+  grep -Fq -- 'fingerprint-scoped preview root' "$output_file"; then
+  pass preview 'migration-required state permits only an isolated versioned preview root'
+else
+  fail preview 'pre-adoption migration preview boundary'
+fi
+
 mkdir -- projects/example/.workspace/source/legacy \
   projects/example/.workspace/source/replacement
 printf 'legacy canonical source\n' \

@@ -27,7 +27,8 @@ BASE_INSTRUCTIONS = (
     ".githooks/post-merge",
 )
 DECISIONS = {"retain", "reconstruct", "retire"}
-OPERATIONS = {"inspect", "extend", "reconstruct", "promotion"}
+OPERATIONS = {"inspect", "preview", "extend", "reconstruct", "promotion"}
+MIGRATION_PREVIEW_ROOT_PREFIX = ".workspace/source/reconstruction-preview-"
 STATUS_MARKERS = {
     "retain": "standards-migration: current",
     "reconstruct": "standards-migration: reconstructing",
@@ -901,6 +902,29 @@ def command_check(
             f"state={state}; fingerprint={fingerprint}; reason={reason}"
         )
         return
+    if operation == "preview":
+        if state != "migration-required":
+            print(
+                f"standards-migration: operation preview is forbidden while project state is {state}\n"
+                "standards-migration: migration preview is only for a frozen pre-adoption migration",
+                file=sys.stderr,
+            )
+            raise SystemExit(4)
+        prior_decision = existing_adoption_decision(
+            repo_root, project_root, project_relative
+        )
+        if prior_decision == "retire":
+            raise MigrationError(
+                "retirement is permanent; a migration preview cannot reopen this project"
+            )
+        if target is None:
+            raise MigrationError("preview check requires --target")
+        validate_migration_preview_target(project_root, target, fingerprint)
+        print(
+            f"standards-migration: preview allowed for {project_relative}; "
+            f"state={state}; fingerprint={fingerprint}"
+        )
+        return
     if state == "migration-required":
         print(
             f"standards-migration: migration required for {project_relative}: {reason}\n"
@@ -927,6 +951,29 @@ def command_check(
         f"standards-migration: {operation} allowed for {project_relative}; "
         f"state={state}; fingerprint={fingerprint}"
     )
+
+
+def validate_migration_preview_target(
+    project_root: pathlib.Path, raw_target: str, fingerprint: str
+) -> None:
+    expected_root = (
+        f"{MIGRATION_PREVIEW_ROOT_PREFIX}{fingerprint[:12]}"
+    )
+    expected_target = f"{expected_root}/main.tex"
+    if raw_target != expected_target:
+        raise MigrationError(
+            "migration preview target must be the current fingerprint-scoped preview root"
+        )
+    source_parent = project_root / ".workspace" / "source"
+    ensure_directory(source_parent, "migration preview source parent")
+    root = project_root / expected_root
+    candidate = project_root / expected_target
+    if root.exists() or root.is_symlink():
+        ensure_directory(root, "migration preview source root")
+    if candidate.exists() or candidate.is_symlink():
+        ensure_regular(candidate, "migration preview target")
+        if candidate.resolve(strict=True) != candidate:
+            raise MigrationError("migration preview target is unsafe")
 
 
 def validate_reconstruction_target(

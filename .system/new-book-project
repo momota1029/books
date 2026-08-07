@@ -67,10 +67,27 @@ cleanup() {
       "$target/.workspace/records/standards-initialization.json" \
       "$target/.workspace/records/claim-audit.json" \
       "$target/.workspace/records/claim-audit-report.json" \
+      "$target/.workspace/records/book-preview-progress.json" \
+      "$target/.workspace/records/book-draft-preview-last-success.json" \
+      "$target/.workspace/source/book/main.tex" \
+      "$target/.workspace/source/book/design.tex" \
+      "$target/.workspace/source/book/content.tex" \
+      "$target/.workspace/tools/book-draft-preview.json" \
       "$target/.workspace/tools/book-claim-audit.json" \
       "$target/.workspace/locks/book-claim-harness.lock" \
+      "$target/.workspace/locks/book-draft-preview.lock" \
+      "$target/.workspace/logs/book-draft-preview.log" \
+      "$target/draft/book-wip.pdf" \
+      "$target/draft/STATUS.preview.md" \
       2>/dev/null || true
+    preview_build_root="$target/.workspace/build/book-draft-preview"
+    if [[ -L "$preview_build_root" ]]; then
+      rm -- "$preview_build_root" 2>/dev/null || true
+    elif [[ -d "$preview_build_root" ]]; then
+      find "$preview_build_root" -depth -delete 2>/dev/null || true
+    fi
     rmdir -- \
+      "$target/.workspace/source/book" \
       "$target/.workspace/source" \
       "$target/.workspace/records" \
       "$target/.workspace/tools" \
@@ -139,6 +156,13 @@ case "$mode:$ignore_status" in
     fail "repository mode check failed"
     ;;
 esac
+
+"$repo_root/.system/book-draft-preview" init \
+  "$relative_target" >/dev/null || \
+  fail "initial WIP preview could not be generated"
+"$repo_root/.system/book-claim-harness" scan \
+  "$relative_target" >/dev/null || \
+  fail "initial WIP source claim scan could not be generated"
 
 keep_target=1
 printf 'new-book-project: ok\n'

@@ -169,7 +169,13 @@ private 作業から得た generic な system 改善は、clean な public clone
 .system/new-book-project <project-id>
 ```
 
-initializer は、例・注意・caption・脚注・通常文に埋め込まれた formal assertion を全件分類し、番号付き statement、直後の proof、provenance、元の例との相互参照を checkpoint と promotion で検証する project-local claim audit も初期化します。通常の制作ではエージェントが source 変更後の scan、独立 review、gate 検査を実行します。
+initializer は、例・注意・caption・脚注・通常文に埋め込まれた formal assertion を全件分類し、番号付き statement、直後の proof、provenance、元の例との相互参照を checkpoint と promotion で検証する project-local claim audit も初期化します。さらに、網羅的な source inventory や詳細設計の完了を待たず、仮設計と provisional な実本文を確認できる `draft/book-wip.pdf` を最初から生成します。通常の制作ではエージェントが source 変更後の scan、独立 review、gate 検査に加え、次の command による WIP PDF の live 同期を実行します。
+
+```sh
+.system/book-draft-preview build book-translations/<project-id>
+```
+
+既存 project が規約更新により migration-required になった場合も、エージェントは audit の完了を待たず `book-draft-preview init` を再実行します。この場合は旧 source を変更せず、current fingerprint 固有の非 canonical な再構成 preview profile を追加して、設計と仮本文の PDF を継続します。build 状態は `draft/STATUS.preview.md`、内容上の進捗は config が指す project-local JSON record に分離され、PDF と status は両 snapshot を追跡します。
 
 配置、権利管理、制作、review、promotion の詳細は、次の文書を参照してください。
 
